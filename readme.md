@@ -36,18 +36,21 @@ The older FLUX.2-klein 9B and Qwen-Image-Edit engine files may remain in the rep
 3. Run the single cell.
 4. Authorize Google Drive.
 5. Wait for first-run setup and model downloads.
-6. Open the public `gradio.live` link printed by Gradio.
+6. Open the large `OPEN FREEFAKESTUDIO` HTTPS link printed after the local server starts.
 
 Later runs reuse the Drive workspace and should skip existing downloads.
 
-If Gradio share is unreliable, paste your ngrok auth token into the notebook's
+For the most reliable route, paste your ngrok auth token into the notebook's
 `NGROK_AUTH_TOKEN` field. The launcher will print:
 
 ```text
-OPEN INTERFACE (ngrok): https://...
+OPEN FREEFAKESTUDIO (ngrok):
+https://...
 ```
 
-Leave `NGROK_AUTH_TOKEN` blank to use Gradio share and the Colab proxy fallback.
+Leave `NGROK_AUTH_TOKEN` blank to use Colab's signed-in HTTPS proxy. The launcher
+passes the selected external URL to Gradio as an absolute proxy root so Gradio
+does not generate blocked internal HTTP URLs for its API, theme, or assets.
 
 ## Persistent Workspace Layout
 
@@ -84,7 +87,8 @@ First run:
 - installs only missing required Python packages where practical;
 - installs ComfyUI and ComfyUI-GGUF if missing;
 - downloads only missing or repair-requested model files;
-- launches Gradio with `share=True`.
+- creates one HTTPS route (ngrok when configured, otherwise Colab proxy);
+- launches Gradio with that route set as its absolute proxy root.
 
 Later runs:
 
@@ -213,7 +217,7 @@ engine_ernie_image_turbo.py
 4. Keep `UPDATE_APP=False` and `REPAIR_INSTALL=False` for normal testing.
 5. Run the single cell.
 6. Confirm setup reaches `FreeFakeStudio / Launching`.
-7. Open the printed `gradio.live` link.
+7. Open the printed `OPEN FREEFAKESTUDIO` HTTPS link.
 8. Generate with `Z-Image Turbo`.
 9. Generate with `FLUX.2-klein 4B`.
 10. Attach an image, use FLUX img2img.

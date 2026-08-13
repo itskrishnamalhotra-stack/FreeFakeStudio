@@ -390,8 +390,6 @@ DEFAULT_NEG = "low quality, blurry, pixelated, noise, watermark, text, logo"
 #  CSS — Gemini-like design with dark/light support
 # ═══════════════════════════════════════════════════════════
 CSS = """
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap');
-
 /* ── Root Variables ────────────────────────────────────── */
 :root {
     --ffs-bg: #f8f9fa;
@@ -795,6 +793,9 @@ button[aria-label="Pan"], button[aria-label="Move"] {
 #  JAVASCRIPT — brush size boost, keyboard shortcuts
 # ═══════════════════════════════════════════════════════════
 JS_HEAD = """
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
 <script>
 // Fix gallery share → open in new tab
 (function() {
@@ -1380,7 +1381,7 @@ def _env_flag(name, default=False):
     return raw.lower() in ("1", "true", "yes", "on")
 
 
-# Launch. Colab uses a public Gradio share link; local dev stays private.
+# The Colab launcher supplies an absolute HTTPS root for its selected proxy.
 if __name__ == "__main__":
     demo.launch(
         share=_env_flag("FREEFAKESTUDIO_SHARE", IS_COLAB),
@@ -1392,5 +1393,6 @@ if __name__ == "__main__":
         theme=ffs_theme,
         css=CSS,
         head=JS_HEAD,
+        root_path=os.environ.get("FREEFAKESTUDIO_PUBLIC_URL") or None,
         allowed_paths=[os.path.abspath(SAVE_DIR)],
     )

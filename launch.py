@@ -70,7 +70,7 @@ os.environ["COMFYUI_ROOT"] = str(COMFYUI)
 os.environ["FREEFAKESTUDIO_WORKSPACE"] = str(WS)
 os.environ["GRADIO_TEMP_DIR"] = str(WS / "gradio_tmp")
 os.environ["GRADIO_SSR_MODE"] = "false"
-os.environ["FREEFAKESTUDIO_SHARE"] = "0" if NGROK_AUTHTOKEN else "1"
+os.environ["FREEFAKESTUDIO_SHARE"] = "0"
 os.environ["FFS_DEBUG"] = "1" if DEBUG else "0"
 
 
@@ -244,16 +244,9 @@ def launch_app_process(timeout_seconds=180):
     log_path = DIAGNOSTICS / "app_launch_latest.log"
     history = []
     url_pattern = re.compile(r"https://[^\s]+\.gradio\.live|Running on public URL:\s*(https://[^\s]+)")
-    proxy_url = None
-    ngrok_url = None
+    public_url = None
+    public_label = None
     tunnel = None
-    try:
-        from google.colab.output import eval_js
-
-        proxy_url = eval_js("google.colab.kernel.proxyPort(7860)")
-        print(f"\nOPEN INTERFACE (Colab proxy): {proxy_url}\n")
-    except Exception as exc:
-        print(f"Colab proxy URL unavailable before launch: {exc}")
 
     if NGROK_AUTHTOKEN:
         try:
@@ -261,16 +254,45 @@ def launch_app_process(timeout_seconds=180):
 
             ngrok.set_auth_token(NGROK_AUTHTOKEN)
             tunnel = ngrok.connect(7860, proto="http")
-            ngrok_url = tunnel.public_url
-            print(f"\nOPEN INTERFACE (ngrok): {ngrok_url}\n")
+            public_url = tunnel.public_url.rstrip("/")
+            public_label = "ngrok"
+            if not public_url.startswith("https://"):
+                raise RuntimeError(f"ngrok returned a non-HTTPS URL: {public_url}")
         except Exception as exc:
-            print(f"ngrok tunnel failed: {exc}")
+            raise RuntimeError(
+                "ngrok tunnel setup failed. Check NGROK_AUTH_TOKEN and your ngrok account. "
+                f"Details: {exc}"
+            ) from exc
+    else:
+        try:
+            from google.colab.output import eval_js
 
-    env = {**os.environ, "PYTHONPATH": str(APP), "PYTHONUNBUFFERED": "1"}
+            public_url = str(eval_js("google.colab.kernel.proxyPort(7860)")).rstrip("/")
+            public_label = "Colab proxy"
+            if not public_url.startswith("https://"):
+                raise RuntimeError(f"Colab returned a non-HTTPS proxy URL: {public_url}")
+        except Exception as exc:
+            raise RuntimeError(
+                "Could not create the Colab HTTPS proxy URL. Add an ngrok token in "
+                f"NGROK_AUTH_TOKEN and run again. Details: {exc}"
+            ) from exc
+
+    # Gradio otherwise discovers Colab's internal HTTP host and emits mixed-content
+    # asset/API URLs. An absolute root path makes every browser request use the
+    # selected external HTTPS origin.
+    env = {
+        **os.environ,
+        "PYTHONPATH": str(APP),
+        "PYTHONUNBUFFERED": "1",
+        "FREEFAKESTUDIO_PUBLIC_URL": public_url,
+        "GRADIO_ROOT_PATH": public_url,
+        "FREEFAKESTUDIO_SHARE": "0",
+    }
     cmd = [sys.executable, "-u", str(APP / "app.py")]
     with log_path.open("w", encoding="utf-8") as log:
         log.write(f"Command: {' '.join(cmd)}\n")
         log.write(f"Working directory: {APP}\n\n")
+        log.write(f"Public route: {public_label} ({public_url})\n\n")
         proc = subprocess.Popen(
             cmd,
             cwd=str(APP),
@@ -281,9 +303,7 @@ def launch_app_process(timeout_seconds=180):
             bufsize=1,
         )
         started = time.time()
-        public_url = None
         local_started = False
-        proxy_logged = False
         output_queue = queue.Queue()
         assert proc.stdout is not None
 
@@ -303,15 +323,13 @@ def launch_app_process(timeout_seconds=180):
                 match = url_pattern.search(line)
                 if "Running on local URL:" in line:
                     local_started = True
-                    if ngrok_url:
-                        print(f"\nOPEN INTERFACE (ngrok): {ngrok_url}\n")
-                    if proxy_url:
-                        print(f"\nOPEN INTERFACE (Colab proxy): {proxy_url}\n")
+                    print("\n" + "=" * 72)
+                    print(f"OPEN FREEFAKESTUDIO ({public_label}):")
+                    print(public_url)
+                    print("=" * 72 + "\n")
                 if match:
-                    public_url = match.group(1) or match.group(0)
-                    print(f"\nFreeFakeStudio public URL: {public_url}\n")
-                elif "Could not create share link" in line and proxy_url:
-                    print(f"\nGradio share failed. Use this Colab proxy link instead:\n{proxy_url}\n")
+                    gradio_share_url = match.group(1) or match.group(0)
+                    print(f"\nUnexpected Gradio share URL: {gradio_share_url}\n")
             except queue.Empty:
                 line = None
 
@@ -328,12 +346,7 @@ def launch_app_process(timeout_seconds=180):
                     raise RuntimeError(f"app.py exited with code {code}. Last output:\n{tail}")
                 return public_url
 
-            if proxy_url and not proxy_logged and time.time() - started > 20:
-                log.write(f"\nFallback Colab proxy URL: {proxy_url}\n")
-                log.flush()
-                proxy_logged = True
-
-            if not public_url and not local_started and time.time() - started > timeout_seconds:
+            if not local_started and time.time() - started > timeout_seconds:
                 tail = "\n".join(history[-40:]) or "(no app output yet)"
                 proc.terminate()
                 try:
@@ -341,7 +354,7 @@ def launch_app_process(timeout_seconds=180):
                 except subprocess.TimeoutExpired:
                     proc.kill()
                 raise RuntimeError(
-                    f"Gradio did not print a public URL within {timeout_seconds}s. "
+                    f"Gradio did not start its local server within {timeout_seconds}s. "
                     f"App log: {log_path}\nLast output:\n{tail}"
                 )
 
@@ -564,7 +577,7 @@ try:
     if launch_report:
         step("Diagnostics", f"Launch report: {launch_report.name}", "ok")
     _render(final=True)
-    print("\nFreeFakeStudio is starting. Use the public gradio.live link printed below.\n")
+    print("\nFreeFakeStudio is starting. The HTTPS interface link will print when it is ready.\n")
     launch_app_process(timeout_seconds=180)
 except Exception as exc:
     error_report = write_debug_report("error", exc)
