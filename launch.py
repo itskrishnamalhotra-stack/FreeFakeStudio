@@ -590,19 +590,6 @@ def ensure_symlink(link, target):
     os.symlink(str(target), str(link))
 
 
-def ensure_cross_links():
-    text_dir = COMFYUI / "models" / "text_encoders"
-    clip_dir = COMFYUI / "models" / "clip"
-    for src_dir, dst_dir in [(text_dir, clip_dir), (clip_dir, text_dir)]:
-        for src in src_dir.iterdir():
-            dst = dst_dir / src.name
-            if src.is_file() and not dst.exists():
-                try:
-                    os.symlink(str(src), str(dst))
-                except OSError:
-                    pass
-
-
 def min_bytes(filename):
     if filename in {"ae.safetensors", "flux2-vae.safetensors"}:
         return 50 * 1024 * 1024
@@ -634,7 +621,20 @@ def hub_download(repo, filename, dest_dir, dest_name=None):
         raise RuntimeError(f"Downloaded file looks incomplete: {cached}")
     if target.exists() or target.is_symlink():
         target.unlink()
-    os.symlink(cached, target)
+    cached = Path(cached)
+    partial = target.with_name(f"{target.name}.part")
+    if partial.exists() or partial.is_symlink():
+        partial.unlink()
+    try:
+        os.replace(str(cached), str(target))
+    except OSError:
+        shutil.copyfile(str(cached.resolve()), str(partial))
+        if not file_ok(partial):
+            partial.unlink(missing_ok=True)
+            raise RuntimeError(f"Could not materialize persistent model file: {target}")
+        os.replace(str(partial), str(target))
+    if not file_ok(target):
+        raise RuntimeError(f"Persistent model file looks incomplete: {target}")
     return target
 
 
@@ -670,11 +670,10 @@ def ensure_models():
         if not needed:
             step(model_name, "Ready", "ok")
             continue
-        step(model_name, f"Downloading {len(needed)} missing file(s)")
+        step(model_name, f"Preparing {len(needed)} persistent file(s)")
         for repo, remote, dest, name in needed:
             hub_download(repo, remote, dest, name)
         done(model_name, "Ready")
-    ensure_cross_links()
 
 
 try:

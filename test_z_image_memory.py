@@ -123,16 +123,19 @@ class ZImageMemoryTests(unittest.TestCase):
 
 class LauncherRepositoryTests(unittest.TestCase):
     @staticmethod
-    def _ensure_repo(fake_run_cmd):
+    def _launch_function(name, namespace):
         source = Path("launch.py").read_text(encoding="utf-8")
         tree = ast.parse(source)
         function = next(
             node for node in tree.body
-            if isinstance(node, ast.FunctionDef) and node.name == "ensure_repo"
+            if isinstance(node, ast.FunctionDef) and node.name == name
         )
-        namespace = {"run_cmd": fake_run_cmd}
         exec(compile(ast.Module(body=[function], type_ignores=[]), "launch.py", "exec"), namespace)
-        return namespace["ensure_repo"]
+        return namespace[name]
+
+    @classmethod
+    def _ensure_repo(cls, fake_run_cmd):
+        return cls._launch_function("ensure_repo", {"run_cmd": fake_run_cmd})
 
     def test_empty_comfy_scaffold_is_replaced_by_clone(self):
         with tempfile.TemporaryDirectory() as root:
@@ -163,6 +166,35 @@ class LauncherRepositoryTests(unittest.TestCase):
                 ensure_repo(target, "https://example.test/ComfyUI.git", "v0.28.0")
 
             self.assertEqual(marker.read_text(encoding="utf-8"), "persistent")
+
+    def test_cached_model_is_moved_to_drive_without_symlink(self):
+        import os
+        import shutil
+
+        with tempfile.TemporaryDirectory() as root:
+            root = Path(root)
+            cached = root / "cache" / "snapshot" / "model.safetensors"
+            cached.parent.mkdir(parents=True)
+            cached.write_bytes(b"complete-model")
+            destination = root / "ComfyUI" / "models" / "diffusion_models"
+            hub = types.ModuleType("huggingface_hub")
+            hub.hf_hub_download = lambda **kwargs: str(cached)
+            namespace = {
+                "Path": Path,
+                "CACHE": root / "cache",
+                "REPAIR": False,
+                "file_ok": lambda path: Path(path).is_file() and Path(path).stat().st_size > 0,
+                "os": os,
+                "shutil": shutil,
+            }
+            hub_download = self._launch_function("hub_download", namespace)
+
+            with mock.patch.dict(sys.modules, {"huggingface_hub": hub}), \
+                 mock.patch("os.symlink", side_effect=AssertionError("symlink must not be used")):
+                target = hub_download("example/model", "model.safetensors", destination)
+
+            self.assertEqual(target.read_bytes(), b"complete-model")
+            self.assertFalse(cached.exists())
 
 
 if __name__ == "__main__":
