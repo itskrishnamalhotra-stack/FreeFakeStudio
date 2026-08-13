@@ -29,9 +29,11 @@ def _get_nodes():
             "KSampler":         NODE_CLASS_MAPPINGS["KSampler"](),
             "VAEDecode":        NODE_CLASS_MAPPINGS["VAEDecode"](),
             "VAEEncode":        NODE_CLASS_MAPPINGS["VAEEncode"](),
-            "EmptyLatentImage": NODE_CLASS_MAPPINGS["EmptyLatentImage"](),
+            "EmptySD3LatentImage": NODE_CLASS_MAPPINGS["EmptySD3LatentImage"](),
             "SetLatentNoiseMask": NODE_CLASS_MAPPINGS["SetLatentNoiseMask"](),
         }
+        from comfy_extras.nodes_model_advanced import ModelSamplingAuraFlow
+        _nodes["ModelSamplingAuraFlow"] = ModelSamplingAuraFlow()
     return _nodes
 
 # ── Load / Unload ──────────────────────────────────────────
@@ -42,7 +44,8 @@ def load():
     n = _get_nodes()
     print("⏳ Loading Z-Image Turbo FP8...")
     with torch.inference_mode():
-        _unet = n["UNETLoader"].load_unet("z-image-turbo-fp8-e4m3fn.safetensors", "fp8_e4m3fn_fast")[0]
+        raw_unet = n["UNETLoader"].load_unet("z-image-turbo-fp8-e4m3fn.safetensors", "fp8_e4m3fn_fast")[0]
+        _unet = n["ModelSamplingAuraFlow"].patch_aura(raw_unet, 3.0)[0]
         _clip = n["CLIPLoader"].load_clip("qwen_3_4b.safetensors", type="lumina2")[0]
         _vae  = n["VAELoader"].load_vae("ae.safetensors")[0]
     _loaded = True
@@ -81,7 +84,7 @@ def generate(prompt, negative, width, height, seed, cfg, denoise, steps=8):
     n = _get_nodes()
     pos = n["CLIPTextEncode"].encode(_clip, prompt)[0]
     neg = n["CLIPTextEncode"].encode(_clip, negative)[0]
-    latent = n["EmptyLatentImage"].generate(width, height, batch_size=1)[0]
+    latent = n["EmptySD3LatentImage"].generate(width, height, batch_size=1)[0]
     samples = n["KSampler"].sample(
         _unet, seed, min(steps, 8), float(cfg),
         "euler", "simple", pos, neg, latent, denoise=float(denoise)

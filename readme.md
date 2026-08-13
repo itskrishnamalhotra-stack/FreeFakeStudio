@@ -86,8 +86,10 @@ First run:
 - checks/repairs NumPy consistency before ComfyUI imports;
 - installs only missing required Python packages where practical;
 - installs ComfyUI and ComfyUI-GGUF if missing;
+- enforces the model-compatible ComfyUI `v0.28.0` backend revision;
 - reconciles ComfyUI and ComfyUI-GGUF Python requirements in every fresh Colab session;
 - verifies `torchsde`, `comfy.samplers`, and `comfy.sd` imports before opening the UI;
+- checks Z-Image model-detection support and its safetensors header before launch;
 - downloads only missing or repair-requested model files;
 - creates one HTTPS route (ngrok when configured, otherwise Colab proxy);
 - launches Gradio with that route set as its absolute proxy root.
@@ -100,7 +102,7 @@ Later runs:
 - skip existing downloads;
 - launch the UI.
 
-`UPDATE_APP=True` performs a fast-forward `git pull` only. It does not hard reset or delete your modified app folder.
+`UPDATE_APP=True` fast-forwards the Drive app copy and refreshes managed backend repositories. It does not hard reset or delete your modified app folder. The required ComfyUI compatibility tag is enforced automatically even when this option is off.
 
 `REPAIR_INSTALL=True` rechecks/redownloads suspicious or missing install files.
 

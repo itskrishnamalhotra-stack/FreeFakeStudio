@@ -39,7 +39,7 @@ if not running_in_colab() and os.environ.get("FFS_ALLOW_LOCAL_SETUP") != "1":
 WS = Path(os.environ.get("FFS_WORKSPACE", "/content/drive/MyDrive/FreeFakeStudio")).resolve()
 REPAIR = os.environ.get("FFS_REPAIR", "") == "1"
 UPDATE_APP = os.environ.get("FFS_UPDATE", "") == "1"
-COMFY_TAG = os.environ.get("FFS_COMFY_TAG", "v0.3.10")
+COMFY_TAG = os.environ.get("FFS_COMFY_TAG", "v0.28.0")
 DEBUG = os.environ.get("FFS_DEBUG", "1").lower() not in ("0", "false", "no", "off")
 NGROK_AUTHTOKEN = os.environ.get("FFS_NGROK_AUTHTOKEN", "").strip()
 
@@ -155,6 +155,13 @@ def package_version(name):
         return None
 
 
+def git_revision(path):
+    if not (Path(path) / ".git").exists():
+        return None
+    result = run_cmd(["git", "-C", str(path), "rev-parse", "HEAD"], check=False, quiet=True)
+    return result.stdout.strip() if result.returncode == 0 else None
+
+
 def safe_nvidia_smi():
     try:
         result = subprocess.run(["nvidia-smi"], text=True, capture_output=True)
@@ -190,6 +197,8 @@ def write_debug_report(stage, exc=None):
         "workspace": str(WS),
         "app": str(APP),
         "comfyui": str(COMFYUI),
+        "comfyui_required_tag": COMFY_TAG,
+        "comfyui_revision": git_revision(COMFYUI),
         "cache": str(CACHE),
         "results": str(RESULTS),
         "env": {
@@ -380,18 +389,45 @@ def package_ok(module_name):
 
 def verify_comfy_runtime():
     code = (
-        "import sys; "
+        "import inspect, sys; "
         f"sys.path.insert(0, {str(COMFYUI)!r}); "
         "import torchsde; "
         "import comfy.samplers; "
         "import comfy.sd; "
-        "print('torchsde + comfy.samplers + comfy.sd: OK')"
+        "import comfy.model_detection as model_detection; "
+        "import comfy.text_encoders.z_image; "
+        "import comfy.text_encoders.ernie; "
+        "source = inspect.getsource(model_detection.detect_unet_config); "
+        "assert 'z_image_modulation' in source, 'ComfyUI has no Z-Image model detection'; "
+        "assert '\"flux2\"' in source, 'ComfyUI has no FLUX.2 model detection'; "
+        "print('dependencies + Z-Image/FLUX.2/ERNIE backend support: OK')"
     )
     probe = subprocess.run([sys.executable, "-c", code], text=True, capture_output=True)
     if probe.returncode != 0:
         detail = (probe.stderr or probe.stdout or "ComfyUI import probe failed")[-3000:]
         raise RuntimeError(f"ComfyUI runtime import check failed:\n{detail}")
     return probe.stdout.strip()
+
+
+def verify_z_image_checkpoint():
+    from safetensors import safe_open
+
+    path = COMFYUI / "models" / "diffusion_models" / "z-image-turbo-fp8-e4m3fn.safetensors"
+    if not file_ok(path):
+        raise RuntimeError(f"Z-Image checkpoint is missing or incomplete: {path}")
+    with safe_open(str(path), framework="pt", device="cpu") as handle:
+        keys = tuple(handle.keys())
+    required_suffixes = (
+        "cap_embedder.1.weight",
+        "noise_refiner.0.attention.k_norm.weight",
+    )
+    missing = [suffix for suffix in required_suffixes if not any(key.endswith(suffix) for key in keys)]
+    if missing:
+        raise RuntimeError(
+            "Z-Image checkpoint has an unsupported safetensors layout. "
+            f"Missing model-detection keys: {', '.join(missing)}"
+        )
+    return f"Header OK / {len(keys)} tensors"
 
 
 def ensure_numpy():
@@ -422,12 +458,24 @@ def ensure_repo(path, repo, tag=None, update=False):
         args.extend([repo, str(path)])
         run_cmd(args, quiet=True)
         return "installed"
+    if tag:
+        head = git_revision(path)
+        target = run_cmd(
+            ["git", "-C", str(path), "rev-parse", f"{tag}^{{commit}}"],
+            check=False,
+            quiet=True,
+        )
+        tag_revision = target.stdout.strip() if target.returncode == 0 else None
+        update = update or not tag_revision or head != tag_revision
     if update:
-        run_cmd(["git", "-C", str(path), "fetch", "--tags", "--depth", "1"], quiet=True)
         if tag:
+            run_cmd(
+                ["git", "-C", str(path), "fetch", "--depth", "1", "origin", "tag", tag],
+                quiet=True,
+            )
             run_cmd(["git", "-C", str(path), "checkout", "--force", tag], quiet=True)
-        else:
-            run_cmd(["git", "-C", str(path), "pull", "--ff-only"], quiet=True)
+            return f"updated to {tag}"
+        run_cmd(["git", "-C", str(path), "pull", "--ff-only"], quiet=True)
         return "updated"
     return "cached"
 
@@ -593,11 +641,14 @@ try:
 
     step("ComfyUI runtime", "Import smoke test")
     done("ComfyUI runtime", verify_comfy_runtime())
+
     comfy_report = write_debug_report("comfy_runtime")
     if comfy_report:
         step("Diagnostics", f"ComfyUI report: {comfy_report.name}", "ok")
 
     ensure_models()
+    step("Z-Image checkpoint", "Inspecting safetensors header")
+    done("Z-Image checkpoint", verify_z_image_checkpoint())
     models_report = write_debug_report("models")
     if models_report:
         step("Diagnostics", f"Model report: {models_report.name}", "ok")
