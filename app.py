@@ -1236,11 +1236,8 @@ demo.queue(default_concurrency_limit=1)
 
 # Launch
 if __name__ == "__main__" or IS_COLAB:
-    _launch_kw = dict(debug=True, css=CSS, theme=ffs_theme, head=JS_HEAD)
-
-    if IS_COLAB:
-        # Gradio 6 + Colab ONLY works via share=True (known bug since 6.4.0)
-        # The Colab proxy causes Mixed Content errors without a share link.
-        _launch_kw['share'] = True
-
-    demo.launch(**_launch_kw)
+    demo.launch(
+        share=False, debug=True,
+        css=CSS, theme=ffs_theme, head=JS_HEAD,
+        server_name="0.0.0.0", server_port=7860,
+    )

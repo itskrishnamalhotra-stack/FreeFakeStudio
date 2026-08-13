@@ -335,9 +335,15 @@ os.chdir(str(APP))
 if str(APP) not in sys.path:
     sys.path.insert(0, str(APP))
 
-# CRITICAL: Disable Gradio 6 SSR BEFORE import — prevents the node.js
-# server on port 8007 that causes Mixed Content errors on Colab's HTTPS proxy
+# Disable Gradio 6 SSR BEFORE import
 os.environ['GRADIO_SSR_MODE'] = 'false'
 
-# Execute app.py in this process
+# Set up ngrok tunnel (Gradio 6 share is broken on Colab)
+_run('pip install -q pyngrok', quiet=True)
+from pyngrok import ngrok
+ngrok.set_auth_token('38tl51VOlFnqeTOilqpVzH0oOtW_Qv126eAUN1EdvYcNrcgg')
+_tunnel = ngrok.connect(7860, proto='http')
+print(f'\n🌐 FreeFakeStudio is live at: {_tunnel.public_url}\n')
+
+# Execute app.py in this process (launches with share=False)
 exec(open(str(APP / 'app.py')).read())
