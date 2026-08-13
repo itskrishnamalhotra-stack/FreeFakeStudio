@@ -110,17 +110,13 @@ def _run(cmd, quiet=True):
 if not (COMFYUI / 'main.py').exists():
     step('ComfyUI', 'Cloning repository…')
     _run(f'git clone https://github.com/comfyanonymous/ComfyUI.git "{COMFYUI}"', quiet=False)
-    _run(f'pip install -q -r "{COMFYUI}/requirements.txt"', quiet=False)
-    done('ComfyUI', 'Installed')
+    done('ComfyUI', 'Cloned')
 else:
     step('ComfyUI', 'Cached on Drive', 'ok')
 
-# comfy_aimdo is required by latest ComfyUI but its deps pull numpy 1.x
-# Install with --no-deps to keep Colab's numpy 2.x intact
-try:
-    __import__('comfy_aimdo')
-except ImportError:
-    _run('pip install -q comfy-aimdo --no-deps', quiet=False)
+# Always ensure ComfyUI deps are installed (new versions add deps like
+# comfy_aimdo, comfy_kitchen etc. that aren't in Colab by default)
+_run(f'pip install -q --no-deps -r "{COMFYUI}/requirements.txt"', quiet=False)
 
 # Symlink  /content/ComfyUI  →  persistent copy
 _link = Path('/content/ComfyUI')
