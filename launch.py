@@ -335,5 +335,9 @@ os.chdir(str(APP))
 if str(APP) not in sys.path:
     sys.path.insert(0, str(APP))
 
+# CRITICAL: Disable Gradio 6 SSR BEFORE import — prevents the node.js
+# server on port 8007 that causes Mixed Content errors on Colab's HTTPS proxy
+os.environ['GRADIO_SSR_MODE'] = 'false'
+
 # Execute app.py in this process
 exec(open(str(APP / 'app.py')).read())
