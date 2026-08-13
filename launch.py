@@ -182,6 +182,11 @@ if _deps:
     _render()
     _run(f'pip install -q {" ".join(_deps)}', quiet=False)
 
+# Pillow 12+ removed _Ink from PIL._typing — pin to <12
+try:
+    from PIL._typing import _Ink  # noqa: F401
+except ImportError:
+    _run('pip install -q "Pillow<12"', quiet=False)
 
 done('Dependencies', f'{4 - len(_deps)}/4 cached' if len(_deps) < 4 else 'Installed')
 
