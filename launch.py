@@ -243,6 +243,15 @@ def launch_app_process(timeout_seconds=180):
     log_path = DIAGNOSTICS / "app_launch_latest.log"
     history = []
     url_pattern = re.compile(r"https://[^\s]+\.gradio\.live|Running on public URL:\s*(https://[^\s]+)")
+    proxy_url = None
+    try:
+        from google.colab.output import eval_js
+
+        proxy_url = eval_js("google.colab.kernel.proxyPort(7860)")
+        print(f"\nOPEN INTERFACE (Colab proxy): {proxy_url}\n")
+    except Exception as exc:
+        print(f"Colab proxy URL unavailable before launch: {exc}")
+
     env = {**os.environ, "PYTHONPATH": str(APP), "PYTHONUNBUFFERED": "1"}
     cmd = [sys.executable, "-u", str(APP / "app.py")]
     with log_path.open("w", encoding="utf-8") as log:
@@ -259,6 +268,8 @@ def launch_app_process(timeout_seconds=180):
         )
         started = time.time()
         public_url = None
+        local_started = False
+        proxy_logged = False
         output_queue = queue.Queue()
         assert proc.stdout is not None
 
@@ -276,9 +287,15 @@ def launch_app_process(timeout_seconds=180):
                 history.append(line.rstrip())
                 history = history[-80:]
                 match = url_pattern.search(line)
+                if "Running on local URL:" in line:
+                    local_started = True
+                    if proxy_url:
+                        print(f"\nOPEN INTERFACE (Colab proxy): {proxy_url}\n")
                 if match:
                     public_url = match.group(1) or match.group(0)
                     print(f"\nFreeFakeStudio public URL: {public_url}\n")
+                elif "Could not create share link" in line and proxy_url:
+                    print(f"\nGradio share failed. Use this Colab proxy link instead:\n{proxy_url}\n")
             except queue.Empty:
                 line = None
 
@@ -295,7 +312,12 @@ def launch_app_process(timeout_seconds=180):
                     raise RuntimeError(f"app.py exited with code {code}. Last output:\n{tail}")
                 return public_url
 
-            if not public_url and time.time() - started > timeout_seconds:
+            if proxy_url and not proxy_logged and time.time() - started > 20:
+                log.write(f"\nFallback Colab proxy URL: {proxy_url}\n")
+                log.flush()
+                proxy_logged = True
+
+            if not public_url and not local_started and time.time() - started > timeout_seconds:
                 tail = "\n".join(history[-40:]) or "(no app output yet)"
                 proc.terminate()
                 try:
