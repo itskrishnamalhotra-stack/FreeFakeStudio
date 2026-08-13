@@ -120,6 +120,12 @@ Runtime generation/model-load errors write full tracebacks here:
 WORKSPACE_DIR/results/_debug/error_*.txt
 ```
 
+The final Gradio app startup process streams to:
+
+```text
+WORKSPACE_DIR/diagnostics/app_launch_latest.log
+```
+
 If Colab fails, download or open `diagnostics/latest.json` and the newest `results/_debug/error_*.txt`, then paste those into the issue/chat.
 
 ## Memory Behavior

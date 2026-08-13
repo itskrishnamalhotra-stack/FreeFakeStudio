@@ -1385,6 +1385,8 @@ if __name__ == "__main__":
     demo.launch(
         share=_env_flag("FREEFAKESTUDIO_SHARE", IS_COLAB),
         debug=True,
+        show_error=True,
+        inline=False,
         server_name="0.0.0.0",
         server_port=7860,
         theme=ffs_theme,

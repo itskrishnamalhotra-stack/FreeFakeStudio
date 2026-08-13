@@ -8,9 +8,12 @@ import importlib.metadata
 import json
 import os
 import platform
+import queue
+import re
 import shutil
 import subprocess
 import sys
+import threading
 import time
 import traceback
 from pathlib import Path
@@ -236,6 +239,75 @@ def write_debug_report(stage, exc=None):
     return path
 
 
+def launch_app_process(timeout_seconds=180):
+    log_path = DIAGNOSTICS / "app_launch_latest.log"
+    history = []
+    url_pattern = re.compile(r"https://[^\s]+\.gradio\.live|Running on public URL:\s*(https://[^\s]+)")
+    env = {**os.environ, "PYTHONPATH": str(APP), "PYTHONUNBUFFERED": "1"}
+    cmd = [sys.executable, "-u", str(APP / "app.py")]
+    with log_path.open("w", encoding="utf-8") as log:
+        log.write(f"Command: {' '.join(cmd)}\n")
+        log.write(f"Working directory: {APP}\n\n")
+        proc = subprocess.Popen(
+            cmd,
+            cwd=str(APP),
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+        )
+        started = time.time()
+        public_url = None
+        output_queue = queue.Queue()
+        assert proc.stdout is not None
+
+        def reader():
+            for item in proc.stdout:
+                output_queue.put(item)
+
+        threading.Thread(target=reader, daemon=True).start()
+        while True:
+            try:
+                line = output_queue.get(timeout=0.2)
+                print(line, end="")
+                log.write(line)
+                log.flush()
+                history.append(line.rstrip())
+                history = history[-80:]
+                match = url_pattern.search(line)
+                if match:
+                    public_url = match.group(1) or match.group(0)
+                    print(f"\nFreeFakeStudio public URL: {public_url}\n")
+            except queue.Empty:
+                line = None
+
+            if proc.poll() is not None:
+                while not output_queue.empty():
+                    extra = output_queue.get_nowait()
+                    print(extra, end="")
+                    log.write(extra)
+                    history.append(extra.rstrip())
+                log.flush()
+                code = proc.returncode
+                if code != 0:
+                    tail = "\n".join(history[-40:])
+                    raise RuntimeError(f"app.py exited with code {code}. Last output:\n{tail}")
+                return public_url
+
+            if not public_url and time.time() - started > timeout_seconds:
+                tail = "\n".join(history[-40:]) or "(no app output yet)"
+                proc.terminate()
+                try:
+                    proc.wait(timeout=15)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                raise RuntimeError(
+                    f"Gradio did not print a public URL within {timeout_seconds}s. "
+                    f"App log: {log_path}\nLast output:\n{tail}"
+                )
+
+
 def pip_install(*packages, force=False):
     cmd = [sys.executable, "-m", "pip", "install", "-q", "--cache-dir", str(CACHE / "pip")]
     if force:
@@ -453,12 +525,7 @@ try:
         step("Diagnostics", f"Launch report: {launch_report.name}", "ok")
     _render(final=True)
     print("\nFreeFakeStudio is starting. Use the public gradio.live link printed below.\n")
-    subprocess.run(
-        [sys.executable, str(APP / "app.py")],
-        cwd=str(APP),
-        env={**os.environ, "PYTHONPATH": str(APP)},
-        check=True,
-    )
+    launch_app_process(timeout_seconds=180)
 except Exception as exc:
     error_report = write_debug_report("error", exc)
     if error_report:
