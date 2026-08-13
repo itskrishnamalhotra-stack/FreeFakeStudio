@@ -1,6 +1,9 @@
+import ast
 import sys
+import tempfile
 import types
 import unittest
+from pathlib import Path
 from unittest import mock
 
 import engine_z_image
@@ -116,6 +119,50 @@ class ZImageMemoryTests(unittest.TestCase):
             model_manager._clear_memory()
 
         self.assertEqual(calls, ["unload", "empty"])
+
+
+class LauncherRepositoryTests(unittest.TestCase):
+    @staticmethod
+    def _ensure_repo(fake_run_cmd):
+        source = Path("launch.py").read_text(encoding="utf-8")
+        tree = ast.parse(source)
+        function = next(
+            node for node in tree.body
+            if isinstance(node, ast.FunctionDef) and node.name == "ensure_repo"
+        )
+        namespace = {"run_cmd": fake_run_cmd}
+        exec(compile(ast.Module(body=[function], type_ignores=[]), "launch.py", "exec"), namespace)
+        return namespace["ensure_repo"]
+
+    def test_empty_comfy_scaffold_is_replaced_by_clone(self):
+        with tempfile.TemporaryDirectory() as root:
+            target = Path(root) / "ComfyUI"
+            (target / "models" / "diffusion_models").mkdir(parents=True)
+            (target / "models" / "vae").mkdir(parents=True)
+
+            def fake_run_cmd(args, quiet=True):
+                self.assertEqual(args[1], "clone")
+                self.assertFalse(target.exists())
+                (target / ".git").mkdir(parents=True)
+
+            ensure_repo = self._ensure_repo(fake_run_cmd)
+            result = ensure_repo(target, "https://example.test/ComfyUI.git", "v0.28.0")
+
+            self.assertEqual(result, "installed")
+            self.assertTrue((target / ".git").is_dir())
+
+    def test_non_git_directory_with_files_is_preserved(self):
+        with tempfile.TemporaryDirectory() as root:
+            target = Path(root) / "ComfyUI"
+            target.mkdir()
+            marker = target / "keep-me.txt"
+            marker.write_text("persistent", encoding="utf-8")
+            ensure_repo = self._ensure_repo(lambda *args, **kwargs: None)
+
+            with self.assertRaisesRegex(RuntimeError, "left it untouched"):
+                ensure_repo(target, "https://example.test/ComfyUI.git", "v0.28.0")
+
+            self.assertEqual(marker.read_text(encoding="utf-8"), "persistent")
 
 
 if __name__ == "__main__":

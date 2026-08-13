@@ -52,16 +52,10 @@ RESULTS = WS / "results"
 DIAGNOSTICS = WS / "diagnostics"
 
 for directory in [
-    COMFYUI,
     CACHE / "huggingface",
     CACHE / "pip",
     RESULTS,
     DIAGNOSTICS,
-    COMFYUI / "models" / "diffusion_models",
-    COMFYUI / "models" / "text_encoders",
-    COMFYUI / "models" / "clip",
-    COMFYUI / "models" / "vae",
-    COMFYUI / "custom_nodes",
 ]:
     directory.mkdir(parents=True, exist_ok=True)
 
@@ -529,7 +523,20 @@ def ensure_numpy():
 def ensure_repo(path, repo, tag=None, update=False):
     if not (path / ".git").exists():
         if path.exists() and any(path.iterdir()):
-            raise RuntimeError(f"{path} exists but is not a git repository.")
+            entries = list(path.rglob("*"))
+            has_files = any(item.is_file() or item.is_symlink() for item in entries)
+            if has_files:
+                raise RuntimeError(
+                    f"{path} contains files but is not a git repository. "
+                    "The launcher left it untouched to protect persistent data."
+                )
+            for directory in sorted(
+                (item for item in entries if item.is_dir()),
+                key=lambda item: len(item.parts),
+                reverse=True,
+            ):
+                directory.rmdir()
+            path.rmdir()
         args = ["git", "clone", "--depth", "1"]
         if tag:
             args.extend(["--branch", tag])
@@ -556,6 +563,17 @@ def ensure_repo(path, repo, tag=None, update=False):
         run_cmd(["git", "-C", str(path), "pull", "--ff-only"], quiet=True)
         return "updated"
     return "cached"
+
+
+def ensure_comfy_directories():
+    for directory in [
+        COMFYUI / "models" / "diffusion_models",
+        COMFYUI / "models" / "text_encoders",
+        COMFYUI / "models" / "clip",
+        COMFYUI / "models" / "vae",
+        COMFYUI / "custom_nodes",
+    ]:
+        directory.mkdir(parents=True, exist_ok=True)
 
 
 def ensure_symlink(link, target):
@@ -690,6 +708,8 @@ try:
     step("ComfyUI", "Checking")
     state = ensure_repo(COMFYUI, "https://github.com/comfyanonymous/ComfyUI.git", COMFY_TAG, UPDATE_APP)
     done("ComfyUI", state)
+
+    ensure_comfy_directories()
 
     ensure_symlink(Path("/content/ComfyUI"), COMFYUI)
 
