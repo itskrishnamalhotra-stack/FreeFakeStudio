@@ -171,6 +171,15 @@ if _deps:
     _steps[-1]['d'] = f'Installing {len(_deps)} packages…'
     _render()
     _run(f'pip install -q {" ".join(_deps)}', quiet=False)
+
+# Fix Pillow version conflict (ComfyUI may install incompatible version)
+try:
+    from PIL._typing import _Ink  # noqa: F401
+except ImportError:
+    _steps[-1]['d'] = 'Fixing Pillow…'
+    _render()
+    _run('pip install -q --upgrade Pillow', quiet=False)
+
 done('Dependencies', f'{4 - len(_deps)}/4 cached' if len(_deps) < 4 else 'Installed')
 
 

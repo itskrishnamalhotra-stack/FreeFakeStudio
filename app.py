@@ -746,19 +746,14 @@ ffs_theme = gr.themes.Base(
     font=gr.themes.GoogleFont("Inter"),
 )
 
+
 # Detect Gradio version for compatibility
 _GRADIO_V6 = int(gr.__version__.split('.')[0]) >= 6
 
-_blocks_kwargs = dict(title="FreeFakeStudio")
-if not _GRADIO_V6:
-    _blocks_kwargs['theme'] = ffs_theme
-    _blocks_kwargs['css'] = CSS
+# Always pass css/theme to Blocks — works on all versions (warns on 6.x)
+with gr.Blocks(theme=ffs_theme, css=CSS, title="FreeFakeStudio") as demo:
 
-with gr.Blocks(**_blocks_kwargs) as demo:
-
-    # Inject JS via head param on Gradio 6+, or HTML on older
-    if not _GRADIO_V6:
-        gr.HTML(JS_HEAD)
+    gr.HTML(JS_HEAD)
 
     # ── Session State ──────────────────────────────────────
     chat_history = gr.State([])           # list of {role, content, ...}
@@ -1253,9 +1248,4 @@ demo.queue(default_concurrency_limit=1)
 
 # Launch
 if __name__ == "__main__" or IS_COLAB:
-    _launch_kwargs = dict(share=IS_COLAB, debug=True)
-    if _GRADIO_V6:
-        _launch_kwargs['css'] = CSS
-        _launch_kwargs['theme'] = ffs_theme
-        _launch_kwargs['head'] = JS_HEAD
-    demo.launch(**_launch_kwargs)
+    demo.launch(share=IS_COLAB, debug=True)
