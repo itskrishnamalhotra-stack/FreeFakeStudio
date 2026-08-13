@@ -91,6 +91,8 @@ First run:
 - verifies `torchsde`, `comfy.samplers`, and `comfy.sd` imports before opening the UI;
 - constructs and validates the complete Z-Image engine node set before opening the UI;
 - checks Z-Image model-detection support and its safetensors header before launch;
+- uses Comfy-Org's 3.48 GB mixed-FP4 Z-Image text encoder to stay within free Colab host RAM;
+- enables DynamicVRAM, disables execution caching and pinned-memory duplication, and logs RAM/VRAM around every Z-Image component load;
 - downloads only missing or repair-requested model files;
 - creates one HTTPS route (ngrok when configured, otherwise Colab proxy);
 - launches Gradio with that route set as its absolute proxy root.

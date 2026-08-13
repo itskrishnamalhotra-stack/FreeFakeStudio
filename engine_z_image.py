@@ -13,6 +13,57 @@ _clip = None
 _vae = None
 _nodes = {}
 
+Z_IMAGE_TEXT_ENCODER = "qwen_3_4b_fp4_mixed.safetensors"
+
+
+def _read_kib(path, key):
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            for line in handle:
+                if line.startswith(f"{key}:"):
+                    return int(line.split()[1])
+    except (OSError, ValueError, IndexError):
+        pass
+    return None
+
+
+def _memory_status(stage):
+    available_kib = _read_kib("/proc/meminfo", "MemAvailable")
+    rss_kib = _read_kib("/proc/self/status", "VmRSS")
+    parts = [f"RAM {stage}"]
+    if available_kib is not None:
+        parts.append(f"available={available_kib / 1024 / 1024:.1f} GB")
+    if rss_kib is not None:
+        parts.append(f"process={rss_kib / 1024 / 1024:.1f} GB")
+    if torch.cuda.is_available():
+        free_bytes, total_bytes = torch.cuda.mem_get_info()
+        parts.append(f"VRAM free={free_bytes / 1024**3:.1f}/{total_bytes / 1024**3:.1f} GB")
+    print("[memory] " + " | ".join(parts), flush=True)
+    return available_kib
+
+
+def _require_host_headroom(stage, minimum_gib):
+    available_kib = _memory_status(stage)
+    if available_kib is not None and available_kib < minimum_gib * 1024 * 1024:
+        raise RuntimeError(
+            f"Not enough Colab host RAM before {stage}: "
+            f"{available_kib / 1024 / 1024:.1f} GB available, {minimum_gib:.1f} GB required. "
+            "Restart the Colab session to clear stale model processes, then run the cell once."
+        )
+
+
+def _configure_comfy_memory():
+    """Set embedded ComfyUI defaults before model_management is imported."""
+    from comfy.cli_args import args
+
+    args.cache_none = True
+    args.cache_classic = False
+    args.cache_lru = 0
+    args.high_ram = False
+    args.enable_dynamic_vram = True
+    args.disable_dynamic_vram = False
+    args.disable_pinned_memory = True
+
 # ── Node references (set once) ─────────────────────────────
 def _get_nodes():
     global _nodes
@@ -20,6 +71,7 @@ def _get_nodes():
         comfyui_root = os.environ.get("COMFYUI_ROOT", "/content/ComfyUI")
         if comfyui_root not in sys.path:
             sys.path.insert(0, comfyui_root)
+        _configure_comfy_memory()
         from nodes import NODE_CLASS_MAPPINGS
         _nodes = {
             "UNETLoader":       NODE_CLASS_MAPPINGS["UNETLoader"](),
@@ -46,10 +98,15 @@ def load():
     n = _get_nodes()
     print("⏳ Loading Z-Image Turbo FP8...")
     with torch.inference_mode():
+        _require_host_headroom("Z-Image diffusion model", 5.0)
         raw_unet = n["UNETLoader"].load_unet("z-image-turbo-fp8-e4m3fn.safetensors", "fp8_e4m3fn_fast")[0]
+        _memory_status("after diffusion model")
         _unet = n["ModelSamplingAuraFlow"].patch_aura(raw_unet, 3.0)[0]
-        _clip = n["CLIPLoader"].load_clip("qwen_3_4b.safetensors", type="lumina2")[0]
+        _require_host_headroom("Z-Image FP4 text encoder", 3.8)
+        _clip = n["CLIPLoader"].load_clip(Z_IMAGE_TEXT_ENCODER, type="lumina2")[0]
+        _memory_status("after text encoder")
         _vae  = n["VAELoader"].load_vae("ae.safetensors")[0]
+        _memory_status("after VAE")
     _loaded = True
     print("✅ Z-Image Turbo loaded!")
 

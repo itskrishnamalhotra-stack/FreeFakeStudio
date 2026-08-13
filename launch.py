@@ -5,6 +5,8 @@
 
 import importlib
 import importlib.metadata
+import importlib.util
+import gc
 import json
 import os
 import platform
@@ -172,10 +174,39 @@ def safe_nvidia_smi():
         return "nvidia-smi not found"
 
 
+def host_memory():
+    values = {}
+    try:
+        with Path("/proc/meminfo").open("r", encoding="utf-8") as handle:
+            for line in handle:
+                key, value = line.split(":", 1)
+                if key in {"MemTotal", "MemAvailable"}:
+                    values[key] = int(value.split()[0]) * 1024
+    except (OSError, ValueError, IndexError):
+        pass
+    return values
+
+
+def gpu_summary():
+    result = subprocess.run(
+        [
+            "nvidia-smi",
+            "--query-gpu=name,memory.total",
+            "--format=csv,noheader,nounits",
+        ],
+        text=True,
+        capture_output=True,
+    )
+    if result.returncode != 0 or not result.stdout.strip():
+        raise RuntimeError((result.stderr or "No CUDA GPU detected").strip())
+    name, memory_mib = [part.strip() for part in result.stdout.splitlines()[0].rsplit(",", 1)]
+    return name, int(memory_mib)
+
+
 def required_model_targets():
     return [
         COMFYUI / "models" / "diffusion_models" / "z-image-turbo-fp8-e4m3fn.safetensors",
-        COMFYUI / "models" / "text_encoders" / "qwen_3_4b.safetensors",
+        COMFYUI / "models" / "text_encoders" / "qwen_3_4b_fp4_mixed.safetensors",
         COMFYUI / "models" / "vae" / "ae.safetensors",
         COMFYUI / "models" / "diffusion_models" / "flux-2-klein-4b.safetensors",
         COMFYUI / "models" / "text_encoders" / "qwen_3_4b_fp4_flux2.safetensors",
@@ -245,6 +276,7 @@ def write_debug_report(stage, exc=None):
     if exc is not None:
         report["exception"] = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
     report["nvidia_smi"] = safe_nvidia_smi()
+    report["host_memory"] = host_memory()
     path = DIAGNOSTICS / f"{stage}_{time.strftime('%Y%m%d_%H%M%S')}.json"
     path.write_text(json.dumps(report, indent=2), encoding="utf-8")
     latest = DIAGNOSTICS / "latest.json"
@@ -296,6 +328,11 @@ def launch_app_process(timeout_seconds=180):
         **os.environ,
         "PYTHONPATH": str(APP),
         "PYTHONUNBUFFERED": "1",
+        "MALLOC_ARENA_MAX": "2",
+        "PYTORCH_CUDA_ALLOC_CONF": os.environ.get(
+            "PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True"
+        ),
+        "TOKENIZERS_PARALLELISM": "false",
         "FREEFAKESTUDIO_PUBLIC_URL": public_url,
         "GRADIO_ROOT_PATH": public_url,
         "FREEFAKESTUDIO_SHARE": "0",
@@ -380,11 +417,7 @@ def pip_install(*packages, force=False):
 
 
 def package_ok(module_name):
-    try:
-        importlib.import_module(module_name)
-        return True
-    except Exception:
-        return False
+    return importlib.util.find_spec(module_name) is not None
 
 
 def verify_comfy_runtime():
@@ -394,13 +427,16 @@ def verify_comfy_runtime():
         "import torchsde; "
         "import comfy.samplers; "
         "import comfy.sd; "
+        "import comfy.quant_ops as quant_ops; "
         "import comfy.model_detection as model_detection; "
         "import comfy.text_encoders.z_image; "
         "import comfy.text_encoders.ernie; "
         "source = inspect.getsource(model_detection.detect_unet_config); "
         "assert 'z_image_modulation' in source, 'ComfyUI has no Z-Image model detection'; "
         "assert '\"flux2\"' in source, 'ComfyUI has no FLUX.2 model detection'; "
-        "print('dependencies + Z-Image/FLUX.2/ERNIE backend support: OK')"
+        "assert quant_ops._CK_AVAILABLE, 'comfy-kitchen is unavailable; mixed-FP4 cannot load'; "
+        "assert 'nvfp4' in quant_ops.QUANT_ALGOS, 'ComfyUI has no mixed-FP4 support'; "
+        "print('dependencies + Z-Image/FLUX.2/ERNIE + mixed-FP4 support: OK')"
     )
     probe = subprocess.run([sys.executable, "-c", code], text=True, capture_output=True)
     if probe.returncode != 0:
@@ -444,10 +480,15 @@ def verify_z_image_checkpoint():
     from safetensors import safe_open
 
     path = COMFYUI / "models" / "diffusion_models" / "z-image-turbo-fp8-e4m3fn.safetensors"
+    text_path = COMFYUI / "models" / "text_encoders" / "qwen_3_4b_fp4_mixed.safetensors"
     if not file_ok(path):
         raise RuntimeError(f"Z-Image checkpoint is missing or incomplete: {path}")
-    with safe_open(str(path), framework="pt", device="cpu") as handle:
+    if not file_ok(text_path):
+        raise RuntimeError(f"Z-Image FP4 text encoder is missing or incomplete: {text_path}")
+    with safe_open(str(path), framework="numpy", device="cpu") as handle:
         keys = tuple(handle.keys())
+    with safe_open(str(text_path), framework="numpy", device="cpu") as handle:
+        text_keys = tuple(handle.keys())
     required_suffixes = (
         "cap_embedder.1.weight",
         "noise_refiner.0.attention.k_norm.weight",
@@ -458,7 +499,13 @@ def verify_z_image_checkpoint():
             "Z-Image checkpoint has an unsupported safetensors layout. "
             f"Missing model-detection keys: {', '.join(missing)}"
         )
-    return f"Header OK / {len(keys)} tensors"
+    quantized_keys = [key for key in text_keys if "weight_scale" in key]
+    if not quantized_keys:
+        raise RuntimeError(
+            "Z-Image text encoder is not the expected mixed-FP4 checkpoint: "
+            "no quantization scale tensors were found."
+        )
+    return f"Headers OK / diffusion={len(keys)} tensors / FP4 encoder={len(text_keys)} tensors"
 
 
 def ensure_numpy():
@@ -581,7 +628,7 @@ def ensure_models():
     specs = {
         "Z-Image Turbo": [
             ("T5B/Z-Image-Turbo-FP8", "z-image-turbo-fp8-e4m3fn.safetensors", diff, None),
-            ("Comfy-Org/z_image_turbo", "split_files/text_encoders/qwen_3_4b.safetensors", text, "qwen_3_4b.safetensors"),
+            ("Comfy-Org/z_image_turbo", "split_files/text_encoders/qwen_3_4b_fp4_mixed.safetensors", text, "qwen_3_4b_fp4_mixed.safetensors"),
             ("Comfy-Org/z_image_turbo", "split_files/vae/ae.safetensors", vae, "ae.safetensors"),
         ],
         "FLUX.2-klein 4B": [
@@ -688,14 +735,22 @@ try:
         step("Diagnostics", f"Model report: {models_report.name}", "ok")
 
     step("GPU", "Checking")
-    import torch
+    gpu_name, gpu_memory_mib = gpu_summary()
+    done("GPU", f"{gpu_name} / {gpu_memory_mib / 1024:.1f} GB")
 
-    if torch.cuda.is_available():
-        props = torch.cuda.get_device_properties(0)
-        done("GPU", f"{torch.cuda.get_device_name(0)} / {props.total_memory / (1024 ** 3):.1f} GB")
-    else:
-        fail("No CUDA GPU. Switch Colab runtime to GPU before generating.")
-        raise RuntimeError("No CUDA GPU available.")
+    memory = host_memory()
+    total_ram = memory.get("MemTotal", 0)
+    available_ram = memory.get("MemAvailable", 0)
+    step("Host RAM", "Checking")
+    if total_ram and total_ram < 11 * 1024**3:
+        fail(f"Only {total_ram / 1024**3:.1f} GB host RAM; Z-Image requires at least 11 GB.")
+        raise RuntimeError("This runtime does not have enough host RAM for Z-Image Turbo.")
+    done(
+        "Host RAM",
+        f"{available_ram / 1024**3:.1f} GB available / {total_ram / 1024**3:.1f} GB total",
+    )
+
+    gc.collect()
 
     step("FreeFakeStudio", "Launching")
     launch_report = write_debug_report("launch")

@@ -6,6 +6,7 @@
 
 import os
 import gc
+import sys
 import threading
 import time
 import random
@@ -35,7 +36,7 @@ MODEL_REGISTRY = {
         "model_file": "z-image-turbo-fp8-e4m3fn.safetensors",
         "required_files": [
             ("diffusion_models", "z-image-turbo-fp8-e4m3fn.safetensors"),
-            ("text_encoders", "qwen_3_4b.safetensors"),
+            ("text_encoders", "qwen_3_4b_fp4_mixed.safetensors"),
             ("vae", "ae.safetensors"),
         ],
     },
@@ -81,6 +82,22 @@ _model_availability = {}  # name -> bool, set during startup check
 _model_file_report = {}  # name -> list of component validation rows
 
 
+def _configure_comfy_runtime():
+    """Apply low-memory defaults before ComfyUI model management initializes."""
+    comfyui_root = os.environ.get("COMFYUI_ROOT", "/content/ComfyUI")
+    if comfyui_root not in sys.path:
+        sys.path.insert(0, comfyui_root)
+    from comfy.cli_args import args
+
+    args.cache_none = True
+    args.cache_classic = False
+    args.cache_lru = 0
+    args.high_ram = False
+    args.enable_dynamic_vram = True
+    args.disable_dynamic_vram = False
+    args.disable_pinned_memory = True
+
+
 def _get_engine(model_name):
     """Lazily import the engine module."""
     global _engines
@@ -94,6 +111,7 @@ def _get_engine(model_name):
 
     info = MODEL_REGISTRY[model_name]
     import importlib
+    _configure_comfy_runtime()
     engine = importlib.import_module(info["engine_module"])
     _engines[model_name] = engine
     return engine
@@ -281,10 +299,18 @@ def unload_current(status_callback=None):
 
 
 def _clear_memory():
-    """Release Python garbage and CUDA cache."""
+    """Release engine references plus ComfyUI's internal model registry."""
     gc.collect()
     try:
         import torch
+        try:
+            import comfy.model_management as comfy_memory
+            if hasattr(comfy_memory, "unload_all_models"):
+                comfy_memory.unload_all_models()
+            if hasattr(comfy_memory, "soft_empty_cache"):
+                comfy_memory.soft_empty_cache()
+        except Exception as exc:
+            print(f"Warning: ComfyUI memory cleanup failed: {exc}")
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
             if hasattr(torch.cuda, 'ipc_collect'):
