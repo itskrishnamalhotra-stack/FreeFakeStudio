@@ -3,7 +3,7 @@
 #  Uses: UnetLoaderGGUF + Ministral 3.3B CLIP + Flux2 VAE
 #  8 inference steps, CFG 1.0, euler/simple
 # ============================================================
-import gc, torch, numpy as np
+import gc, importlib.util, os, sys, torch, numpy as np
 from PIL import Image
 
 _loaded = False
@@ -16,22 +16,27 @@ _nodes = {}
 def _get_nodes():
     global _nodes
     if not _nodes:
-        import sys
-        if "/content/ComfyUI" not in sys.path:
-            sys.path.insert(0, "/content/ComfyUI")
+        comfyui_root = os.environ.get("COMFYUI_ROOT", "/content/ComfyUI")
+        if comfyui_root not in sys.path:
+            sys.path.insert(0, comfyui_root)
+        import nodes
+        if hasattr(nodes, "init_extra_nodes"):
+            try:
+                nodes.init_extra_nodes()
+            except Exception as exc:
+                print(f"Warning: ComfyUI extra node initialization failed: {exc}")
         from nodes import NODE_CLASS_MAPPINGS
 
-        # Import ComfyUI-GGUF nodes via importlib (same approach as Qwen engine)
-        try:
-            import importlib
-            gguf_module = importlib.import_module("custom_nodes.ComfyUI-GGUF.nodes")
-            gguf_mappings = gguf_module.NODE_CLASS_MAPPINGS if hasattr(gguf_module, 'NODE_CLASS_MAPPINGS') else {}
-        except Exception:
+        gguf_mappings = {}
+        gguf_nodes = os.path.join(comfyui_root, "custom_nodes", "ComfyUI-GGUF", "nodes.py")
+        if os.path.isfile(gguf_nodes):
             try:
-                from custom_nodes import ComfyUI_GGUF
-                gguf_mappings = ComfyUI_GGUF.NODE_CLASS_MAPPINGS
-            except Exception:
-                gguf_mappings = {}
+                spec = importlib.util.spec_from_file_location("freefakestudio_comfyui_gguf_nodes", gguf_nodes)
+                gguf_module = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(gguf_module)
+                gguf_mappings = getattr(gguf_module, "NODE_CLASS_MAPPINGS", {})
+            except Exception as exc:
+                print(f"Warning: direct ComfyUI-GGUF import failed: {exc}")
 
         all_nodes = {**NODE_CLASS_MAPPINGS, **gguf_mappings}
 
@@ -39,7 +44,7 @@ def _get_nodes():
             raise RuntimeError(
                 "ComfyUI-GGUF custom nodes not found! "
                 "Install them: git clone https://github.com/city96/ComfyUI-GGUF.git "
-                "/content/ComfyUI/custom_nodes/ComfyUI-GGUF"
+                f"{comfyui_root}/custom_nodes/ComfyUI-GGUF"
             )
 
         _nodes = {

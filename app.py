@@ -5,7 +5,7 @@
 #  Built for Google Colab T4 (15GB VRAM)
 # ============================================================
 
-import os, random, time, sys, gc, re, uuid, json, base64, traceback
+import os, random, time, sys, gc, re, uuid, json, base64, traceback, html
 import numpy as np
 from PIL import Image, ImageFilter
 from io import BytesIO
@@ -21,6 +21,7 @@ def _running_in_colab():
 
 IS_COLAB = _running_in_colab()
 DEV_MODE = os.environ.get("FREEFAKESTUDIO_DEV", "").lower() in ("1", "true", "yes") or not IS_COLAB
+DEBUG_MODE = os.environ.get("FFS_DEBUG", "1").lower() not in ("0", "false", "no", "off")
 
 # ── Import model manager ──────────────────────────────────
 import model_manager
@@ -40,6 +41,25 @@ def get_save_path(prefix="img"):
     safe = re.sub(r'[^a-zA-Z0-9_-]', '_', prefix)[:20]
     uid = uuid.uuid4().hex[:6]
     return os.path.join(SAVE_DIR, f"{safe}_{uid}.png")
+
+
+def _write_runtime_error(context, exc):
+    """Write full runtime traceback to the persistent results/debug folder."""
+    if not DEBUG_MODE:
+        return None
+    debug_dir = os.path.join(SAVE_DIR, "_debug")
+    os.makedirs(debug_dir, exist_ok=True)
+    path = os.path.join(debug_dir, f"error_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt")
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(f"Context: {context}\n")
+        f.write(f"Model loaded: {model_manager.get_current_model()}\n")
+        f.write(f"DEV_MODE: {DEV_MODE}\n")
+        f.write(f"IS_COLAB: {IS_COLAB}\n")
+        f.write(f"COMFYUI_ROOT: {os.environ.get('COMFYUI_ROOT')}\n")
+        f.write(f"WORKSPACE: {os.environ.get('FREEFAKESTUDIO_WORKSPACE')}\n\n")
+        f.write("Traceback:\n")
+        f.write("".join(traceback.format_exception(type(exc), exc, exc.__traceback__)))
+    return path
 
 def make_seed(seed):
     if seed == 0 or seed == -1:
@@ -177,7 +197,16 @@ def do_generate(model_name, prompt, negative, aspect_ratio,
     # Status: preparing
     yield (_status_html("active", "Preparing request"), [], [], str(seed))
 
-    # Ensure model is loaded
+    # Ensure model is loaded. The actual load is blocking, so emit the planned
+    # operational stage before entering the locked model switch.
+    active_model = model_manager.get_current_model()
+    if active_model == model_name:
+        yield (_status_html("active", f"Using loaded {model_name}"), [], [], str(seed))
+    elif active_model:
+        yield (_status_html("active", f"Unloading {active_model} and loading {model_name}"), [], [], str(seed))
+    else:
+        yield (_status_html("active", f"Loading {model_name}"), [], [], str(seed))
+
     status_msgs = []
     def _on_status(msg):
         status_msgs.append(msg)
@@ -185,8 +214,15 @@ def do_generate(model_name, prompt, negative, aspect_ratio,
     try:
         engine = model_manager.ensure_model(model_name, status_callback=_on_status)
     except RuntimeError as e:
-        yield (_status_html("error", str(e)), [], [], str(seed))
+        debug_path = _write_runtime_error("model load", e)
+        if debug_path:
+            print(f"Runtime debug log written to: {debug_path}")
+        yield (_status_html("error", f"{e} Check results/_debug for the full traceback."), [], [], str(seed))
         return
+
+    if status_msgs:
+        clean_msgs = [m.replace("[..]", "").replace("[ok]", "").strip() for m in status_msgs[-3:]]
+        yield (_status_html("active", " / ".join(clean_msgs)), [], [], str(seed))
 
     # Status: generating
     if mode == "generate":
@@ -231,10 +267,15 @@ def do_generate(model_name, prompt, negative, aspect_ratio,
         yield (_status_html("done", "Complete"), images, paths, str(seed))
 
     except Exception as e:
+        debug_path = _write_runtime_error("generation", e)
+        if debug_path:
+            print(f"Runtime debug log written to: {debug_path}")
         error_msg = str(e)
         if "out of memory" in error_msg.lower() or "oom" in error_msg.lower():
             model_manager.unload_current()
             error_msg = f"GPU out of memory. The model has been unloaded. Try again or use fewer images."
+        elif debug_path:
+            error_msg = f"{error_msg} Check results/_debug for the full traceback."
         yield (_status_html("error", error_msg), [], [], str(seed))
 
 
@@ -304,6 +345,34 @@ def _status_html(state, message):
         icon = '<span class="ffs-status-dot"></span>'
         cls = ""
     return f'<div class="ffs-status-line {cls}">{icon} {message}</div>'
+
+
+def _request_html(prompt, model_name, has_image, mask_mode):
+    prompt = html.escape(prompt or "(image edit)")
+    mode = "image edit" if has_image else "text to image"
+    mask_note = f" / {html.escape(mask_mode)}" if mask_mode and mask_mode != "None" else ""
+    return (
+        '<div class="ffs-turn ffs-turn-user">'
+        '<div class="ffs-role">You</div>'
+        f'<div class="ffs-bubble">{prompt}</div>'
+        f'<div class="ffs-meta">{html.escape(model_name)} / {mode}{mask_note}</div>'
+        '</div>'
+    )
+
+
+def _assistant_html(paths, seed_str):
+    count = len(paths or [])
+    noun = "image" if count == 1 else "images"
+    return (
+        '<div class="ffs-turn ffs-turn-assistant">'
+        '<div class="ffs-role">FreeFakeStudio</div>'
+        f'<div class="ffs-bubble">Generated {count} {noun}. Seed: {html.escape(str(seed_str))}.</div>'
+        '</div>'
+    )
+
+
+def _render_history(history):
+    return "".join(history or [])
 
 
 # ═══════════════════════════════════════════════════════════
@@ -486,6 +555,40 @@ footer { display: none !important; }
 .ffs-status-done { color: var(--ffs-success); }
 .ffs-status-error-text { color: var(--ffs-danger); }
 .ffs-status-active { color: var(--ffs-text); }
+
+/* Chat turns */
+.ffs-history {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+}
+.ffs-turn {
+    max-width: 100%;
+}
+.ffs-role {
+    font-size: 0.78em;
+    font-weight: 700;
+    color: var(--ffs-text-2);
+    margin-bottom: 5px;
+}
+.ffs-bubble {
+    background: var(--ffs-surface);
+    color: var(--ffs-text);
+    border: 1px solid var(--ffs-border);
+    border-radius: 8px;
+    padding: 11px 13px;
+    line-height: 1.45;
+    box-shadow: var(--ffs-shadow);
+    overflow-wrap: anywhere;
+}
+.ffs-turn-user .ffs-bubble {
+    background: var(--ffs-user-bg);
+}
+.ffs-meta {
+    margin-top: 5px;
+    color: var(--ffs-text-2);
+    font-size: 0.76em;
+}
 
 /* ── Result Card ───────────────────────────────────────── */
 .ffs-result-card {
@@ -743,11 +846,10 @@ ffs_theme = gr.themes.Base(
     primary_hue=gr.themes.colors.blue,
     secondary_hue=gr.themes.colors.purple,
     neutral_hue=gr.themes.colors.slate,
-    font=gr.themes.GoogleFont("Inter"),
 )
 
 
-with gr.Blocks(theme=ffs_theme, css=CSS, head=JS_HEAD, title="FreeFakeStudio") as demo:
+with gr.Blocks(title="FreeFakeStudio") as demo:
 
     # ── Session State ──────────────────────────────────────
     chat_history = gr.State([])           # list of {role, content, ...}
@@ -785,6 +887,11 @@ with gr.Blocks(theme=ffs_theme, css=CSS, head=JS_HEAD, title="FreeFakeStudio") a
     # MAIN CONTENT AREA
     # ═══════════════════════════════════════════════════════
     with gr.Column(elem_classes="ffs-chat-area"):
+
+        conversation_display = gr.HTML(
+            value='<div class="ffs-history"></div>',
+            elem_classes="ffs-history",
+        )
 
         # Status display (streaming updates)
         status_display = gr.HTML(
@@ -1031,19 +1138,22 @@ with gr.Blocks(theme=ffs_theme, css=CSS, head=JS_HEAD, title="FreeFakeStudio") a
 
     # ── SEND (main generation) ─────────────────────────────
     def on_send(model_name, prompt, image, mask_m, editor_data,
-                aspect, seed, steps, cfg, denoise, n_images, neg):
+                aspect, seed, steps, cfg, denoise, n_images, neg, history):
         """Main generation handler. Yields streaming updates."""
+        history = list(history or [])
         if not prompt.strip() and image is None:
             yield (
                 _status_html("error", "Please enter a prompt or attach an image."),
                 gr.update(), gr.update(), gr.update(),
                 gr.update(), gr.update(),
                 None,
+                _render_history(history), history,
             )
             return
 
         # Determine effective mask mode
         effective_mask = mask_m if mask_m != "None" else None
+        request_history = history + [_request_html(prompt, model_name, image is not None, mask_m)]
 
         # Save settings for regenerate
         settings = {
@@ -1060,6 +1170,7 @@ with gr.Blocks(theme=ffs_theme, css=CSS, head=JS_HEAD, title="FreeFakeStudio") a
             editor_data=editor_data,
         ):
             if images:
+                final_history = request_history + [_assistant_html(paths, seed_str)]
                 # Show results
                 yield (
                     status_html,
@@ -1069,6 +1180,8 @@ with gr.Blocks(theme=ffs_theme, css=CSS, head=JS_HEAD, title="FreeFakeStudio") a
                     gr.update(visible=True),  # action_row
                     '<span class="ffs-model-badge ready">● Ready</span>',
                     settings,
+                    _render_history(final_history),
+                    final_history,
                 )
             else:
                 yield (
@@ -1079,6 +1192,8 @@ with gr.Blocks(theme=ffs_theme, css=CSS, head=JS_HEAD, title="FreeFakeStudio") a
                     gr.update(),
                     gr.update(),
                     settings if "error" not in status_html.lower() else None,
+                    _render_history(request_history),
+                    request_history,
                 )
 
     send_btn.click(
@@ -1087,12 +1202,13 @@ with gr.Blocks(theme=ffs_theme, css=CSS, head=JS_HEAD, title="FreeFakeStudio") a
             model_selector, prompt_input, attached_image,
             mask_mode, mask_editor,
             aspect_ratio, gen_seed, gen_steps, gen_cfg, gen_denoise,
-            num_images, negative_prompt,
+            num_images, negative_prompt, chat_history,
         ],
         outputs=[
             status_display, result_gallery, result_files,
             seed_display, action_row,
             model_status_display, last_gen_settings,
+            conversation_display, chat_history,
         ],
     )
 
@@ -1103,12 +1219,13 @@ with gr.Blocks(theme=ffs_theme, css=CSS, head=JS_HEAD, title="FreeFakeStudio") a
             model_selector, prompt_input, attached_image,
             mask_mode, mask_editor,
             aspect_ratio, gen_seed, gen_steps, gen_cfg, gen_denoise,
-            num_images, negative_prompt,
+            num_images, negative_prompt, chat_history,
         ],
         outputs=[
             status_display, result_gallery, result_files,
             seed_display, action_row,
             model_status_display, last_gen_settings,
+            conversation_display, chat_history,
         ],
     )
 
@@ -1146,10 +1263,17 @@ with gr.Blocks(theme=ffs_theme, css=CSS, head=JS_HEAD, title="FreeFakeStudio") a
     )
 
     # ── Regenerate ─────────────────────────────────────────
-    def on_regenerate(settings, image):
+    def on_regenerate(settings, image, history):
         """Re-run the last generation with a new random seed."""
+        history = list(history or [])
         if settings is None:
             raise gr.Error("No previous generation to regenerate!")
+        request_history = history + [_request_html(
+            f"Regenerate: {settings['prompt']}",
+            settings["model"],
+            image is not None,
+            settings.get("mask_mode", "None"),
+        )]
         # Force new random seed
         for status_html, images, paths, seed_str in do_generate(
             settings["model"], settings["prompt"], settings["neg"],
@@ -1160,19 +1284,30 @@ with gr.Blocks(theme=ffs_theme, css=CSS, head=JS_HEAD, title="FreeFakeStudio") a
             mask_mode=settings.get("mask_mode") if settings.get("mask_mode") != "None" else None,
         ):
             if images:
+                final_history = request_history + [_assistant_html(paths, seed_str)]
                 yield (
                     status_html,
                     gr.update(visible=True, value=paths),
                     gr.update(visible=True, value=paths),
                     gr.update(visible=True, value=seed_str),
+                    _render_history(final_history),
+                    final_history,
                 )
             else:
-                yield (status_html, gr.update(), gr.update(), gr.update())
+                yield (
+                    status_html,
+                    gr.update(), gr.update(), gr.update(),
+                    _render_history(request_history),
+                    request_history,
+                )
 
     regenerate_btn.click(
         on_regenerate,
-        inputs=[last_gen_settings, attached_image],
-        outputs=[status_display, result_gallery, result_files, seed_display],
+        inputs=[last_gen_settings, attached_image, chat_history],
+        outputs=[
+            status_display, result_gallery, result_files, seed_display,
+            conversation_display, chat_history,
+        ],
     )
 
     # ── New Chat ───────────────────────────────────────────
@@ -1196,6 +1331,8 @@ with gr.Blocks(theme=ffs_theme, css=CSS, head=JS_HEAD, title="FreeFakeStudio") a
             None,                                     # last_gen_settings
             gr.update(visible=False),                # edit_panel
             "None",                                   # mask_mode
+            '<div class="ffs-history"></div>',        # conversation_display
+            [],                                       # chat_history
         )
 
     new_chat_btn.click(
@@ -1205,6 +1342,7 @@ with gr.Blocks(theme=ffs_theme, css=CSS, head=JS_HEAD, title="FreeFakeStudio") a
             seed_display, action_row,
             attachment_display, attached_image, prompt_input,
             last_gen_settings, edit_panel, mask_mode,
+            conversation_display, chat_history,
         ],
     )
 
@@ -1223,7 +1361,7 @@ if DEV_MODE:
         model_manager.set_model_availability(name, True)
 else:
     # Check which models are installed (but do NOT load any)
-    model_manager.check_model_files()
+    model_manager.check_model_files(os.environ.get("COMFYUI_ROOT", "/content/ComfyUI"))
     status = model_manager.get_model_status()
     print("\n🎭 FreeFakeStudio — Model Status:")
     for name, st in status.items():
@@ -1234,9 +1372,23 @@ else:
 # Configure Gradio queue for single GPU concurrency
 demo.queue(default_concurrency_limit=1)
 
-# Launch — ngrok provides the public URL, so share=False
-if __name__ == "__main__" or IS_COLAB:
+
+def _env_flag(name, default=False):
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    return raw.lower() in ("1", "true", "yes", "on")
+
+
+# Launch. Colab uses a public Gradio share link; local dev stays private.
+if __name__ == "__main__":
     demo.launch(
-        share=False, debug=True,
-        server_name="0.0.0.0", server_port=7860,
+        share=_env_flag("FREEFAKESTUDIO_SHARE", IS_COLAB),
+        debug=True,
+        server_name="0.0.0.0",
+        server_port=7860,
+        theme=ffs_theme,
+        css=CSS,
+        head=JS_HEAD,
+        allowed_paths=[os.path.abspath(SAVE_DIR)],
     )

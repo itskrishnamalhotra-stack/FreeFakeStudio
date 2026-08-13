@@ -1,314 +1,468 @@
 # ============================================================
-#  FreeFakeStudio — Launch Script
-#  Executed by the notebook cell after drive mount & repo clone.
-#  Handles: ComfyUI, GGUF, deps, model downloads, GPU check, launch.
+# FreeFakeStudio Colab launcher
+# Persistent Drive setup, dependency checks, model validation, launch.
 # ============================================================
 
-import os, sys, shutil, subprocess, glob, time, gc
+import importlib
+import importlib.metadata
+import json
+import os
+import platform
+import shutil
+import subprocess
+import sys
+import time
+import traceback
 from pathlib import Path
-from IPython.display import display, HTML, clear_output
 
-# ── Config from notebook globals / env ─────────────────────
-WS = Path(os.environ.get('FFS_WORKSPACE', '/content/drive/MyDrive/FreeFakeStudio'))
-REPAIR = os.environ.get('FFS_REPAIR', '') == '1'
-COMFYUI = WS / 'ComfyUI'
-CACHE   = WS / 'cache'
-APP     = WS / 'app'
-RESULTS = WS / 'results'
-
-# Ensure directories
-for _d in [COMFYUI, CACHE / 'huggingface', CACHE / 'pip', RESULTS]:
-    _d.mkdir(parents=True, exist_ok=True)
-
-# Set persistent caches so nothing re-downloads between sessions
-os.environ['HF_HOME']               = str(CACHE / 'huggingface')
-os.environ['HUGGINGFACE_HUB_CACHE'] = str(CACHE / 'huggingface')
-os.environ['PIP_CACHE_DIR']         = str(CACHE / 'pip')
-os.environ['COMFYUI_ROOT']          = str(COMFYUI)
-os.environ['FREEFAKESTUDIO_WORKSPACE'] = str(WS)
+from IPython.display import HTML, clear_output, display
 
 
-# ═══════════════════════════════════════════════════════════
-#  BEAUTIFUL STATUS DISPLAY
-# ═══════════════════════════════════════════════════════════
+def running_in_colab():
+    try:
+        import google.colab  # noqa: F401
+        return True
+    except ImportError:
+        return False
+
+
+if not running_in_colab() and os.environ.get("FFS_ALLOW_LOCAL_SETUP") != "1":
+    raise RuntimeError(
+        "launch.py is Colab-only because it can install packages and download large models. "
+        "Run app.py locally for mock UI testing."
+    )
+
+
+WS = Path(os.environ.get("FFS_WORKSPACE", "/content/drive/MyDrive/FreeFakeStudio")).resolve()
+REPAIR = os.environ.get("FFS_REPAIR", "") == "1"
+UPDATE_APP = os.environ.get("FFS_UPDATE", "") == "1"
+COMFY_TAG = os.environ.get("FFS_COMFY_TAG", "v0.3.10")
+DEBUG = os.environ.get("FFS_DEBUG", "1").lower() not in ("0", "false", "no", "off")
+
+COMFYUI = WS / "ComfyUI"
+CACHE = WS / "cache"
+APP = WS / "app"
+RESULTS = WS / "results"
+DIAGNOSTICS = WS / "diagnostics"
+
+for directory in [
+    COMFYUI,
+    CACHE / "huggingface",
+    CACHE / "pip",
+    RESULTS,
+    DIAGNOSTICS,
+    COMFYUI / "models" / "diffusion_models",
+    COMFYUI / "models" / "text_encoders",
+    COMFYUI / "models" / "clip",
+    COMFYUI / "models" / "vae",
+    COMFYUI / "custom_nodes",
+]:
+    directory.mkdir(parents=True, exist_ok=True)
+
+os.environ["HF_HOME"] = str(CACHE / "huggingface")
+os.environ["HUGGINGFACE_HUB_CACHE"] = str(CACHE / "huggingface")
+os.environ["PIP_CACHE_DIR"] = str(CACHE / "pip")
+os.environ["COMFYUI_ROOT"] = str(COMFYUI)
+os.environ["FREEFAKESTUDIO_WORKSPACE"] = str(WS)
+os.environ["GRADIO_TEMP_DIR"] = str(WS / "gradio_tmp")
+os.environ["GRADIO_SSR_MODE"] = "false"
+os.environ["FREEFAKESTUDIO_SHARE"] = "1"
+os.environ["FFS_DEBUG"] = "1" if DEBUG else "0"
+
+
 _steps = []
 _t0 = time.time()
 
-_CSS = '''<style>
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
-.ffs-s{font-family:'Inter',-apple-system,sans-serif;max-width:580px}
-.ffs-h{background:linear-gradient(135deg,#0f0f1a,#1a1a2e,#16213e);border-radius:14px;
-  padding:20px 24px;margin-bottom:14px;border:1px solid rgba(100,130,220,.12);
-  box-shadow:0 4px 20px rgba(0,0,0,.25)}
-.ffs-t{font-size:1.7em;font-weight:800;
-  background:linear-gradient(135deg,#60a5fa,#a78bfa,#f472b6);
-  -webkit-background-clip:text;-webkit-text-fill-color:transparent}
-.ffs-sub{color:#9ca3af;font-size:.88em;margin-top:4px}
-.ffs-b{background:#111118;border-radius:12px;border:1px solid rgba(255,255,255,.06);overflow:hidden}
-.ffs-r{display:flex;align-items:center;gap:10px;padding:10px 16px;font-size:.9em;color:#d0d0dc;
-  border-bottom:1px solid rgba(255,255,255,.04);transition:background .2s}
-.ffs-r:last-child{border-bottom:none}
-.ffs-r:hover{background:rgba(255,255,255,.02)}
-.ffs-i{width:22px;text-align:center;font-size:1em;flex-shrink:0}
-.ffs-ok .ffs-i{color:#34d399}
-.ffs-err .ffs-i{color:#f87171}
-.ffs-run .ffs-i{color:#60a5fa;animation:ffsp 1.2s ease-in-out infinite}
-@keyframes ffsp{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.4;transform:scale(.8)}}
-.ffs-d{color:#6b7280;font-size:.82em;margin-left:auto;white-space:nowrap}
-.ffs-ft{padding:10px 16px;font-size:.78em;color:#4b5563;
-  border-top:1px solid rgba(255,255,255,.04);display:flex;justify-content:space-between}
-</style>'''
 
 def _render(final=False):
-    elapsed = time.time() - _t0
-    h  = _CSS + '<div class="ffs-s">'
-    h += '<div class="ffs-h"><div class="ffs-t">🎭 FreeFakeStudio</div>'
-    h += '<div class="ffs-sub">Setting up your AI Image Studio…</div></div>'
-    h += '<div class="ffs-b">'
-    icons = {'ok': '✓', 'err': '✗', 'run': '◌', 'info': '•'}
-    for s in _steps:
-        cls  = f'ffs-{s["st"]}'
-        icon = icons.get(s['st'], '•')
-        det  = f'<span class="ffs-d">{s["d"]}</span>' if s.get('d') else ''
-        h += f'<div class="ffs-r {cls}"><span class="ffs-i">{icon}</span><span>{s["t"]}</span>{det}</div>'
-    h += '</div>'
-    h += f'<div class="ffs-ft"><span>⏱ {elapsed:.0f}s</span><span>FreeFakeStudio</span></div>'
-    h += '</div>'
+    rows = []
+    for item in _steps:
+        cls = item["status"]
+        icon = {"ok": "✓", "err": "✗", "run": "●", "info": "•"}.get(cls, "•")
+        rows.append(
+            f'<div class="row {cls}"><span class="icon">{icon}</span>'
+            f'<span>{item["title"]}</span><span class="detail">{item["detail"]}</span></div>'
+        )
+    html = f"""
+    <style>
+      .ffs-setup{{font-family:Inter,system-ui,-apple-system,sans-serif;max-width:680px;color:#e8e8ee}}
+      .ffs-head{{background:#10131c;border:1px solid #262b3a;border-radius:10px;padding:18px 20px;margin-bottom:12px}}
+      .ffs-title{{font-size:24px;font-weight:800;color:#f5f7ff}}
+      .ffs-sub{{font-size:13px;color:#9ca3af;margin-top:4px}}
+      .ffs-box{{background:#0f1117;border:1px solid #252936;border-radius:10px;overflow:hidden}}
+      .row{{display:flex;gap:10px;align-items:center;padding:10px 14px;border-bottom:1px solid #232734}}
+      .row:last-child{{border-bottom:none}}
+      .icon{{width:18px;text-align:center}}
+      .ok .icon{{color:#34d399}} .err .icon{{color:#f87171}} .run .icon{{color:#60a5fa}}
+      .detail{{margin-left:auto;color:#8b93a5;font-size:12px;text-align:right}}
+      .foot{{display:flex;justify-content:space-between;color:#6b7280;font-size:12px;margin-top:8px}}
+    </style>
+    <div class="ffs-setup">
+      <div class="ffs-head"><div class="ffs-title">FreeFakeStudio</div>
+      <div class="ffs-sub">Persistent Colab setup and launch</div></div>
+      <div class="ffs-box">{''.join(rows)}</div>
+      <div class="foot"><span>{time.time() - _t0:.0f}s</span><span>{WS}</span></div>
+    </div>
+    """
     if not final:
         clear_output(wait=True)
-    display(HTML(h))
+    display(HTML(html))
 
-def step(title, detail='', status='run'):
-    _steps.append({'t': title, 'd': detail, 'st': status})
+
+def step(title, detail="", status="run"):
+    _steps.append({"title": title, "detail": detail, "status": status})
     _render()
 
-def done(title=None, detail=''):
+
+def done(title=None, detail=None):
     if _steps:
-        s = _steps[-1]
-        s['st'] = 'ok'
-        if title: s['t'] = title
-        if detail: s['d'] = detail
-        _render()
+        _steps[-1]["status"] = "ok"
+        if title is not None:
+            _steps[-1]["title"] = title
+        if detail is not None:
+            _steps[-1]["detail"] = detail
+    _render()
 
-def fail(detail=''):
+
+def fail(detail):
     if _steps:
-        _steps[-1]['st'] = 'err'
-        if detail: _steps[-1]['d'] = detail
-        _render()
-
-def _run(cmd, quiet=True):
-    r = subprocess.run(cmd, shell=True, capture_output=True, text=True)
-    if not quiet and r.returncode != 0:
-        print(f'⚠️ {cmd}\n{r.stderr[-500:] if r.stderr else ""}')
-    return r.returncode, r.stdout
+        _steps[-1]["status"] = "err"
+        _steps[-1]["detail"] = detail
+    _render(final=True)
 
 
-
-# ═══════════════════════════════════════════════════════════
-#  1. COMFYUI
-# ═══════════════════════════════════════════════════════════
-if not (COMFYUI / 'main.py').exists():
-    step('ComfyUI', 'Cloning repository…')
-    _run(f'git clone https://github.com/comfyanonymous/ComfyUI.git "{COMFYUI}"', quiet=False)
-    _run(f'pip install -q -r "{COMFYUI}/requirements.txt"', quiet=False)
-    done('ComfyUI', 'Installed')
-else:
-    step('ComfyUI', 'Cached on Drive', 'ok')
-
-# Symlink  /content/ComfyUI  →  persistent copy
-_link = Path('/content/ComfyUI')
-if _link.is_symlink():
-    _link.unlink()
-elif _link.exists():
-    shutil.rmtree(str(_link))
-os.symlink(str(COMFYUI), str(_link))
-
-# Model directories
-for _d in ['diffusion_models', 'text_encoders', 'vae', 'clip']:
-    (COMFYUI / 'models' / _d).mkdir(parents=True, exist_ok=True)
-
-# Cross-link  clip/ ↔ text_encoders/  (ComfyUI compatibility)
-_clip_d = COMFYUI / 'models' / 'clip'
-_te_d   = COMFYUI / 'models' / 'text_encoders'
-for _f in glob.glob(str(_clip_d / '*')):
-    _t = _te_d / os.path.basename(_f)
-    if not _t.exists():
-        try: os.symlink(_f, str(_t))
-        except OSError: pass
-for _f in glob.glob(str(_te_d / '*')):
-    _t = _clip_d / os.path.basename(_f)
-    if not _t.exists():
-        try: os.symlink(_f, str(_t))
-        except OSError: pass
+def run_cmd(args, check=True, quiet=True, cwd=None):
+    result = subprocess.run(
+        args,
+        cwd=str(cwd) if cwd else None,
+        text=True,
+        capture_output=quiet,
+    )
+    if check and result.returncode != 0:
+        msg = result.stderr or result.stdout or "command failed"
+        raise RuntimeError(msg[-1500:])
+    return result
 
 
-# ═══════════════════════════════════════════════════════════
-#  2. COMFYUI-GGUF  (required for ERNIE-Image-Turbo)
-# ═══════════════════════════════════════════════════════════
-_gguf = COMFYUI / 'custom_nodes' / 'ComfyUI-GGUF'
-if not (_gguf / 'nodes.py').exists():
-    step('ComfyUI-GGUF', 'Installing…')
-    (COMFYUI / 'custom_nodes').mkdir(exist_ok=True)
-    _run(f'git clone https://github.com/city96/ComfyUI-GGUF.git "{_gguf}"', quiet=False)
-    if (_gguf / 'requirements.txt').exists():
-        _run(f'pip install -q -r "{_gguf}/requirements.txt"', quiet=False)
-    done('ComfyUI-GGUF', 'Installed')
-else:
-    step('ComfyUI-GGUF', 'Ready', 'ok')
+def package_version(name):
+    try:
+        return importlib.metadata.version(name)
+    except importlib.metadata.PackageNotFoundError:
+        return None
 
 
-# ═══════════════════════════════════════════════════════════
-#  3. PYTHON DEPENDENCIES
-# ═══════════════════════════════════════════════════════════
-step('Dependencies', 'Checking…')
-
-_run('pip install -q rembg onnxruntime-gpu opencv-python-headless gradio pyngrok', quiet=False)
-
-# Fix numpy/Pillow (ComfyUI needs numpy 1.x; Pillow 12+ breaks _Ink)
-# These are installed via pip to the system — the fresh subprocess will use them
-_run('pip install -q "numpy==1.26.4" "Pillow<12"', quiet=False)
-
-done('Dependencies', 'Installed')
+def safe_nvidia_smi():
+    try:
+        result = subprocess.run(["nvidia-smi"], text=True, capture_output=True)
+        if result.returncode != 0:
+            return result.stderr[-1000:] if result.stderr else "nvidia-smi unavailable"
+        return result.stdout[-4000:]
+    except FileNotFoundError:
+        return "nvidia-smi not found"
 
 
-# ═══════════════════════════════════════════════════════════
-#  4. MODEL DOWNLOADS  (HuggingFace → Drive persistence)
-# ═══════════════════════════════════════════════════════════
-from huggingface_hub import hf_hub_download
-
-DIFF = str(COMFYUI / 'models' / 'diffusion_models')
-TE   = str(COMFYUI / 'models' / 'text_encoders')
-CL   = str(COMFYUI / 'models' / 'clip')
-VA   = str(COMFYUI / 'models' / 'vae')
-
-def _ok(directory, filename, min_bytes=500_000):
-    """Check a model file exists and isn't corrupt (truncated)."""
-    p = os.path.join(directory, filename)
-    return os.path.isfile(p) and os.path.getsize(p) >= min_bytes
-
-def _dl(repo, remote_path, dest_dir, dest_name=None):
-    """Download from HuggingFace cache, then copy to the expected directory."""
-    cached = hf_hub_download(repo_id=repo, filename=remote_path)
-    nm = dest_name or os.path.basename(remote_path)
-    fp = os.path.join(dest_dir, nm)
-    os.makedirs(dest_dir, exist_ok=True)
-    if not os.path.isfile(fp) or os.path.getsize(fp) < 1024:
-        shutil.copy2(cached, fp)
-    # Also symlink into clip/ or text_encoders/ for ComfyUI compatibility
-    if dest_dir == TE:
-        _alt = os.path.join(CL, nm)
-        if not os.path.exists(_alt):
-            try: os.symlink(fp, _alt)
-            except OSError: pass
-    elif dest_dir == CL:
-        _alt = os.path.join(TE, nm)
-        if not os.path.exists(_alt):
-            try: os.symlink(fp, _alt)
-            except OSError: pass
+def required_model_targets():
+    return [
+        COMFYUI / "models" / "diffusion_models" / "z-image-turbo-fp8-e4m3fn.safetensors",
+        COMFYUI / "models" / "text_encoders" / "qwen_3_4b.safetensors",
+        COMFYUI / "models" / "vae" / "ae.safetensors",
+        COMFYUI / "models" / "diffusion_models" / "flux-2-klein-4b.safetensors",
+        COMFYUI / "models" / "text_encoders" / "qwen_3_4b_fp4_flux2.safetensors",
+        COMFYUI / "models" / "vae" / "flux2-vae.safetensors",
+        COMFYUI / "models" / "diffusion_models" / "ernie-image-turbo-Q6_K.gguf",
+        COMFYUI / "models" / "text_encoders" / "ministral-3-3b.safetensors",
+    ]
 
 
-# ── Z-Image Turbo ─────────────────────────────────────────
-_need = not all([
-    _ok(DIFF, 'z-image-turbo-fp8-e4m3fn.safetensors'),
-    _ok(TE,   'qwen_3_4b.safetensors'),
-    _ok(VA,   'ae.safetensors'),
-])
-if _need or REPAIR:
-    step('Z-Image Turbo', 'Downloading…')
-    if not _ok(DIFF, 'z-image-turbo-fp8-e4m3fn.safetensors') or REPAIR:
-        _dl('T5B/Z-Image-Turbo-FP8',
-            'z-image-turbo-fp8-e4m3fn.safetensors', DIFF)
-    if not _ok(TE, 'qwen_3_4b.safetensors') or REPAIR:
-        _dl('Comfy-Org/z_image_turbo',
-            'split_files/text_encoders/qwen_3_4b.safetensors', TE,
-            'qwen_3_4b.safetensors')
-    if not _ok(VA, 'ae.safetensors') or REPAIR:
-        _dl('Comfy-Org/z_image_turbo',
-            'split_files/vae/ae.safetensors', VA,
-            'ae.safetensors')
-    done('Z-Image Turbo', 'model · encoder · VAE')
-else:
-    step('Z-Image Turbo', 'model · encoder · VAE', 'ok')
-
-# ── FLUX.2-klein 4B ───────────────────────────────────────
-_need = not all([
-    _ok(DIFF, 'flux-2-klein-4b.safetensors'),
-    _ok(TE,   'qwen_3_4b_fp4_flux2.safetensors'),
-    _ok(VA,   'flux2-vae.safetensors'),
-])
-if _need or REPAIR:
-    step('FLUX.2-klein 4B', 'Downloading…')
-    if not _ok(DIFF, 'flux-2-klein-4b.safetensors') or REPAIR:
-        _dl('black-forest-labs/FLUX.2-klein-4B',
-            'flux-2-klein-4b.safetensors', DIFF)
-    if not _ok(TE, 'qwen_3_4b_fp4_flux2.safetensors') or REPAIR:
-        _dl('Comfy-Org/vae-text-encorder-for-flux-klein-4b',
-            'split_files/text_encoders/qwen_3_4b_fp4_flux2.safetensors', TE,
-            'qwen_3_4b_fp4_flux2.safetensors')
-    if not _ok(VA, 'flux2-vae.safetensors') or REPAIR:
-        _dl('Comfy-Org/vae-text-encorder-for-flux-klein-4b',
-            'split_files/vae/flux2-vae.safetensors', VA,
-            'flux2-vae.safetensors')
-    done('FLUX.2-klein 4B', 'model · encoder · VAE')
-else:
-    step('FLUX.2-klein 4B', 'model · encoder · VAE', 'ok')
-
-# ── ERNIE-Image-Turbo ─────────────────────────────────────
-_need = not all([
-    _ok(DIFF, 'ernie-image-turbo-Q6_K.gguf'),
-    _ok(TE,   'ministral-3-3b.safetensors'),
-    _ok(VA,   'flux2-vae.safetensors'),
-])
-if _need or REPAIR:
-    step('ERNIE-Image-Turbo', 'Downloading…')
-    if not _ok(DIFF, 'ernie-image-turbo-Q6_K.gguf') or REPAIR:
-        _dl('unsloth/ERNIE-Image-Turbo-GGUF',
-            'ernie-image-turbo-Q6_K.gguf', DIFF)
-    if not _ok(TE, 'ministral-3-3b.safetensors') or REPAIR:
-        _dl('Comfy-Org/ERNIE-Image',
-            'text_encoders/ministral-3-3b.safetensors', TE,
-            'ministral-3-3b.safetensors')
-    if not _ok(VA, 'flux2-vae.safetensors') or REPAIR:
-        _dl('Comfy-Org/ERNIE-Image',
-            'vae/flux2-vae.safetensors', VA,
-            'flux2-vae.safetensors')
-    done('ERNIE-Image-Turbo', 'GGUF · Ministral · VAE')
-else:
-    step('ERNIE-Image-Turbo', 'GGUF · Ministral · VAE', 'ok')
+def write_debug_report(stage, exc=None):
+    if not DEBUG:
+        return None
+    report = {
+        "stage": stage,
+        "time": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "python": sys.version,
+        "executable": sys.executable,
+        "platform": platform.platform(),
+        "workspace": str(WS),
+        "app": str(APP),
+        "comfyui": str(COMFYUI),
+        "cache": str(CACHE),
+        "results": str(RESULTS),
+        "env": {
+            "HF_HOME": os.environ.get("HF_HOME"),
+            "HUGGINGFACE_HUB_CACHE": os.environ.get("HUGGINGFACE_HUB_CACHE"),
+            "PIP_CACHE_DIR": os.environ.get("PIP_CACHE_DIR"),
+            "COMFYUI_ROOT": os.environ.get("COMFYUI_ROOT"),
+            "FREEFAKESTUDIO_WORKSPACE": os.environ.get("FREEFAKESTUDIO_WORKSPACE"),
+        },
+        "packages": {
+            name: package_version(name)
+            for name in [
+                "numpy",
+                "torch",
+                "gradio",
+                "huggingface_hub",
+                "Pillow",
+                "opencv-python-headless",
+                "onnxruntime-gpu",
+                "rembg",
+            ]
+        },
+        "paths": {
+            "app_py": (APP / "app.py").exists(),
+            "launch_py": (APP / "launch.py").exists(),
+            "comfyui_main": (COMFYUI / "main.py").exists(),
+            "gguf_nodes": (COMFYUI / "custom_nodes" / "ComfyUI-GGUF" / "nodes.py").exists(),
+            "/content/ComfyUI_is_symlink": Path("/content/ComfyUI").is_symlink(),
+        },
+        "model_files": [
+            {
+                "path": str(path),
+                "exists": path.exists(),
+                "is_symlink": path.is_symlink(),
+                "size": path.stat().st_size if path.exists() else 0,
+                "target": str(path.resolve()) if path.exists() else None,
+            }
+            for path in required_model_targets()
+        ],
+    }
+    if exc is not None:
+        report["exception"] = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
+    report["nvidia_smi"] = safe_nvidia_smi()
+    path = DIAGNOSTICS / f"{stage}_{time.strftime('%Y%m%d_%H%M%S')}.json"
+    path.write_text(json.dumps(report, indent=2), encoding="utf-8")
+    latest = DIAGNOSTICS / "latest.json"
+    latest.write_text(json.dumps(report, indent=2), encoding="utf-8")
+    return path
 
 
-# ═══════════════════════════════════════════════════════════
-#  5. GPU HEALTH CHECK
-# ═══════════════════════════════════════════════════════════
-import torch as _torch
-if _torch.cuda.is_available():
-    _gn = _torch.cuda.get_device_name(0)
-    _vm = _torch.cuda.get_device_properties(0).total_memory / (1024**3)
-    step('GPU', f'{_gn} · {_vm:.1f} GB VRAM', 'ok')
-else:
-    step('GPU', 'No CUDA device — generation will fail!', 'err')
+def pip_install(*packages, force=False):
+    cmd = [sys.executable, "-m", "pip", "install", "-q", "--cache-dir", str(CACHE / "pip")]
+    if force:
+        cmd.append("--force-reinstall")
+    cmd.extend(packages)
+    run_cmd(cmd, quiet=True)
 
 
-# ═══════════════════════════════════════════════════════════
-#  6. LAUNCH FREEFAKESTUDIO
-# ═══════════════════════════════════════════════════════════
-step('FreeFakeStudio', 'Launching…')
+def package_ok(module_name):
+    try:
+        importlib.import_module(module_name)
+        return True
+    except Exception:
+        return False
 
-# Final render — don't clear output so Gradio URL appears below
-_render(final=True)
 
-# Set up ngrok tunnel (Gradio share is unreliable on Colab)
-from pyngrok import ngrok
-ngrok.set_auth_token('38tl51VOlFnqeTOilqpVzH0oOtW_Qv126eAUN1EdvYcNrcgg')
-_tunnel = ngrok.connect(7860, proto='http')
-print(f'\n🌐 FreeFakeStudio is live at: {_tunnel.public_url}\n')
+def ensure_numpy():
+    step("NumPy", "Checking binary consistency")
+    code = "import numpy; import numpy._core.strings; print(numpy.__version__)"
+    probe = subprocess.run([sys.executable, "-c", code], text=True, capture_output=True)
+    if probe.returncode == 0:
+        done("NumPy", probe.stdout.strip())
+        return
 
-# Run app.py as a SUBPROCESS (fresh Python process)
-# This is the same as the original `!python app.py` approach.
-# A fresh process loads numpy 1.26.4 correctly — no module conflicts.
-os.environ['GRADIO_SSR_MODE'] = 'false'
-subprocess.run(
-    [sys.executable, str(APP / 'app.py')],
-    cwd=str(APP),
-    env={**os.environ, 'PYTHONPATH': str(APP)}
-)
+    detail = (probe.stderr or probe.stdout)[-240:].replace("\n", " ")
+    step("NumPy repair", detail)
+    pip_install("numpy==1.26.4", force=True)
+    probe = subprocess.run([sys.executable, "-c", code], text=True, capture_output=True)
+    if probe.returncode != 0:
+        fail("Restart the Colab runtime once, then run this cell again.")
+        raise RuntimeError(probe.stderr or probe.stdout)
+    done("NumPy repair", probe.stdout.strip())
+
+
+def ensure_repo(path, repo, tag=None, update=False):
+    if not (path / ".git").exists():
+        if path.exists() and any(path.iterdir()):
+            raise RuntimeError(f"{path} exists but is not a git repository.")
+        args = ["git", "clone", "--depth", "1"]
+        if tag:
+            args.extend(["--branch", tag])
+        args.extend([repo, str(path)])
+        run_cmd(args, quiet=True)
+        return "installed"
+    if update:
+        run_cmd(["git", "-C", str(path), "fetch", "--tags", "--depth", "1"], quiet=True)
+        if tag:
+            run_cmd(["git", "-C", str(path), "checkout", "--force", tag], quiet=True)
+        else:
+            run_cmd(["git", "-C", str(path), "pull", "--ff-only"], quiet=True)
+        return "updated"
+    return "cached"
+
+
+def ensure_symlink(link, target):
+    link = Path(link)
+    if link.is_symlink() and link.resolve() == target.resolve():
+        return
+    if link.is_symlink():
+        link.unlink()
+    elif link.exists():
+        if link.name == "ComfyUI" and str(link).startswith("/content/"):
+            shutil.rmtree(str(link))
+        else:
+            raise RuntimeError(f"Refusing to replace non-symlink path: {link}")
+    os.symlink(str(target), str(link))
+
+
+def ensure_cross_links():
+    text_dir = COMFYUI / "models" / "text_encoders"
+    clip_dir = COMFYUI / "models" / "clip"
+    for src_dir, dst_dir in [(text_dir, clip_dir), (clip_dir, text_dir)]:
+        for src in src_dir.iterdir():
+            dst = dst_dir / src.name
+            if src.is_file() and not dst.exists():
+                try:
+                    os.symlink(str(src), str(dst))
+                except OSError:
+                    pass
+
+
+def min_bytes(filename):
+    if filename in {"ae.safetensors", "flux2-vae.safetensors"}:
+        return 50 * 1024 * 1024
+    if filename.endswith((".safetensors", ".gguf")):
+        return 500 * 1024 * 1024
+    return 1024
+
+
+def file_ok(path):
+    path = Path(path)
+    return path.is_file() and path.stat().st_size >= min_bytes(path.name)
+
+
+def hub_download(repo, filename, dest_dir, dest_name=None):
+    from huggingface_hub import hf_hub_download
+
+    dest_dir = Path(dest_dir)
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    target = dest_dir / (dest_name or Path(filename).name)
+    if file_ok(target) and not REPAIR:
+        return target
+    cached = hf_hub_download(
+        repo_id=repo,
+        filename=filename,
+        cache_dir=str(CACHE / "huggingface"),
+        force_download=REPAIR,
+    )
+    if not file_ok(cached):
+        raise RuntimeError(f"Downloaded file looks incomplete: {cached}")
+    if target.exists() or target.is_symlink():
+        target.unlink()
+    os.symlink(cached, target)
+    return target
+
+
+def ensure_models():
+    diff = COMFYUI / "models" / "diffusion_models"
+    text = COMFYUI / "models" / "text_encoders"
+    vae = COMFYUI / "models" / "vae"
+
+    specs = {
+        "Z-Image Turbo": [
+            ("T5B/Z-Image-Turbo-FP8", "z-image-turbo-fp8-e4m3fn.safetensors", diff, None),
+            ("Comfy-Org/z_image_turbo", "split_files/text_encoders/qwen_3_4b.safetensors", text, "qwen_3_4b.safetensors"),
+            ("Comfy-Org/z_image_turbo", "split_files/vae/ae.safetensors", vae, "ae.safetensors"),
+        ],
+        "FLUX.2-klein 4B": [
+            ("black-forest-labs/FLUX.2-klein-4B", "flux-2-klein-4b.safetensors", diff, None),
+            ("Comfy-Org/vae-text-encorder-for-flux-klein-4b", "split_files/text_encoders/qwen_3_4b_fp4_flux2.safetensors", text, "qwen_3_4b_fp4_flux2.safetensors"),
+            ("Comfy-Org/vae-text-encorder-for-flux-klein-4b", "split_files/vae/flux2-vae.safetensors", vae, "flux2-vae.safetensors"),
+        ],
+        "ERNIE-Image-Turbo": [
+            ("unsloth/ERNIE-Image-Turbo-GGUF", "ernie-image-turbo-Q6_K.gguf", diff, None),
+            ("Comfy-Org/ERNIE-Image", "text_encoders/ministral-3-3b.safetensors", text, "ministral-3-3b.safetensors"),
+            ("Comfy-Org/ERNIE-Image", "vae/flux2-vae.safetensors", vae, "flux2-vae.safetensors"),
+        ],
+    }
+
+    for model_name, files in specs.items():
+        needed = []
+        for repo, remote, dest, name in files:
+            target = Path(dest) / (name or Path(remote).name)
+            if REPAIR or not file_ok(target):
+                needed.append((repo, remote, dest, name))
+        if not needed:
+            step(model_name, "Ready", "ok")
+            continue
+        step(model_name, f"Downloading {len(needed)} missing file(s)")
+        for repo, remote, dest, name in needed:
+            hub_download(repo, remote, dest, name)
+        done(model_name, "Ready")
+    ensure_cross_links()
+
+
+try:
+    step("Workspace", str(WS), "ok")
+    start_report = write_debug_report("startup")
+    if start_report:
+        step("Diagnostics", f"Startup report: {start_report.name}", "ok")
+
+    ensure_numpy()
+
+    step("Python packages", "Checking")
+    required = {
+        "huggingface_hub": "huggingface_hub",
+        "gradio": "gradio",
+        "rembg": "rembg",
+        "cv2": "opencv-python-headless",
+    }
+    missing = [pkg for module, pkg in required.items() if not package_ok(module)]
+    if missing:
+        pip_install(*missing)
+    if not package_ok("onnxruntime"):
+        pip_install("onnxruntime-gpu")
+    pip_install("Pillow<12")
+    done("Python packages", "Ready")
+    deps_report = write_debug_report("dependencies")
+    if deps_report:
+        step("Diagnostics", f"Dependency report: {deps_report.name}", "ok")
+
+    step("ComfyUI", "Checking")
+    state = ensure_repo(COMFYUI, "https://github.com/comfyanonymous/ComfyUI.git", COMFY_TAG, UPDATE_APP)
+    if state == "installed" or REPAIR:
+        run_cmd([sys.executable, "-m", "pip", "install", "-q", "--cache-dir", str(CACHE / "pip"), "-r", str(COMFYUI / "requirements.txt")], quiet=True)
+    done("ComfyUI", state)
+
+    ensure_symlink(Path("/content/ComfyUI"), COMFYUI)
+
+    step("ComfyUI-GGUF", "Checking")
+    gguf = COMFYUI / "custom_nodes" / "ComfyUI-GGUF"
+    state = ensure_repo(gguf, "https://github.com/city96/ComfyUI-GGUF.git", None, UPDATE_APP)
+    if (state == "installed" or REPAIR) and (gguf / "requirements.txt").exists():
+        run_cmd([sys.executable, "-m", "pip", "install", "-q", "--cache-dir", str(CACHE / "pip"), "-r", str(gguf / "requirements.txt")], quiet=True)
+    done("ComfyUI-GGUF", state)
+
+    ensure_models()
+    models_report = write_debug_report("models")
+    if models_report:
+        step("Diagnostics", f"Model report: {models_report.name}", "ok")
+
+    step("GPU", "Checking")
+    import torch
+
+    if torch.cuda.is_available():
+        props = torch.cuda.get_device_properties(0)
+        done("GPU", f"{torch.cuda.get_device_name(0)} / {props.total_memory / (1024 ** 3):.1f} GB")
+    else:
+        fail("No CUDA GPU. Switch Colab runtime to GPU before generating.")
+        raise RuntimeError("No CUDA GPU available.")
+
+    step("FreeFakeStudio", "Launching")
+    launch_report = write_debug_report("launch")
+    if launch_report:
+        step("Diagnostics", f"Launch report: {launch_report.name}", "ok")
+    _render(final=True)
+    print("\nFreeFakeStudio is starting. Use the public gradio.live link printed below.\n")
+    subprocess.run(
+        [sys.executable, str(APP / "app.py")],
+        cwd=str(APP),
+        env={**os.environ, "PYTHONPATH": str(APP)},
+        check=True,
+    )
+except Exception as exc:
+    error_report = write_debug_report("error", exc)
+    if error_report:
+        print(f"\nFull debug report written to: {error_report}\n")
+        print((DIAGNOSTICS / "latest.json").read_text(encoding="utf-8")[-4000:])
+    fail(str(exc)[:240])
+    raise

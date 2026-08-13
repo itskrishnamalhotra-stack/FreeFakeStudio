@@ -78,6 +78,7 @@ _current_model = None
 _engines = {}  # name -> engine module (lazy loaded)
 _lock = threading.Lock()
 _model_availability = {}  # name -> bool, set during startup check
+_model_file_report = {}  # name -> list of component validation rows
 
 
 def _get_engine(model_name):
@@ -121,17 +122,54 @@ def set_model_availability(name, available):
     _model_availability[name] = available
 
 
-def check_model_files(comfyui_root="/content/ComfyUI"):
-    """Check which models have their required files present."""
+def _minimum_size(filename):
+    """Fast sanity thresholds. These catch interrupted tiny downloads."""
+    lower = filename.lower()
+    if lower.endswith((".gguf", ".safetensors")):
+        if filename in {"ae.safetensors", "flux2-vae.safetensors"}:
+            return 50 * 1024 * 1024
+        return 500 * 1024 * 1024
+    return 1024
+
+
+def check_model_files(comfyui_root=None):
+    """Check which models have their required files present.
+
+    The launcher points /content/ComfyUI at the persistent Drive copy. This
+    function follows symlinks and performs only fast size checks so startup does
+    not hash multi-GB checkpoints every session.
+    """
+    if comfyui_root is None:
+        comfyui_root = os.environ.get("COMFYUI_ROOT", "/content/ComfyUI")
+    _model_file_report.clear()
     for name, info in MODEL_REGISTRY.items():
         all_present = True
+        rows = []
         for subdir, filename in info["required_files"]:
             path = os.path.join(comfyui_root, "models", subdir, filename)
-            if not os.path.isfile(path) or os.path.getsize(path) < 1024:
+            min_size = _minimum_size(filename)
+            exists = os.path.isfile(path)
+            size = os.path.getsize(path) if exists else 0
+            ok = exists and size >= min_size
+            rows.append({
+                "subdir": subdir,
+                "filename": filename,
+                "path": path,
+                "exists": exists,
+                "size": size,
+                "min_size": min_size,
+                "ok": ok,
+            })
+            if not ok:
                 all_present = False
-                break
         _model_availability[name] = all_present
+        _model_file_report[name] = rows
     return dict(_model_availability)
+
+
+def get_model_file_report():
+    """Return details from the last check_model_files call."""
+    return dict(_model_file_report)
 
 
 def ensure_model(model_name, status_callback=None):
@@ -174,12 +212,12 @@ def _ensure_model_locked(model_name, status_callback=None):
 
     engine = _get_engine(model_name)
 
-    # Already loaded?
-    if hasattr(engine, 'is_loaded') and engine.is_loaded():
+    # Already loaded and marked active.
+    if _current_model == model_name and hasattr(engine, 'is_loaded') and engine.is_loaded():
         _status(f"[ok] {model_name} ready")
         return engine
 
-    # Unload previous model
+    # Unload the tracked previous model first.
     if _current_model and _current_model != model_name:
         old_engine = _get_engine(_current_model)
         _status(f"[..] Unloading {_current_model}")
@@ -191,6 +229,19 @@ def _ensure_model_locked(model_name, status_callback=None):
 
         _status("[..] Clearing GPU memory")
         _clear_memory()
+
+    # Defensive cleanup: if a cached engine reports loaded but is not the
+    # tracked active model, unload it before loading the requested one.
+    for other_name, other_engine in list(_engines.items()):
+        if other_name == model_name:
+            continue
+        try:
+            if hasattr(other_engine, "is_loaded") and other_engine.is_loaded():
+                _status(f"[..] Unloading {other_name}")
+                other_engine.unload()
+                _clear_memory()
+        except Exception as e:
+            print(f"Warning: error checking {other_name}: {e}")
 
     # Load requested model
     _status(f"[..] Loading {model_name}")
@@ -316,11 +367,9 @@ class MockEngine:
         return img
 
     def generate(self, prompt, negative, width, height, seed, cfg, denoise, steps=8):
-        time.sleep(0.1)  # Minimal delay for UI responsiveness
         return self._make_placeholder(width, height)
 
     def img2img(self, input_image, prompt, negative, seed, cfg, denoise, steps=20, mask=None):
-        time.sleep(0.1)
         if input_image:
             w, h = input_image.size
         else:
@@ -328,7 +377,6 @@ class MockEngine:
         return self._make_placeholder(w, h)
 
     def inpaint(self, original, mask_combined, prompt, negative, seed, cfg, denoise, steps=20):
-        time.sleep(0.1)
         if original:
             w, h = original.size
         else:

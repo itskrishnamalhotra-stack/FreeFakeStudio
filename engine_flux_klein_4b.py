@@ -3,10 +3,10 @@
 #  Generation, img2img, mask-based inpaint
 #  Uses ComfyUI nodes — smaller model, fits T4 better
 #  UNET: flux-2-klein-4b.safetensors (7.75 GB)
-#  CLIP: qwen_3_4b.safetensors (same as Z-Image Turbo)
+#  CLIP: qwen_3_4b_fp4_flux2.safetensors (FLUX.2-specific encoder)
 # ============================================================
 
-import gc, torch, numpy as np
+import gc, os, sys, torch, numpy as np
 from PIL import Image, ImageFilter
 
 _loaded = False
@@ -19,8 +19,9 @@ _nodes = {}
 def _get_nodes():
     global _nodes
     if not _nodes:
-        import sys
-        sys.path.insert(0, "/content/ComfyUI")
+        comfyui_root = os.environ.get("COMFYUI_ROOT", "/content/ComfyUI")
+        if comfyui_root not in sys.path:
+            sys.path.insert(0, comfyui_root)
         from nodes import NODE_CLASS_MAPPINGS
         _nodes = {
             "UNETLoader":       NODE_CLASS_MAPPINGS["UNETLoader"](),

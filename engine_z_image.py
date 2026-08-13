@@ -4,7 +4,7 @@
 #  Uses ComfyUI nodes
 # ============================================================
 
-import gc, torch, numpy as np
+import gc, os, sys, torch, numpy as np
 from PIL import Image, ImageFilter
 
 _loaded = False
@@ -17,8 +17,9 @@ _nodes = {}
 def _get_nodes():
     global _nodes
     if not _nodes:
-        import sys
-        sys.path.insert(0, "/content/ComfyUI")
+        comfyui_root = os.environ.get("COMFYUI_ROOT", "/content/ComfyUI")
+        if comfyui_root not in sys.path:
+            sys.path.insert(0, comfyui_root)
         from nodes import NODE_CLASS_MAPPINGS
         _nodes = {
             "UNETLoader":       NODE_CLASS_MAPPINGS["UNETLoader"](),
