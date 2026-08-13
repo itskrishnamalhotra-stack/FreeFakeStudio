@@ -2,6 +2,8 @@
 
 FreeFakeStudio is a Google Colab-first AI image generation and editing studio built around the existing Python, Gradio, and ComfyUI engines.
 
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/itskrishnamalhotra-stack/FreeFakeStudio/blob/main/FreeFakeStudio.ipynb)
+
 This version is designed for:
 
 - one main Colab cell;
