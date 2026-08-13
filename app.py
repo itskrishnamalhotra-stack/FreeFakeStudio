@@ -1257,4 +1257,8 @@ if __name__ == "__main__" or IS_COLAB:
     _launch_kw = dict(share=IS_COLAB, debug=True)
     if _GRADIO_V6:
         _launch_kw.update(css=CSS, theme=ffs_theme, head=JS_HEAD)
+        # Disable SSR on Colab — it generates internal HTTP URLs
+        # that get blocked by the HTTPS proxy (Mixed Content errors)
+        if IS_COLAB:
+            _launch_kw['ssr_mode'] = False
     demo.launch(**_launch_kw)
