@@ -40,6 +40,10 @@ def load_gguf_node_mappings(comfyui_root):
         raise
 
     mappings = getattr(module, "NODE_CLASS_MAPPINGS", {})
-    if "UnetLoaderGGUF" not in mappings:
-        raise RuntimeError("ComfyUI-GGUF did not register UnetLoaderGGUF.")
+    required = ("UnetLoaderGGUF", "CLIPLoaderGGUF")
+    missing = [name for name in required if name not in mappings]
+    if missing:
+        raise RuntimeError(
+            "ComfyUI-GGUF did not register required loaders: " + ", ".join(missing)
+        )
     return mappings

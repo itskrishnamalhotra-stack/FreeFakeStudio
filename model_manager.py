@@ -29,8 +29,9 @@ MODEL_REGISTRY = {
     "Z-Image Turbo": {
         "engine_module": "engine_z_image",
         "description": "Fast generation",
-        "capabilities": ["generate", "img2img", "inpaint"],
+        "capabilities": ["generate"],
         "default_steps": 8,
+        "max_steps": 8,
         "default_cfg": 1.0,
         "default_denoise": 1.0,
         "model_file": "z_image_turbo-Q3_K_M.gguf",
@@ -45,6 +46,7 @@ MODEL_REGISTRY = {
         "description": "Generate + image editing",
         "capabilities": ["generate", "img2img", "inpaint"],
         "default_steps": 20,
+        "max_steps": 50,
         "default_cfg": 1.0,
         "default_denoise": 1.0,
         "img2img_denoise": 0.45,
@@ -61,6 +63,7 @@ MODEL_REGISTRY = {
         "description": "Fast generation + text handling",
         "capabilities": ["generate"],
         "default_steps": 8,
+        "max_steps": 8,
         "default_cfg": 1.0,
         "default_denoise": 1.0,
         "model_file": "ernie-image-turbo-Q6_K.gguf",
@@ -80,6 +83,66 @@ _engines = {}  # name -> engine module (lazy loaded)
 _lock = threading.Lock()
 _model_availability = {}  # name -> bool, set during startup check
 _model_file_report = {}  # name -> list of component validation rows
+
+FLUX_MODEL_NAME = "FLUX.2-klein 4B"
+FLUX_OFFICIAL_ENCODER = "qwen_3_4b_fp4_flux2.safetensors"
+
+
+def get_flux_encoder_config():
+    """Return the active and optional custom FLUX encoder configuration."""
+    mode = os.environ.get("FFS_FLUX_ENCODER_MODE", "official").strip().lower()
+    if mode not in {"official", "custom"}:
+        mode = "official"
+    filename = os.environ.get("FFS_FLUX_CUSTOM_ENCODER_FILE", "").strip()
+    comfyui_root = os.environ.get("COMFYUI_ROOT", "/content/ComfyUI")
+    path = os.path.join(comfyui_root, "models", "text_encoders", filename) if filename else ""
+    available = bool(filename) and (DEV_MODE or os.path.isfile(path))
+    if mode == "custom" and not available:
+        mode = "official"
+    try:
+        size = int(os.environ.get("FFS_FLUX_CUSTOM_ENCODER_SIZE", "0") or 0)
+    except ValueError:
+        size = 0
+    return {
+        "mode": mode,
+        "custom_available": available,
+        "custom_filename": filename,
+        "custom_path": path,
+        "custom_format": os.environ.get("FFS_FLUX_CUSTOM_ENCODER_FORMAT", "").strip(),
+        "custom_size": size,
+        "custom_source": os.environ.get("FFS_FLUX_CUSTOM_ENCODER_SOURCE", "").strip(),
+    }
+
+
+def get_flux_encoder_choices():
+    config = get_flux_encoder_config()
+    choices = ["Official"]
+    if config["custom_available"]:
+        choices.append("Custom")
+    return choices
+
+
+def set_flux_encoder_mode(selection):
+    """Apply an encoder choice and unload FLUX so the next request reloads it."""
+    global _current_model
+    mode = str(selection or "Official").strip().lower()
+    if mode not in {"official", "custom"}:
+        raise ValueError("FLUX encoder must be Official or Custom.")
+    config = get_flux_encoder_config()
+    if mode == "custom" and not config["custom_available"]:
+        raise RuntimeError(
+            "No validated custom FLUX encoder is configured. Add its Hugging Face file URL in Colab."
+        )
+    with _lock:
+        if _current_model == FLUX_MODEL_NAME:
+            engine = _get_engine(FLUX_MODEL_NAME)
+            try:
+                engine.unload()
+            finally:
+                _current_model = None
+                _clear_memory()
+        os.environ["FFS_FLUX_ENCODER_MODE"] = mode
+    return mode
 
 
 def _configure_comfy_runtime():
@@ -341,6 +404,7 @@ def get_defaults(model_name):
     info = MODEL_REGISTRY[model_name]
     return {
         "steps": info.get("default_steps", 20),
+        "max_steps": info.get("max_steps", 50),
         "cfg": info.get("default_cfg", 1.0),
         "denoise": info.get("default_denoise", 1.0),
         "img2img_denoise": info.get("img2img_denoise", 0.45),

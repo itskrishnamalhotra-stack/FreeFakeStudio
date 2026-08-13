@@ -14,6 +14,7 @@ _unet = None
 _clip = None
 _vae = None
 _nodes = {}
+_loaded_encoder = None
 
 # ── Node references ────────────────────────────────────────
 def _get_nodes():
@@ -56,7 +57,7 @@ def _get_nodes():
 
 # ── Load / Unload ──────────────────────────────────────────
 def load():
-    global _loaded, _unet, _clip, _vae
+    global _loaded, _unet, _clip, _vae, _loaded_encoder
     if _loaded:
         return
     n = _get_nodes()
@@ -65,17 +66,50 @@ def load():
         _unet = n["UNETLoader"].load_unet(
             "flux-2-klein-4b.safetensors", "fp8_e4m3fn_fast"
         )[0]
-        # FLUX.2-specific Qwen3 4B encoder (7680-dim, NOT the Z-Image one which is 2560-dim)
-        _clip = n["CLIPLoader"].load_clip("qwen_3_4b_fp4_flux2.safetensors", type="flux2")[0]
+        mode = os.environ.get("FFS_FLUX_ENCODER_MODE", "official").strip().lower()
+        custom_name = os.environ.get("FFS_FLUX_CUSTOM_ENCODER_FILE", "").strip()
+        if mode == "custom":
+            if not custom_name:
+                raise RuntimeError(
+                    "Custom FLUX encoder was selected but the launcher did not configure a file."
+                )
+            custom_path = os.path.join(
+                os.environ.get("COMFYUI_ROOT", "/content/ComfyUI"),
+                "models", "text_encoders", custom_name,
+            )
+            if not os.path.isfile(custom_path):
+                raise RuntimeError(f"Custom FLUX encoder is missing: {custom_path}")
+            if custom_name.lower().endswith(".gguf"):
+                from gguf_nodes import load_gguf_node_mappings
+
+                gguf_nodes = load_gguf_node_mappings(
+                    os.environ.get("COMFYUI_ROOT", "/content/ComfyUI")
+                )
+                print(f"[memory] FLUX text encoder | custom GGUF | {custom_name}")
+                _clip = gguf_nodes["CLIPLoaderGGUF"]().load_clip(custom_name, type="flux2")[0]
+            elif custom_name.lower().endswith(".safetensors"):
+                print(f"[memory] FLUX text encoder | custom Safetensors | {custom_name}")
+                _clip = n["CLIPLoader"].load_clip(custom_name, type="flux2")[0]
+            else:
+                raise RuntimeError("Custom FLUX encoder must be GGUF or Safetensors.")
+            _loaded_encoder = "custom"
+        else:
+            # FLUX.2-specific Qwen3 4B encoder; do not substitute the Z-Image encoder.
+            print("[memory] FLUX text encoder | official FP4")
+            _clip = n["CLIPLoader"].load_clip(
+                "qwen_3_4b_fp4_flux2.safetensors", type="flux2"
+            )[0]
+            _loaded_encoder = "official"
         _vae  = n["VAELoader"].load_vae("flux2-vae.safetensors")[0]
     _loaded = True
     print("✅ FLUX.2-klein 4B loaded!")
 
 def unload():
-    global _loaded, _unet, _clip, _vae
+    global _loaded, _unet, _clip, _vae, _loaded_encoder
     _unet = None
     _clip = None
     _vae = None
+    _loaded_encoder = None
     _loaded = False
     gc.collect()
     if torch.cuda.is_available():
@@ -86,6 +120,10 @@ def unload():
 
 def is_loaded():
     return _loaded
+
+
+def get_loaded_encoder():
+    return _loaded_encoder
 
 # ── Helpers ────────────────────────────────────────────────
 def _pil_to_tensor(img):

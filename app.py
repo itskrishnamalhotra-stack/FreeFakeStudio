@@ -1300,6 +1300,793 @@ body { background: var(--ffs-bg) !important; }
     }
     #ffs-composer-dock { left: 0 !important; }
 }
+
+/* Final studio polish layer. Kept ID-scoped so Gradio internals can change
+   without turning the interface into a selector lottery. */
+:root {
+    --ffs-ink: #111418;
+    --ffs-muted: #747b84;
+    --ffs-line-strong: #cfd5dc;
+    --ffs-coral: #ee5b3f;
+    --ffs-coral-dark: #d94a30;
+    --ffs-teal: #138477;
+    --ffs-gold: #d7a437;
+    --ffs-elevated: 0 10px 30px rgba(20, 27, 36, .07), 0 2px 8px rgba(20, 27, 36, .05);
+}
+
+/* App chrome */
+.gradio-container {
+    background:
+        linear-gradient(rgba(255,255,255,.46), rgba(255,255,255,.46)),
+        var(--ffs-bg) !important;
+}
+.dark .gradio-container {
+    background: var(--ffs-bg) !important;
+}
+#ffs-app-header::before {
+    content: '';
+    position: absolute;
+    inset: 0 0 auto 0;
+    height: 3px;
+    background: linear-gradient(90deg, var(--ffs-coral) 0 34%, var(--ffs-gold) 34% 52%, var(--ffs-teal) 52% 100%);
+}
+#ffs-app-header {
+    box-shadow: 0 8px 24px rgba(24, 31, 40, .045) !important;
+}
+.ffs-brand-mark {
+    position: relative;
+    isolation: isolate;
+    overflow: hidden;
+    box-shadow: inset 0 0 0 1px rgba(255,255,255,.1), 0 5px 12px rgba(17,20,24,.16);
+}
+.ffs-brand-mark::after {
+    content: '';
+    position: absolute;
+    z-index: -1;
+    right: -7px;
+    bottom: -8px;
+    width: 25px;
+    height: 25px;
+    background: var(--ffs-coral);
+    transform: rotate(28deg);
+}
+.ffs-wordmark { letter-spacing: 0 !important; }
+.ffs-brand-sub { color: var(--ffs-muted) !important; letter-spacing: .06em !important; }
+#ffs-model-select > div {
+    min-height: 42px !important;
+    border: 1px solid var(--ffs-border) !important;
+    background: var(--ffs-surface-2) !important;
+    box-shadow: inset 0 1px 0 rgba(255,255,255,.7) !important;
+    transition: border-color .18s ease, background-color .18s ease, box-shadow .18s ease;
+}
+#ffs-model-select > div:hover,
+#ffs-model-select > div:focus-within {
+    border-color: var(--ffs-line-strong) !important;
+    background: var(--ffs-surface) !important;
+    box-shadow: 0 0 0 3px var(--ffs-accent-bg) !important;
+}
+.ffs-model-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    min-height: 28px;
+    padding: 5px 11px;
+    border: 1px solid color-mix(in srgb, var(--ffs-success) 22%, var(--ffs-border));
+    border-radius: 999px;
+    background: color-mix(in srgb, var(--ffs-success) 7%, var(--ffs-surface));
+    color: var(--ffs-success);
+    font-size: 11px;
+    font-weight: 750;
+}
+.ffs-model-badge::before {
+    content: '';
+    width: 7px;
+    height: 7px;
+    flex: 0 0 7px;
+    border-radius: 50%;
+    background: currentColor;
+    box-shadow: 0 0 0 3px color-mix(in srgb, currentColor 15%, transparent);
+}
+#ffs-new-session {
+    min-height: 38px !important;
+    border: 1px solid var(--ffs-border) !important;
+    background: var(--ffs-surface) !important;
+    color: var(--ffs-text) !important;
+    box-shadow: var(--ffs-shadow) !important;
+    transition: border-color .16s ease, background-color .16s ease, transform .16s ease !important;
+}
+#ffs-new-session:hover {
+    border-color: var(--ffs-line-strong) !important;
+    background: var(--ffs-surface-2) !important;
+    transform: translateY(-1px) !important;
+}
+
+/* Settings rail */
+#ffs-settings-panel {
+    border-color: color-mix(in srgb, var(--ffs-border) 88%, var(--ffs-text)) !important;
+    box-shadow: var(--ffs-elevated) !important;
+}
+#ffs-settings-panel > .label-wrap {
+    min-height: 58px !important;
+    padding: 0 17px !important;
+    font-size: 14px !important;
+    font-weight: 800 !important;
+    box-shadow: 0 1px 0 var(--ffs-border);
+}
+#ffs-settings-panel > .label-wrap:hover { background: var(--ffs-surface-2) !important; }
+#ffs-settings-panel .ffs-settings-panel { padding: 4px 17px 16px !important; }
+#ffs-settings-panel .block { padding: 15px 0 17px !important; }
+#ffs-settings-panel label > span,
+#ffs-settings-panel .block > label > span {
+    color: var(--ffs-muted) !important;
+    font-size: 10px !important;
+    font-weight: 800 !important;
+    letter-spacing: .065em !important;
+}
+#ffs-settings-panel input[type="number"],
+#ffs-settings-panel textarea,
+#ffs-settings-panel [role="combobox"] {
+    border-color: transparent !important;
+    background: var(--ffs-surface-2) !important;
+    color: var(--ffs-text) !important;
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--ffs-border) 78%, transparent) !important;
+    transition: box-shadow .16s ease, background-color .16s ease !important;
+}
+#ffs-settings-panel input[type="number"]:hover,
+#ffs-settings-panel textarea:hover,
+#ffs-settings-panel [role="combobox"]:hover {
+    background: color-mix(in srgb, var(--ffs-surface-2) 70%, var(--ffs-surface)) !important;
+    box-shadow: inset 0 0 0 1px var(--ffs-line-strong) !important;
+}
+#ffs-settings-panel input[type="number"]:focus,
+#ffs-settings-panel textarea:focus,
+#ffs-settings-panel [role="combobox"]:focus-within {
+    background: var(--ffs-surface) !important;
+    box-shadow: 0 0 0 3px var(--ffs-accent-bg), inset 0 0 0 1px var(--ffs-accent) !important;
+}
+#ffs-settings-panel button[aria-label="Reset to default value"] {
+    border-color: transparent !important;
+    background: var(--ffs-surface-2) !important;
+    color: var(--ffs-muted) !important;
+    transition: color .16s ease, background-color .16s ease !important;
+}
+#ffs-settings-panel button[aria-label="Reset to default value"]:hover {
+    background: var(--ffs-accent-bg) !important;
+    color: var(--ffs-accent) !important;
+}
+#ffs-settings-panel input[type="range"]::-webkit-slider-runnable-track {
+    height: 6px;
+    box-shadow: inset 0 1px 2px rgba(20,27,36,.08);
+}
+#ffs-settings-panel input[type="range"]::-webkit-slider-thumb {
+    width: 20px;
+    height: 20px;
+    margin-top: -7px;
+    border-width: 4px;
+    box-shadow: 0 0 0 1px var(--ffs-accent), 0 4px 9px rgba(230,82,53,.24);
+    transition: transform .12s ease, box-shadow .12s ease;
+}
+#ffs-settings-panel input[type="range"]:hover::-webkit-slider-thumb {
+    transform: scale(1.08);
+    box-shadow: 0 0 0 1px var(--ffs-accent), 0 5px 12px rgba(230,82,53,.3);
+}
+
+/* Creation canvas */
+.ffs-canvas-heading {
+    margin-bottom: 24px !important;
+    font-size: 22px !important;
+    letter-spacing: 0 !important;
+}
+.ffs-canvas-heading span {
+    display: inline-flex;
+    align-items: center;
+    gap: 9px;
+}
+.ffs-canvas-heading span::before {
+    content: '';
+    width: 9px;
+    height: 9px;
+    border-radius: 2px;
+    background: var(--ffs-coral);
+    box-shadow: 5px 5px 0 color-mix(in srgb, var(--ffs-teal) 88%, transparent);
+    transform: translateY(-2px);
+}
+.ffs-canvas-heading i {
+    background: linear-gradient(90deg, var(--ffs-line-strong), transparent) !important;
+}
+.ffs-empty {
+    position: relative;
+    isolation: isolate;
+}
+.ffs-empty::before {
+    content: '';
+    position: absolute;
+    z-index: -1;
+    left: 50%;
+    top: 50%;
+    width: min(540px, 86%);
+    height: 250px;
+    transform: translate(-50%, -47%);
+    border: 1px dashed color-mix(in srgb, var(--ffs-border) 78%, transparent);
+    border-radius: 8px;
+    background: color-mix(in srgb, var(--ffs-surface) 48%, transparent);
+}
+.ffs-empty-icon {
+    position: relative;
+    width: 72px !important;
+    height: 72px !important;
+    border: 0 !important;
+    background: var(--ffs-ink) !important;
+    color: #fff !important;
+    box-shadow: 8px 8px 0 var(--ffs-coral), -8px -8px 0 var(--ffs-teal), var(--ffs-elevated) !important;
+    transform: rotate(-2deg);
+}
+.ffs-empty-title {
+    margin-top: 5px !important;
+    color: var(--ffs-ink) !important;
+    font-size: 34px !important;
+    line-height: 1.08 !important;
+}
+.dark .ffs-empty-title { color: var(--ffs-text) !important; }
+.ffs-empty-sub { color: var(--ffs-muted) !important; }
+#ffs-starter-prompts { gap: 10px !important; }
+#ffs-starter-prompts button {
+    position: relative;
+    min-height: 44px !important;
+    padding: 0 13px !important;
+    overflow: hidden;
+    font-size: 12px !important;
+    font-weight: 650 !important;
+    box-shadow: 0 5px 16px rgba(20,27,36,.045) !important;
+    transition: transform .16s ease, border-color .16s ease, color .16s ease, box-shadow .16s ease !important;
+}
+#ffs-starter-prompts button::before {
+    content: '';
+    width: 6px;
+    height: 6px;
+    margin-right: 8px;
+    flex: 0 0 6px;
+    border-radius: 2px;
+    background: var(--ffs-coral);
+}
+#ffs-starter-prompts button:nth-child(2)::before { background: var(--ffs-gold); }
+#ffs-starter-prompts button:nth-child(3)::before { background: var(--ffs-teal); }
+#ffs-starter-prompts button:nth-child(4)::before { background: var(--ffs-ink); }
+#ffs-starter-prompts button:hover {
+    transform: translateY(-2px) !important;
+    border-color: var(--ffs-line-strong) !important;
+    box-shadow: 0 10px 22px rgba(20,27,36,.08) !important;
+}
+
+/* Conversation and results */
+.ffs-role {
+    margin-bottom: 7px !important;
+    color: var(--ffs-muted) !important;
+    font-weight: 800 !important;
+    letter-spacing: .07em !important;
+}
+.ffs-bubble {
+    border: 1px solid var(--ffs-border) !important;
+    background: var(--ffs-surface) !important;
+    box-shadow: 0 3px 12px rgba(20,27,36,.04) !important;
+}
+.ffs-turn-user .ffs-bubble {
+    border-color: color-mix(in srgb, var(--ffs-teal) 18%, var(--ffs-border)) !important;
+    background: color-mix(in srgb, var(--ffs-teal) 6%, var(--ffs-surface)) !important;
+}
+.ffs-notice {
+    min-height: 48px;
+    align-items: center !important;
+    box-shadow: 0 5px 18px rgba(20,27,36,.045);
+}
+#ffs-result-gallery .grid-wrap { gap: 14px !important; }
+#ffs-result-gallery .gallery-item {
+    position: relative;
+    border-color: color-mix(in srgb, var(--ffs-border) 82%, var(--ffs-text)) !important;
+    background: var(--ffs-surface) !important;
+    box-shadow: 0 8px 24px rgba(20,27,36,.07) !important;
+    transition: transform .2s ease, box-shadow .2s ease, border-color .2s ease !important;
+}
+#ffs-result-gallery .gallery-item:hover {
+    z-index: 1;
+    transform: translateY(-3px);
+    border-color: var(--ffs-line-strong) !important;
+    box-shadow: 0 16px 34px rgba(20,27,36,.12) !important;
+}
+#ffs-result-gallery .gallery-item img {
+    transition: transform .35s ease !important;
+}
+#ffs-result-gallery .gallery-item:hover img { transform: scale(1.012); }
+#ffs-result-actions {
+    padding: 10px 0 4px !important;
+    border-top: 1px solid var(--ffs-border) !important;
+}
+#ffs-result-actions button {
+    border-color: var(--ffs-border) !important;
+    background: var(--ffs-surface) !important;
+    color: var(--ffs-text) !important;
+    font-weight: 700 !important;
+    transition: transform .16s ease, border-color .16s ease, background-color .16s ease !important;
+}
+#ffs-result-actions button:hover {
+    transform: translateY(-1px) !important;
+    border-color: var(--ffs-line-strong) !important;
+    background: var(--ffs-surface-2) !important;
+}
+
+/* Generation stage */
+.ffs-generation-stage {
+    position: relative;
+    border-color: color-mix(in srgb, var(--ffs-border) 80%, var(--ffs-text)) !important;
+    box-shadow: var(--ffs-elevated) !important;
+}
+.ffs-generation-stage::after {
+    content: '';
+    position: absolute;
+    inset: 0 0 auto 0;
+    height: 3px;
+    background: linear-gradient(90deg, var(--ffs-coral), var(--ffs-gold), var(--ffs-teal));
+}
+.ffs-generation-preview {
+    background: #16191d !important;
+    box-shadow: inset 0 0 0 1px rgba(255,255,255,.07);
+}
+.ffs-gen-tile { box-shadow: inset 0 0 0 1px rgba(255,255,255,.14), 0 12px 25px rgba(0,0,0,.24); }
+.ffs-gen-tile-a { transform: rotate(-2deg); }
+.ffs-gen-tile-b { transform: rotate(2deg); }
+.ffs-gen-tile-c { transform: rotate(-1deg); }
+.ffs-generation-title { font-size: 24px !important; font-weight: 800 !important; }
+.ffs-progress-track { height: 6px !important; }
+.ffs-progress-track span {
+    background: linear-gradient(90deg, var(--ffs-coral), var(--ffs-gold), var(--ffs-teal)) !important;
+}
+
+/* Composer */
+#ffs-composer-dock {
+    padding-top: 22px !important;
+    background: linear-gradient(to bottom, transparent 0, color-mix(in srgb, var(--ffs-bg) 93%, transparent) 30%, var(--ffs-bg) 68%) !important;
+}
+#ffs-composer {
+    min-height: 64px !important;
+    padding: 8px 9px !important;
+    border-color: color-mix(in srgb, var(--ffs-border) 66%, var(--ffs-text)) !important;
+    box-shadow: 0 22px 55px rgba(20,27,36,.16), 0 4px 13px rgba(20,27,36,.08) !important;
+}
+#ffs-composer:focus-within {
+    border-color: var(--ffs-coral) !important;
+    box-shadow: 0 24px 60px rgba(20,27,36,.18), 0 0 0 4px var(--ffs-accent-bg) !important;
+}
+#ffs-prompt textarea {
+    font-size: 14px !important;
+    font-weight: 500 !important;
+}
+#ffs-prompt textarea::placeholder { color: color-mix(in srgb, var(--ffs-muted) 78%, transparent) !important; }
+#ffs-attach {
+    border-color: transparent !important;
+    background: var(--ffs-surface-2) !important;
+    color: var(--ffs-text) !important;
+    transition: transform .16s ease, color .16s ease, background-color .16s ease !important;
+}
+#ffs-attach:hover {
+    transform: translateY(-1px) !important;
+    background: var(--ffs-accent-bg) !important;
+    color: var(--ffs-coral) !important;
+}
+#ffs-generate {
+    min-width: 112px !important;
+    background: var(--ffs-coral) !important;
+    border-color: var(--ffs-coral) !important;
+    box-shadow: 0 7px 15px rgba(230,82,53,.22) !important;
+    transition: transform .16s ease, background-color .16s ease, box-shadow .16s ease !important;
+}
+#ffs-generate:hover {
+    transform: translateY(-1px) !important;
+    background: var(--ffs-coral-dark) !important;
+    box-shadow: 0 10px 20px rgba(230,82,53,.28) !important;
+}
+#ffs-generate:active { transform: translateY(0) !important; box-shadow: 0 4px 9px rgba(230,82,53,.2) !important; }
+#ffs-attachment-row { box-shadow: var(--ffs-elevated) !important; }
+
+/* Accessible motion and focus */
+.gradio-container button:focus-visible,
+.gradio-container input:focus-visible,
+.gradio-container textarea:focus-visible,
+.gradio-container [role="combobox"]:focus-visible {
+    outline: 2px solid var(--ffs-accent) !important;
+    outline-offset: 2px !important;
+}
+::selection { background: color-mix(in srgb, var(--ffs-coral) 25%, transparent); color: var(--ffs-text); }
+
+@media (max-width: 900px) {
+    #ffs-settings-panel { box-shadow: 0 7px 22px rgba(20,27,36,.07) !important; }
+    #ffs-settings-panel > .label-wrap { min-height: 56px !important; }
+    .ffs-empty::before { width: min(500px, 92%); }
+}
+
+@media (max-width: 720px) {
+    #ffs-app-header { box-shadow: 0 6px 18px rgba(20,27,36,.06) !important; }
+    .ffs-brand-mark { width: 40px; height: 40px; flex-basis: 40px; }
+    #ffs-settings-panel { border-radius: 8px !important; }
+    .ffs-canvas-heading { margin-bottom: 14px !important; font-size: 20px !important; }
+    .ffs-empty {
+        width: 100% !important;
+        min-height: 39vh !important;
+        display: flex !important;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        overflow: hidden;
+    }
+    .ffs-empty::before { height: 220px; width: calc(100% - 8px); }
+    .ffs-empty-icon {
+        width: 58px !important;
+        height: 58px !important;
+        box-shadow: 6px 6px 0 var(--ffs-coral), -6px -6px 0 var(--ffs-teal), var(--ffs-elevated) !important;
+    }
+    .ffs-empty-title {
+        width: 100% !important;
+        max-width: 100% !important;
+        font-size: 25px !important;
+        text-align: center;
+        white-space: normal !important;
+    }
+    .ffs-empty-sub {
+        width: 100% !important;
+        max-width: 100% !important;
+        padding: 0 8px;
+        text-align: center;
+        white-space: normal !important;
+    }
+    #ffs-settings-panel > .label-wrap .icon {
+        display: block !important;
+        width: 18px !important;
+        margin-left: auto;
+        color: var(--ffs-text) !important;
+        opacity: .72;
+    }
+    #ffs-starter-prompts { gap: 8px !important; }
+    #ffs-starter-prompts button { min-height: 43px !important; padding: 0 9px !important; font-size: 11px !important; }
+    #ffs-starter-prompts button::before { margin-right: 6px; }
+    #ffs-composer-dock { padding-top: 16px !important; }
+    #ffs-composer { min-height: 62px !important; border-radius: 8px !important; }
+    #ffs-generate { min-width: 48px !important; width: 48px !important; box-shadow: 0 6px 14px rgba(230,82,53,.23) !important; }
+    .ffs-generation-title { font-size: 20px !important; }
+    #ffs-result-gallery .grid-wrap { gap: 8px !important; }
+    #ffs-result-actions { gap: 7px !important; }
+}
+
+@media (max-width: 420px) {
+    #ffs-model-select { min-width: 144px !important; }
+    #ffs-new-session { min-width: 54px !important; padding-left: 10px !important; padding-right: 10px !important; }
+    .ffs-empty-title { font-size: 23px !important; }
+    #ffs-starter-prompts button { min-height: 42px !important; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    #ffs-starter-prompts button,
+    #ffs-result-gallery .gallery-item,
+    #ffs-result-gallery .gallery-item img,
+    #ffs-generate,
+    #ffs-attach,
+    #ffs-new-session { transition: none !important; }
+}
+
+/* Theme control, model profile, and final control alignment */
+html[data-ffs-theme="light"] {
+    color-scheme: light;
+    --ffs-bg: #f4f5f7;
+    --ffs-surface: #ffffff;
+    --ffs-surface-2: #eceff2;
+    --ffs-text: #15171a;
+    --ffs-text-2: #606770;
+    --ffs-border: #dfe3e8;
+    --ffs-ink: #111418;
+    --ffs-muted: #747b84;
+    --ffs-line-strong: #cfd5dc;
+    --ffs-accent: #e65235;
+    --ffs-accent-bg: rgba(230, 82, 53, .08);
+    --ffs-success: #147d72;
+}
+html[data-ffs-theme="dark"] {
+    color-scheme: dark;
+    --ffs-bg: #101214;
+    --ffs-surface: #191c1f;
+    --ffs-surface-2: #24282c;
+    --ffs-text: #f2f4f6;
+    --ffs-text-2: #adb3ba;
+    --ffs-border: #32373c;
+    --ffs-ink: #f6f7f8;
+    --ffs-muted: #969da5;
+    --ffs-line-strong: #495057;
+    --ffs-accent: #ff7558;
+    --ffs-accent-bg: rgba(255, 117, 88, .11);
+    --ffs-success: #4ec9b9;
+    --ffs-shadow: 0 1px 2px rgba(0, 0, 0, .28);
+    --ffs-shadow-lg: 0 22px 60px rgba(0, 0, 0, .42), 0 2px 8px rgba(0, 0, 0, .3);
+    --ffs-elevated: 0 14px 34px rgba(0, 0, 0, .25), 0 2px 8px rgba(0, 0, 0, .2);
+}
+html[data-ffs-theme="dark"] body,
+html[data-ffs-theme="dark"] .gradio-container { background: var(--ffs-bg) !important; }
+#ffs-theme-toggle {
+    width: 40px !important;
+    min-width: 40px !important;
+    height: 38px !important;
+    min-height: 38px !important;
+    padding: 0 !important;
+    border: 1px solid var(--ffs-border) !important;
+    border-radius: 7px !important;
+    background: var(--ffs-surface) !important;
+    color: var(--ffs-text) !important;
+    box-shadow: var(--ffs-shadow) !important;
+    font-size: 18px !important;
+    line-height: 1 !important;
+}
+#ffs-theme-toggle:hover {
+    border-color: var(--ffs-line-strong) !important;
+    background: var(--ffs-surface-2) !important;
+}
+#ffs-model-profile { padding: 0 !important; }
+#ffs-model-profile .html-container { padding: 0 !important; }
+.ffs-model-profile {
+    padding: 14px 0 15px;
+    border-bottom: 1px solid var(--ffs-border);
+}
+.ffs-model-profile strong,
+.ffs-model-profile small { display: block; }
+.ffs-encoder-status {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    min-height: 36px;
+    padding: 9px 10px;
+    border: 1px solid var(--ffs-line);
+    background: color-mix(in srgb, var(--ffs-panel) 76%, var(--ffs-canvas));
+    font-size: 11px;
+    flex-wrap: wrap;
+}
+.ffs-encoder-status strong { color: var(--ffs-text); font-size: 11px; }
+.ffs-encoder-file {
+    max-width: 100%;
+    overflow: hidden;
+    color: var(--ffs-teal);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.ffs-encoder-file.muted { color: var(--ffs-muted); }
+.ffs-flux-encoder-panel { gap: 9px !important; }
+.ffs-flux-encoder-panel .wrap { gap: 7px !important; }
+#ffs-apply-encoder { min-height: 36px !important; }
+.ffs-model-profile strong { color: var(--ffs-text); font-size: 13px; font-weight: 800; }
+.ffs-model-profile small { margin-top: 3px; color: var(--ffs-muted); font-size: 11px; line-height: 1.35; }
+.ffs-model-profile > div { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 10px; }
+.ffs-model-profile span {
+    padding: 4px 7px;
+    border: 1px solid var(--ffs-border);
+    border-radius: 5px;
+    background: var(--ffs-surface-2);
+    color: var(--ffs-text-2);
+    font-size: 9px;
+    font-weight: 750;
+}
+#ffs-settings-panel input[type="number"] {
+    box-sizing: border-box !important;
+    height: 42px !important;
+    min-height: 42px !important;
+    padding: 0 12px !important;
+    line-height: 40px !important;
+}
+#ffs-settings-panel .block:has(input[type="range"]) input[type="number"] {
+    height: 34px !important;
+    min-height: 34px !important;
+    padding: 0 9px !important;
+    line-height: 32px !important;
+}
+#ffs-settings-panel .block:has(input[type="range"]) button[aria-label="Reset to default value"] {
+    height: 34px !important;
+    min-height: 34px !important;
+}
+.ffs-generation-stage { animation: ffs-stage-enter .36s ease-out both; }
+@keyframes ffs-stage-enter {
+    from { opacity: 0; transform: translateY(8px); }
+    to { opacity: 1; transform: translateY(0); }
+}
+
+@media (min-width: 901px) {
+    #ffs-settings-panel > .label-wrap {
+        pointer-events: none !important;
+        cursor: default !important;
+    }
+    #ffs-settings-panel > .label-wrap > span:last-child,
+    #ffs-settings-panel > .label-wrap svg { display: none !important; }
+}
+
+@media (max-width: 720px) {
+    #ffs-theme-toggle { width: 38px !important; min-width: 38px !important; }
+    .ffs-encoder-status {
+        align-items: flex-start;
+        flex-direction: column;
+    }
+    .ffs-encoder-file { width: 100%; }
+}
+
+@media (max-width: 420px) {
+    #ffs-app-header { gap: 6px !important; padding-left: 8px !important; padding-right: 8px !important; }
+    #ffs-brand { min-width: 42px !important; flex-basis: 42px !important; }
+    #ffs-model-select { min-width: 130px !important; }
+    #ffs-theme-toggle { width: 36px !important; min-width: 36px !important; }
+    #ffs-new-session { min-width: 48px !important; padding-left: 8px !important; padding-right: 8px !important; }
+}
+
+/* Header-triggered settings drawer */
+#ffs-settings-toggle {
+    width: 40px !important;
+    min-width: 40px !important;
+    height: 38px !important;
+    min-height: 38px !important;
+    padding: 0 !important;
+    border: 1px solid var(--ffs-border) !important;
+    border-radius: 7px !important;
+    background: var(--ffs-surface) !important;
+    color: var(--ffs-text) !important;
+    box-shadow: var(--ffs-shadow) !important;
+    font-size: 17px !important;
+    line-height: 1 !important;
+}
+#ffs-settings-toggle:hover,
+html[data-ffs-settings="open"] #ffs-settings-toggle {
+    border-color: var(--ffs-accent) !important;
+    background: var(--ffs-accent-bg) !important;
+    color: var(--ffs-accent) !important;
+}
+#ffs-settings-toggle.ffs-settings-open {
+    border-color: var(--ffs-accent) !important;
+    background: var(--ffs-accent-bg) !important;
+    color: var(--ffs-accent) !important;
+}
+#ffs-settings-panel {
+    position: fixed !important;
+    z-index: 1160 !important;
+    left: 14px !important;
+    top: 86px !important;
+    bottom: 18px !important;
+    width: 280px !important;
+    box-sizing: border-box !important;
+    max-height: none !important;
+    margin: 0 !important;
+    display: flex !important;
+    overflow-y: auto !important;
+    overflow-x: clip !important;
+    border: 1px solid color-mix(in srgb, var(--ffs-border) 82%, var(--ffs-text)) !important;
+    border-radius: 8px !important;
+    background: var(--ffs-surface) !important;
+    box-shadow: 0 24px 70px rgba(20,27,36,.22), 0 4px 14px rgba(20,27,36,.1) !important;
+    opacity: 0;
+    visibility: hidden;
+    pointer-events: none;
+    transform: translateX(calc(-100% - 28px));
+    transition: transform .24s cubic-bezier(.2,.75,.2,1), opacity .18s ease, visibility .18s ease !important;
+}
+html[data-ffs-settings="open"] #ffs-settings-panel {
+    opacity: 1;
+    visibility: visible;
+    pointer-events: auto;
+    transform: translateX(0);
+}
+#ffs-settings-panel.ffs-settings-open {
+    opacity: 1;
+    visibility: visible;
+    pointer-events: auto;
+    transform: translateX(0);
+}
+#ffs-settings-heading {
+    position: sticky;
+    z-index: 4;
+    top: 0;
+    width: 100% !important;
+    padding: 0 !important;
+    background: var(--ffs-surface) !important;
+}
+#ffs-settings-heading .html-container { padding: 0 !important; }
+.ffs-settings-heading {
+    min-height: 58px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 0 12px 0 17px;
+    border-bottom: 1px solid var(--ffs-border);
+    color: var(--ffs-text);
+    font-size: 14px;
+    font-weight: 800;
+}
+.ffs-settings-close {
+    width: 34px;
+    height: 34px;
+    display: grid;
+    place-items: center;
+    margin-left: auto;
+    padding: 0;
+    border: 0;
+    border-radius: 6px;
+    background: transparent;
+    color: var(--ffs-muted);
+    font: inherit;
+    font-size: 21px;
+    cursor: pointer;
+}
+.ffs-settings-close:hover { background: var(--ffs-surface-2); color: var(--ffs-text); }
+#ffs-settings-panel > .ffs-settings-panel { width: 100% !important; }
+#ffs-settings-backdrop {
+    position: fixed;
+    z-index: 1140;
+    inset: 72px 0 0 0;
+    border: 0;
+    background: rgba(10,13,17,.36);
+    opacity: 0;
+    visibility: hidden;
+    pointer-events: none;
+    backdrop-filter: blur(2px);
+    transition: opacity .18s ease, visibility .18s ease;
+}
+html[data-ffs-settings="open"] #ffs-settings-backdrop {
+    opacity: 1;
+    visibility: visible;
+    pointer-events: auto;
+}
+#ffs-settings-backdrop.ffs-settings-open {
+    opacity: 1;
+    visibility: visible;
+    pointer-events: auto;
+}
+
+/* The drawer overlays compact layouts and shifts the canvas on wide screens. */
+@media (min-width: 901px) {
+    #ffs-workspace {
+        width: min(var(--ffs-max-width), calc(100% - 44px)) !important;
+        margin-left: auto !important;
+        margin-right: auto !important;
+    }
+    #ffs-composer-dock { left: 0 !important; }
+    html[data-ffs-settings="open"] #ffs-workspace {
+        width: min(var(--ffs-max-width), calc(100% - 342px)) !important;
+        margin-left: max(320px, calc((100% - var(--ffs-max-width) + 300px) / 2)) !important;
+        margin-right: 22px !important;
+    }
+    html[data-ffs-settings="open"] #ffs-composer-dock { left: 300px !important; }
+    #ffs-workspace.ffs-settings-open {
+        width: min(var(--ffs-max-width), calc(100% - 342px)) !important;
+        margin-left: max(320px, calc((100% - var(--ffs-max-width) + 300px) / 2)) !important;
+        margin-right: 22px !important;
+    }
+    #ffs-composer-dock.ffs-settings-open { left: 300px !important; }
+    #ffs-settings-backdrop { display: none; }
+}
+
+@media (max-width: 900px) {
+    #ffs-settings-panel {
+        left: 12px !important;
+        top: 76px !important;
+        bottom: 12px !important;
+        width: min(340px, calc(100% - 24px)) !important;
+    }
+    #ffs-workspace { padding-top: 84px !important; }
+    #ffs-settings-backdrop { top: 65px; }
+}
+
+@media (max-width: 720px) {
+    #ffs-settings-toggle,
+    #ffs-theme-toggle {
+        width: 36px !important;
+        min-width: 36px !important;
+    }
+}
+
+@media (max-width: 420px) {
+    #ffs-model-select { min-width: 120px !important; }
+    #ffs-settings-toggle,
+    #ffs-theme-toggle { width: 34px !important; min-width: 34px !important; }
+    #ffs-new-session { min-width: 44px !important; }
+}
 """
 
 # ═══════════════════════════════════════════════════════════
@@ -1349,6 +2136,101 @@ function prepareGenerationSliders() {
     });
 }
 
+function applyStudioTheme(theme) {
+    var resolved = theme === 'dark' ? 'dark' : 'light';
+    document.documentElement.dataset.ffsTheme = resolved;
+    document.documentElement.classList.toggle('dark', resolved === 'dark');
+    var toggle = document.querySelector('#ffs-theme-toggle button, #ffs-theme-toggle');
+    if (toggle) {
+        toggle.textContent = resolved === 'dark' ? '☀' : '☾';
+        toggle.setAttribute('title', resolved === 'dark' ? 'Use light theme' : 'Use dark theme');
+        toggle.setAttribute('aria-label', resolved === 'dark' ? 'Use light theme' : 'Use dark theme');
+    }
+}
+
+function prepareThemeToggle() {
+    var toggle = document.querySelector('#ffs-theme-toggle button, #ffs-theme-toggle');
+    if (!document.documentElement.dataset.ffsTheme) {
+        var stored = localStorage.getItem('ffs-theme');
+        var preferred = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+        applyStudioTheme(stored || preferred);
+    }
+    if (toggle && !toggle.dataset.ffsThemeReady) {
+        toggle.dataset.ffsThemeReady = 'true';
+        toggle.addEventListener('click', function() {
+            var next = document.documentElement.dataset.ffsTheme === 'dark' ? 'light' : 'dark';
+            localStorage.setItem('ffs-theme', next);
+            applyStudioTheme(next);
+        });
+        applyStudioTheme(document.documentElement.dataset.ffsTheme);
+    }
+}
+
+function setSettingsDrawer(open) {
+    document.documentElement.dataset.ffsSettings = open ? 'open' : 'closed';
+    var toggle = document.querySelector('#ffs-settings-toggle button, #ffs-settings-toggle');
+    var panel = document.querySelector('#ffs-settings-panel');
+    var workspace = document.querySelector('#ffs-workspace');
+    var composer = document.querySelector('#ffs-composer-dock');
+    var backdrop = document.querySelector('#ffs-settings-backdrop');
+    [toggle, panel, workspace, composer, backdrop].forEach(function(element) {
+        if (element) element.classList.toggle('ffs-settings-open', open);
+    });
+    if (panel) {
+        panel.style.opacity = open ? '1' : '0';
+        panel.style.visibility = open ? 'visible' : 'hidden';
+        panel.style.pointerEvents = open ? 'auto' : 'none';
+        panel.style.transform = open ? 'translateX(0)' : 'translateX(calc(-100% - 28px))';
+    }
+    if (backdrop) {
+        backdrop.style.opacity = open ? '1' : '0';
+        backdrop.style.visibility = open ? 'visible' : 'hidden';
+        backdrop.style.pointerEvents = open ? 'auto' : 'none';
+    }
+    if (toggle) {
+        toggle.setAttribute('aria-expanded', open ? 'true' : 'false');
+        toggle.setAttribute('title', open ? 'Close generation controls' : 'Open generation controls');
+        toggle.setAttribute('aria-label', open ? 'Close generation controls' : 'Open generation controls');
+    }
+}
+
+function prepareSettingsDrawer() {
+    var toggle = document.querySelector('#ffs-settings-toggle button, #ffs-settings-toggle');
+    var close = document.querySelector('.ffs-settings-close');
+    var backdrop = document.querySelector('#ffs-settings-backdrop');
+    if (!backdrop) {
+        backdrop = document.createElement('button');
+        backdrop.id = 'ffs-settings-backdrop';
+        backdrop.type = 'button';
+        backdrop.setAttribute('aria-label', 'Close settings');
+        document.body.appendChild(backdrop);
+    }
+    if (!document.documentElement.dataset.ffsSettings) {
+        setSettingsDrawer(window.innerWidth >= 1100);
+    }
+    if (toggle && !toggle.dataset.ffsSettingsReady) {
+        toggle.dataset.ffsSettingsReady = 'true';
+        toggle.addEventListener('click', function() {
+            setSettingsDrawer(document.documentElement.dataset.ffsSettings !== 'open');
+        });
+    }
+    if (close && !close.dataset.ffsSettingsReady) {
+        close.dataset.ffsSettingsReady = 'true';
+        close.addEventListener('click', function() { setSettingsDrawer(false); });
+    }
+    if (!backdrop.dataset.ffsSettingsReady) {
+        backdrop.dataset.ffsSettingsReady = 'true';
+        backdrop.addEventListener('click', function() { setSettingsDrawer(false); });
+    }
+    if (!document.documentElement.dataset.ffsSettingsEscape) {
+        document.documentElement.dataset.ffsSettingsEscape = 'true';
+        document.addEventListener('keydown', function(event) {
+            if (event.key === 'Escape') setSettingsDrawer(false);
+        });
+    }
+    setSettingsDrawer(document.documentElement.dataset.ffsSettings === 'open');
+}
+
 function enhanceStudioUI() {
     var attach = document.querySelector('#ffs-attach button, #ffs-attach');
     var generate = document.querySelector('#ffs-generate button, #ffs-generate');
@@ -1358,15 +2240,8 @@ function enhanceStudioUI() {
     if (fresh) fresh.setAttribute('title', 'Start a new session');
 
     prepareGenerationSliders();
-
-    var settings = document.querySelector('#ffs-settings-panel');
-    if (settings && window.innerWidth <= 900 && !settings.dataset.ffsMobileCollapsed) {
-        var settingsToggle = settings.querySelector('button.label-wrap, .label-wrap button');
-        if (settingsToggle) {
-            settings.dataset.ffsMobileCollapsed = 'true';
-            settingsToggle.click();
-        }
-    }
+    prepareThemeToggle();
+    prepareSettingsDrawer();
 
     var status = document.querySelector('#ffs-status');
     if (status && !status.dataset.ffsObserved) {
@@ -1392,6 +2267,45 @@ ffs_theme = gr.themes.Base(
     secondary_hue=gr.themes.colors.purple,
     neutral_hue=gr.themes.colors.slate,
 )
+
+
+def _model_capabilities_html(model_name):
+    """Render compact capability metadata from the model registry."""
+    info = model_manager.MODEL_REGISTRY.get(model_name, {})
+    capabilities = set(info.get("capabilities", []))
+    labels = ["Text to image"]
+    if "img2img" in capabilities:
+        labels.append("Image edit")
+    if "inpaint" in capabilities:
+        labels.append("Mask edit")
+    chips = "".join(f'<span>{html.escape(label)}</span>' for label in labels)
+    description = html.escape(info.get("description", "Image generation"))
+    return (
+        '<div class="ffs-model-profile">'
+        f'<strong>{html.escape(model_name)}</strong>'
+        f'<small>{description}</small>'
+        f'<div>{chips}</div>'
+        '</div>'
+    )
+
+
+def _flux_encoder_status_html():
+    config = model_manager.get_flux_encoder_config()
+    active = "Custom" if config["mode"] == "custom" else "Official FP4"
+    if config["custom_available"]:
+        size = config["custom_size"] / 1024**3 if config["custom_size"] else 0
+        detail = config["custom_format"].upper() or "CUSTOM"
+        if size:
+            detail += f" / {size:.2f} GiB"
+        custom = f'<span class="ffs-encoder-file">{html.escape(detail)}</span>'
+    else:
+        custom = '<span class="ffs-encoder-file muted">No custom file configured</span>'
+    return (
+        '<div class="ffs-encoder-status">'
+        f'<strong>{html.escape(active)} active</strong>'
+        f'{custom}'
+        '</div>'
+    )
 
 
 def _ui_trace(message):
@@ -1436,6 +2350,22 @@ with gr.Blocks(title="FreeFakeStudio") as demo:
             min_width=92,
             elem_id="ffs-model-state",
         )
+        settings_btn = gr.Button(
+            "⚙",
+            size="sm",
+            variant="secondary",
+            scale=0,
+            min_width=40,
+            elem_id="ffs-settings-toggle",
+        )
+        theme_btn = gr.Button(
+            "◐",
+            size="sm",
+            variant="secondary",
+            scale=0,
+            min_width=40,
+            elem_id="ffs-theme-toggle",
+        )
         new_chat_btn = gr.Button(
             "New", size="sm", variant="secondary", scale=0,
             min_width=78, elem_id="ffs-new-session",
@@ -1444,13 +2374,43 @@ with gr.Blocks(title="FreeFakeStudio") as demo:
     # ═══════════════════════════════════════════════════════
     # MAIN CONTENT AREA
     # ═══════════════════════════════════════════════════════
-    with gr.Accordion(
-        "Generation controls",
-        open=True,
-        elem_classes="ffs-settings",
-        elem_id="ffs-settings-panel",
-    ) as settings_panel:
+    with gr.Column(elem_classes="ffs-settings", elem_id="ffs-settings-panel") as settings_panel:
+        gr.HTML(
+            '<div class="ffs-settings-heading">'
+            '<span>Generation controls</span>'
+            '<button type="button" class="ffs-settings-close" aria-label="Close settings">×</button>'
+            '</div>',
+            elem_id="ffs-settings-heading",
+        )
         with gr.Column(elem_classes="ffs-settings-panel"):
+            model_capabilities_display = gr.HTML(
+                _model_capabilities_html("Z-Image Turbo"),
+                elem_id="ffs-model-profile",
+            )
+            with gr.Column(
+                visible=False,
+                scale=0,
+                elem_classes="ffs-flux-encoder-panel",
+            ) as flux_encoder_panel:
+                flux_encoder_choice = gr.Radio(
+                    choices=model_manager.get_flux_encoder_choices(),
+                    value=(
+                        "Custom"
+                        if model_manager.get_flux_encoder_config()["mode"] == "custom"
+                        else "Official"
+                    ),
+                    label="FLUX Text Encoder",
+                )
+                flux_encoder_status = gr.HTML(
+                    _flux_encoder_status_html(),
+                    elem_id="ffs-flux-encoder-status",
+                )
+                apply_flux_encoder_btn = gr.Button(
+                    "Apply encoder",
+                    size="sm",
+                    variant="secondary",
+                    elem_id="ffs-apply-encoder",
+                )
             aspect_ratio = gr.Dropdown(
                 ASPECTS,
                 value="1024x1024 (1:1)",
@@ -1458,9 +2418,12 @@ with gr.Blocks(title="FreeFakeStudio") as demo:
             )
             num_images = gr.Slider(1, 8, value=1, step=1, label="Images")
             gen_seed = gr.Number(value=0, label="Seed (0 = random)", precision=0)
-            gen_steps = gr.Slider(1, 50, value=8, step=1, label="Steps")
+            gen_steps = gr.Slider(1, 8, value=8, step=1, label="Steps")
             gen_cfg = gr.Slider(0.5, 10.0, value=1.0, step=0.1, label="CFG")
-            gen_denoise = gr.Slider(0.1, 1.0, value=1.0, step=0.05, label="Denoise")
+            gen_denoise = gr.Slider(
+                0.1, 1.0, value=1.0, step=0.05,
+                label="Denoise", visible=False,
+            )
             negative_prompt = gr.Textbox(
                 DEFAULT_NEG,
                 label="Negative Prompt",
@@ -1523,7 +2486,7 @@ with gr.Blocks(title="FreeFakeStudio") as demo:
 
         # ── Action Buttons Row ─────────────────────────────
         with gr.Row(visible=False, elem_id="ffs-result-actions") as action_row:
-            add_to_prompt_btn = gr.Button("Use as input", size="sm")
+            add_to_prompt_btn = gr.Button("Use as input", size="sm", visible=False)
             regenerate_btn = gr.Button("Regenerate", size="sm")
             seed_display = gr.Textbox(
                 interactive=False, visible=False, show_label=False,
@@ -1583,6 +2546,7 @@ with gr.Blocks(title="FreeFakeStudio") as demo:
                     file_types=["image"],
                     size="sm",
                     min_width=40,
+                    visible=False,
                     elem_id="ffs-attach",
                 )
                 prompt_input = gr.Textbox(
@@ -1620,32 +2584,49 @@ with gr.Blocks(title="FreeFakeStudio") as demo:
             show_progress="hidden",
         )
 
-    def handle_upload(file):
+    def handle_upload(file, model_name):
         if file is None:
-            return gr.update(visible=False), gr.update(value=None), None, gr.update(visible=False)
+            return (
+                gr.update(visible=False), gr.update(value=None), None,
+                gr.update(visible=False), gr.update(visible=False),
+            )
+        if not model_manager.supports_img2img(model_name):
+            raise gr.Error(
+                f"{model_name} supports text-to-image only. "
+                "Choose Z-Image Turbo or FLUX.2-klein 4B to edit an image."
+            )
         img = Image.open(file).convert("RGB")
+        defaults = model_manager.get_defaults(model_name)
         return (
             gr.update(visible=True), gr.update(value=img), img,
             gr.update(visible=True),
+            gr.update(visible=True, value=defaults.get("img2img_denoise", 0.45)),
         )
 
     attach_btn.upload(
         handle_upload,
-        inputs=[attach_btn],
-        outputs=[attachment_row, attachment_display, attached_image, edit_panel],
+        inputs=[attach_btn, model_selector],
+        outputs=[
+            attachment_row, attachment_display, attached_image,
+            edit_panel, gen_denoise,
+        ],
     )
 
-    def clear_attachment():
+    def clear_attachment(model_name):
+        defaults = model_manager.get_defaults(model_name)
         return (
             gr.update(visible=False), gr.update(value=None), None,
             gr.update(visible=False), "None", None, None,
+            gr.update(visible=False, value=defaults.get("denoise", 1.0)),
         )
 
     remove_attachment_btn.click(
         clear_attachment,
+        inputs=[model_selector],
         outputs=[
             attachment_row, attachment_display, attached_image,
             edit_panel, mask_mode, mask_editor, mask_preview,
+            gen_denoise,
         ],
     )
 
@@ -1710,6 +2691,30 @@ with gr.Blocks(title="FreeFakeStudio") as demo:
         outputs=[mask_editor, mask_mode, manual_mask_group, auto_mask_group],
     )
 
+    # ── FLUX encoder selection ─────────────────────────────
+    def apply_flux_encoder(selection, model_name):
+        if model_name != model_manager.FLUX_MODEL_NAME:
+            raise gr.Error("The text-encoder selector applies only to FLUX.2 Klein 4B.")
+        try:
+            mode = model_manager.set_flux_encoder_mode(selection)
+        except Exception as exc:
+            _write_runtime_error("FLUX encoder selection", exc)
+            raise gr.Error(str(exc)) from exc
+        label = "Custom" if mode == "custom" else "Official"
+        _ui_trace(f"FLUX encoder applied: {mode}")
+        return (
+            gr.update(value=label, choices=model_manager.get_flux_encoder_choices()),
+            _flux_encoder_status_html(),
+            '<span class="ffs-model-badge">○ Available</span>',
+        )
+
+    apply_flux_encoder_btn.click(
+        apply_flux_encoder,
+        inputs=[flux_encoder_choice, model_selector],
+        outputs=[flux_encoder_choice, flux_encoder_status, model_status_display],
+        show_progress="minimal",
+    )
+
     # ── Model selector change ──────────────────────────────
     def on_model_change(model_name):
         status = model_manager.get_model_status()
@@ -1722,17 +2727,45 @@ with gr.Blocks(title="FreeFakeStudio") as demo:
         else:
             badge = '<span class="ffs-model-badge">○ Available</span>'
 
+        supports_image = model_manager.supports_img2img(model_name)
+        encoder_config = model_manager.get_flux_encoder_config()
         return (
             badge,
-            gr.update(value=defaults.get("steps", 8)),
+            _model_capabilities_html(model_name),
+            gr.update(
+                value=defaults.get("steps", 8),
+                maximum=defaults.get("max_steps", 50),
+            ),
             gr.update(value=defaults.get("cfg", 1.0)),
-            gr.update(value=defaults.get("denoise", 1.0)),
+            gr.update(value=defaults.get("denoise", 1.0), visible=False),
+            gr.update(visible=supports_image),
+            gr.update(visible=False),
+            gr.update(value=None),
+            None,
+            gr.update(visible=False),
+            "None",
+            None,
+            None,
+            gr.update(visible=supports_image),
+            gr.update(visible=model_name == model_manager.FLUX_MODEL_NAME),
+            gr.update(
+                choices=model_manager.get_flux_encoder_choices(),
+                value="Custom" if encoder_config["mode"] == "custom" else "Official",
+            ),
+            _flux_encoder_status_html(),
         )
 
     model_selector.change(
         on_model_change,
         inputs=[model_selector],
-        outputs=[model_status_display, gen_steps, gen_cfg, gen_denoise],
+        outputs=[
+            model_status_display, model_capabilities_display,
+            gen_steps, gen_cfg, gen_denoise, attach_btn,
+            attachment_row, attachment_display, attached_image,
+            edit_panel, mask_mode, mask_editor, mask_preview,
+            add_to_prompt_btn,
+            flux_encoder_panel, flux_encoder_choice, flux_encoder_status,
+        ],
     )
 
     # ── SEND (main generation) ─────────────────────────────
@@ -1834,8 +2867,10 @@ with gr.Blocks(title="FreeFakeStudio") as demo:
     )
 
     # ── Add to Prompt ──────────────────────────────────────
-    def on_add_to_prompt(gallery_data, selected_idx):
+    def on_add_to_prompt(gallery_data, selected_idx, model_name):
         """Take the selected/first result and set it as attachment."""
+        if not model_manager.supports_img2img(model_name):
+            raise gr.Error(f"{model_name} cannot use an image as input.")
         if not gallery_data:
             raise gr.Error("No results to add!")
         idx = min(int(selected_idx or 0), len(gallery_data) - 1)
@@ -1844,19 +2879,23 @@ with gr.Blocks(title="FreeFakeStudio") as demo:
             img_data = img_data[0]
         if isinstance(img_data, str):
             img_data = Image.open(img_data)
-        # Check if current model supports editing
+        defaults = model_manager.get_defaults(model_name)
         return (
             gr.update(visible=True),                  # attachment_row
             gr.update(value=img_data),                # attachment_display
             img_data,                                  # attached_image
             gr.update(visible=True),                  # edit_panel
             gr.update(value=""),                       # clear prompt
+            gr.update(visible=True, value=defaults.get("img2img_denoise", 0.45)),
         )
 
     add_to_prompt_btn.click(
         on_add_to_prompt,
-        inputs=[result_gallery, selected_result_idx],
-        outputs=[attachment_row, attachment_display, attached_image, edit_panel, prompt_input],
+        inputs=[result_gallery, selected_result_idx, model_selector],
+        outputs=[
+            attachment_row, attachment_display, attached_image,
+            edit_panel, prompt_input, gen_denoise,
+        ],
     )
 
     def _on_gallery_select(evt: gr.SelectData):
@@ -1937,6 +2976,7 @@ with gr.Blocks(title="FreeFakeStudio") as demo:
             "None",                                   # mask_mode
             '<div class="ffs-history"></div>',        # conversation_display
             [],                                       # chat_history
+            gr.update(visible=False),                 # gen_denoise
         )
 
     new_chat_btn.click(
@@ -1946,7 +2986,7 @@ with gr.Blocks(title="FreeFakeStudio") as demo:
             seed_display, action_row,
             attachment_row, attachment_display, attached_image, prompt_input,
             last_gen_settings, edit_panel, mask_mode,
-            conversation_display, chat_history,
+            conversation_display, chat_history, gen_denoise,
         ],
     )
 

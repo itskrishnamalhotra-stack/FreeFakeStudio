@@ -18,7 +18,7 @@ Only these models are active in the normal UI:
 
 | Model | Main use | Capabilities |
 | --- | --- | --- |
-| Z-Image Turbo | Fast text to image | Text to image, img2img, inpaint engine support |
+| Z-Image Turbo | Fast text to image | Text to image |
 | FLUX.2-klein 4B | Best all-purpose model | Text to image, img2img, inpaint |
 | ERNIE-Image-Turbo | Fast text to image | Text to image |
 
@@ -39,6 +39,32 @@ The older FLUX.2-klein 9B and Qwen-Image-Edit engine files may remain in the rep
 6. Open the large `OPEN FREEFAKESTUDIO` HTTPS link printed after the local server starts.
 
 Later runs reuse the Drive workspace and should skip existing downloads.
+
+### Optional FLUX Encoder
+
+The single Colab cell includes three FLUX-only fields:
+
+- `FLUX_ENCODER`: start with `Official` or a previously validated `Custom` encoder;
+- `FLUX_CUSTOM_ENCODER_URL`: a complete Hugging Face `.gguf` or `.safetensors` file URL;
+- `HUGGINGFACE_TOKEN`: optional access token for a gated repository whose terms you accepted.
+
+Custom encoders must be single-file Qwen3-4B text encoders made specifically for
+FLUX.2 Klein 4B. Generic Qwen chat models, Z-Image encoders, model folders, ZIPs,
+and sharded Transformers repositories are not compatible with this loader.
+
+Free Colab constraints:
+
+- recommended format: GGUF Q4 (`Q4_K_M` or `Q4_0`);
+- recommended download size: 2.0-2.7 GiB;
+- accepted size: 500 MiB through 3.0 GiB;
+- hard rejection above 3.0 GiB to protect host RAM;
+- only the selected encoder is loaded, never Official and Custom together.
+
+The launcher checks Hugging Face metadata before downloading, validates the file
+header after downloading, and stores the file plus its manifest in Google Drive.
+When FLUX is selected, open Settings, choose `Official` or `Custom`, and press
+`Apply encoder`. Applying a change unloads FLUX; the next generation reloads it
+with the selected encoder. Z-Image and ERNIE are unaffected.
 
 For the most reliable route, paste your ngrok auth token into the notebook's
 `NGROK_AUTH_TOKEN` field. The launcher will print:
@@ -94,6 +120,8 @@ First run:
 - uses the 4.12 GB Q3_K_M Z-Image GGUF diffusion model with Comfy-Org's 3.48 GB mixed-FP4 text encoder to fit free Colab host RAM;
 - enables DynamicVRAM, disables execution caching and pinned-memory duplication, and logs RAM/VRAM around every Z-Image component load;
 - downloads only missing or repair-requested model files;
+- validates and persists an optional FLUX custom encoder without loading two encoders;
+- stops a previous PID-verified FreeFakeStudio child before a cell rerun;
 - creates one HTTPS route (ngrok when configured, otherwise Colab proxy);
 - launches Gradio with that route set as its absolute proxy root.
 
@@ -132,6 +160,7 @@ These reports include:
 - package versions;
 - ComfyUI/app path checks;
 - required model file size and symlink checks;
+- active FLUX encoder mode, format, size, filename, and source URL;
 - `nvidia-smi` output when available;
 - full traceback on setup failure.
 
@@ -162,6 +191,12 @@ On generation:
 - generation queue concurrency is limited for a single Colab GPU.
 
 If a load fails, the model manager unloads partial state and clears memory before reporting the error.
+
+Changing between already installed Official and Custom encoders in the UI does
+not require reconnecting Colab. To add or replace the custom URL, stop the running
+cell, edit the form, and run the same cell again. Disconnect/reconnect the runtime
+only after an actual Colab RAM crash or when a stale CUDA allocation survives the
+normal unload path.
 
 ## UI Workflow
 
@@ -228,9 +263,11 @@ engine_ernie_image_turbo.py
 7. Open the printed `OPEN FREEFAKESTUDIO` HTTPS link.
 8. Generate with `Z-Image Turbo`.
 9. Generate with `FLUX.2-klein 4B`.
-10. Attach an image, use FLUX img2img.
-11. Test `Background Only`, `Everything Except Face`, and `Manual Paint`.
-12. Test `Add to Prompt`, then edit the attached generated image.
-13. Test `Regenerate`.
-14. Switch models in this order: Z-Image -> FLUX -> ERNIE -> FLUX.
-15. If anything fails, collect `diagnostics/latest.json` and the newest `results/_debug/error_*.txt`.
+10. If configured, switch FLUX to `Custom`, press `Apply encoder`, and generate again.
+11. Switch FLUX back to `Official`, press `Apply encoder`, and generate again.
+12. Attach an image, use FLUX img2img.
+13. Test `Background Only`, `Everything Except Face`, and `Manual Paint`.
+14. Test `Add to Prompt`, then edit the attached generated image.
+15. Test `Regenerate`.
+16. Switch models in this order: Z-Image -> FLUX -> ERNIE -> FLUX.
+17. If anything fails, collect `diagnostics/latest.json` and the newest `results/_debug/error_*.txt`.

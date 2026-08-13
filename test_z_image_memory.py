@@ -4,8 +4,10 @@ import tempfile
 import types
 import unittest
 from pathlib import Path
+from urllib.parse import unquote, urlparse
 from unittest import mock
 
+import engine_flux_klein_4b
 import engine_z_image
 import gguf_nodes
 import model_manager
@@ -111,7 +113,8 @@ class ZImageMemoryTests(unittest.TestCase):
                 encoding="utf-8",
             )
             (package_dir / "nodes.py").write_text(
-                "from .ops import Loader\nNODE_CLASS_MAPPINGS = {'UnetLoaderGGUF': Loader}\n",
+                "from .ops import Loader\nNODE_CLASS_MAPPINGS = {"
+                "'UnetLoaderGGUF': Loader, 'CLIPLoaderGGUF': Loader}\n",
                 encoding="utf-8",
             )
             (package_dir / "ops.py").write_text("class Loader: pass\n", encoding="utf-8")
@@ -122,6 +125,7 @@ class ZImageMemoryTests(unittest.TestCase):
             try:
                 mappings = gguf_nodes.load_gguf_node_mappings(root)
                 self.assertIn("UnetLoaderGGUF", mappings)
+                self.assertIn("CLIPLoaderGGUF", mappings)
                 self.assertEqual(mappings["UnetLoaderGGUF"].__module__, gguf_nodes.PACKAGE_NAME + ".ops")
             finally:
                 for name in tuple(sys.modules):
@@ -202,6 +206,43 @@ class LauncherRepositoryTests(unittest.TestCase):
 
             self.assertEqual(marker.read_text(encoding="utf-8"), "persistent")
 
+    def test_custom_encoder_url_parser_accepts_huggingface_file(self):
+        parse = self._launch_function(
+            "parse_huggingface_file_url",
+            {"urlparse": urlparse, "unquote": unquote, "Path": Path},
+        )
+        self.assertEqual(
+            parse("https://huggingface.co/example/encoder/blob/main/model-q4_k_m.gguf"),
+            ("example/encoder", "main", "model-q4_k_m.gguf", ".gguf"),
+        )
+
+    def test_custom_encoder_url_parser_rejects_arbitrary_host(self):
+        parse = self._launch_function(
+            "parse_huggingface_file_url",
+            {"urlparse": urlparse, "unquote": unquote, "Path": Path},
+        )
+        with self.assertRaisesRegex(RuntimeError, "huggingface.co"):
+            parse("https://example.test/model.gguf")
+
+    def test_custom_encoder_metadata_rejects_oversized_file(self):
+        sibling = types.SimpleNamespace(rfilename="model.gguf", size=4 * 1024**3)
+        api = types.SimpleNamespace(
+            model_info=lambda **kwargs: types.SimpleNamespace(siblings=[sibling])
+        )
+        hub = types.ModuleType("huggingface_hub")
+        hub.HfApi = lambda: api
+        function = self._launch_function(
+            "huggingface_file_size",
+            {
+                "os": __import__("os"),
+                "FLUX_CUSTOM_MIN_BYTES": 500 * 1024**2,
+                "FLUX_CUSTOM_MAX_BYTES": 3 * 1024**3,
+            },
+        )
+        with mock.patch.dict(sys.modules, {"huggingface_hub": hub}), \
+             self.assertRaisesRegex(RuntimeError, "3.00 GiB"):
+            function("example/encoder", "main", "model.gguf")
+
     def test_cached_model_is_moved_to_drive_without_symlink(self):
         import os
         import shutil
@@ -275,6 +316,62 @@ class LauncherRepositoryTests(unittest.TestCase):
             self.assertFalse(target.is_symlink())
             self.assertEqual(target.read_bytes(), b"real-model-data")
             self.assertFalse(cached.is_symlink())
+
+
+class FluxEncoderTests(unittest.TestCase):
+    def tearDown(self):
+        engine_flux_klein_4b._loaded = False
+        engine_flux_klein_4b._unet = None
+        engine_flux_klein_4b._clip = None
+        engine_flux_klein_4b._vae = None
+        engine_flux_klein_4b._loaded_encoder = None
+
+    def test_official_flux_encoder_remains_default(self):
+        clip = _Loader("official-clip")
+        nodes = {
+            "UNETLoader": _Loader("unet"),
+            "CLIPLoader": clip,
+            "VAELoader": _Loader("vae"),
+        }
+        with mock.patch.dict(__import__("os").environ, {"FFS_FLUX_ENCODER_MODE": "official"}), \
+             mock.patch.object(engine_flux_klein_4b, "_get_nodes", return_value=nodes), \
+             mock.patch("builtins.print"):
+            engine_flux_klein_4b.load()
+
+        self.assertEqual(
+            clip.calls[0],
+            (("qwen_3_4b_fp4_flux2.safetensors",), {"type": "flux2"}),
+        )
+        self.assertEqual(engine_flux_klein_4b.get_loaded_encoder(), "official")
+
+    def test_custom_gguf_uses_gguf_clip_loader(self):
+        import os
+
+        with tempfile.TemporaryDirectory() as root:
+            encoder_dir = Path(root) / "models" / "text_encoders"
+            encoder_dir.mkdir(parents=True)
+            (encoder_dir / "custom.gguf").write_bytes(b"GGUF")
+            custom_clip = _Loader("custom-clip")
+            nodes = {
+                "UNETLoader": _Loader("unet"),
+                "CLIPLoader": _Loader("official-clip"),
+                "VAELoader": _Loader("vae"),
+            }
+            env = {
+                "COMFYUI_ROOT": root,
+                "FFS_FLUX_ENCODER_MODE": "custom",
+                "FFS_FLUX_CUSTOM_ENCODER_FILE": "custom.gguf",
+            }
+            with mock.patch.dict(os.environ, env), \
+                 mock.patch.object(engine_flux_klein_4b, "_get_nodes", return_value=nodes), \
+                 mock.patch("gguf_nodes.load_gguf_node_mappings", return_value={
+                     "CLIPLoaderGGUF": lambda: custom_clip,
+                 }), \
+                 mock.patch("builtins.print"):
+                engine_flux_klein_4b.load()
+
+            self.assertEqual(custom_clip.calls[0], (("custom.gguf",), {"type": "flux2"}))
+            self.assertEqual(engine_flux_klein_4b.get_loaded_encoder(), "custom")
 
 
 if __name__ == "__main__":

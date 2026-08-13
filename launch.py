@@ -12,6 +12,7 @@ import os
 import platform
 import queue
 import re
+import signal
 import shutil
 import subprocess
 import sys
@@ -19,6 +20,7 @@ import threading
 import time
 import traceback
 from pathlib import Path
+from urllib.parse import unquote, urlparse
 
 from IPython.display import HTML, clear_output, display
 
@@ -44,6 +46,12 @@ UPDATE_APP = os.environ.get("FFS_UPDATE", "") == "1"
 COMFY_TAG = os.environ.get("FFS_COMFY_TAG", "v0.28.0")
 DEBUG = os.environ.get("FFS_DEBUG", "1").lower() not in ("0", "false", "no", "off")
 NGROK_AUTHTOKEN = os.environ.get("FFS_NGROK_AUTHTOKEN", "").strip()
+FLUX_ENCODER_MODE = os.environ.get("FFS_FLUX_ENCODER_MODE", "official").strip().lower()
+FLUX_CUSTOM_ENCODER_URL = os.environ.get("FFS_FLUX_CUSTOM_ENCODER_URL", "").strip()
+FLUX_CUSTOM_MAX_BYTES = 3 * 1024**3
+FLUX_CUSTOM_MIN_BYTES = 500 * 1024**2
+FLUX_ENCODER_CONFIG = WS / "config" / "flux_encoder.json"
+APP_PID_FILE = WS / "config" / "app.pid"
 
 COMFYUI = WS / "ComfyUI"
 CACHE = WS / "cache"
@@ -56,6 +64,7 @@ for directory in [
     CACHE / "pip",
     RESULTS,
     DIAGNOSTICS,
+    FLUX_ENCODER_CONFIG.parent,
 ]:
     directory.mkdir(parents=True, exist_ok=True)
 
@@ -198,7 +207,7 @@ def gpu_summary():
 
 
 def required_model_targets():
-    return [
+    targets = [
         COMFYUI / "models" / "diffusion_models" / "z_image_turbo-Q3_K_M.gguf",
         COMFYUI / "models" / "text_encoders" / "qwen_3_4b_fp4_mixed.safetensors",
         COMFYUI / "models" / "vae" / "ae.safetensors",
@@ -208,6 +217,10 @@ def required_model_targets():
         COMFYUI / "models" / "diffusion_models" / "ernie-image-turbo-Q6_K.gguf",
         COMFYUI / "models" / "text_encoders" / "ministral-3-3b.safetensors",
     ]
+    manifest = load_flux_encoder_manifest()
+    if manifest:
+        targets.append(COMFYUI / "models" / "text_encoders" / manifest["local_name"])
+    return targets
 
 
 def write_debug_report(stage, exc=None):
@@ -232,6 +245,11 @@ def write_debug_report(stage, exc=None):
             "PIP_CACHE_DIR": os.environ.get("PIP_CACHE_DIR"),
             "COMFYUI_ROOT": os.environ.get("COMFYUI_ROOT"),
             "FREEFAKESTUDIO_WORKSPACE": os.environ.get("FREEFAKESTUDIO_WORKSPACE"),
+            "FFS_FLUX_ENCODER_MODE": os.environ.get("FFS_FLUX_ENCODER_MODE"),
+            "FFS_FLUX_CUSTOM_ENCODER_FILE": os.environ.get("FFS_FLUX_CUSTOM_ENCODER_FILE"),
+            "FFS_FLUX_CUSTOM_ENCODER_FORMAT": os.environ.get("FFS_FLUX_CUSTOM_ENCODER_FORMAT"),
+            "FFS_FLUX_CUSTOM_ENCODER_SIZE": os.environ.get("FFS_FLUX_CUSTOM_ENCODER_SIZE"),
+            "FFS_FLUX_CUSTOM_ENCODER_SOURCE": os.environ.get("FFS_FLUX_CUSTOM_ENCODER_SOURCE"),
         },
         "packages": {
             name: package_version(name)
@@ -279,6 +297,7 @@ def write_debug_report(stage, exc=None):
 
 
 def launch_app_process(timeout_seconds=180):
+    terminate_previous_app_process()
     log_path = DIAGNOSTICS / "app_launch_latest.log"
     history = []
     url_pattern = re.compile(r"https://[^\s]+\.gradio\.live|Running on public URL:\s*(https://[^\s]+)")
@@ -345,6 +364,7 @@ def launch_app_process(timeout_seconds=180):
             text=True,
             bufsize=1,
         )
+        APP_PID_FILE.write_text(str(proc.pid), encoding="ascii")
         started = time.time()
         local_started = False
         output_queue = queue.Queue()
@@ -400,6 +420,37 @@ def launch_app_process(timeout_seconds=180):
                     f"Gradio did not start its local server within {timeout_seconds}s. "
                     f"App log: {log_path}\nLast output:\n{tail}"
                 )
+
+
+def terminate_previous_app_process():
+    """Stop only a previous app process recorded for this Drive workspace."""
+    if not APP_PID_FILE.is_file():
+        return
+    try:
+        pid = int(APP_PID_FILE.read_text(encoding="ascii").strip())
+        command_line = Path(f"/proc/{pid}/cmdline").read_bytes().replace(b"\0", b" ").decode(
+            "utf-8", errors="replace"
+        )
+    except (OSError, ValueError):
+        APP_PID_FILE.unlink(missing_ok=True)
+        return
+    expected = str(APP / "app.py")
+    if expected not in command_line:
+        APP_PID_FILE.unlink(missing_ok=True)
+        return
+    print(f"Stopping previous FreeFakeStudio process ({pid})...", flush=True)
+    try:
+        os.kill(pid, signal.SIGTERM)
+        for _ in range(30):
+            if not Path(f"/proc/{pid}").exists():
+                break
+            time.sleep(0.2)
+        else:
+            os.kill(pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    finally:
+        APP_PID_FILE.unlink(missing_ok=True)
 
 
 def pip_install(*packages, force=False):
@@ -595,19 +646,21 @@ def file_ok(path):
     return path.is_file() and path.stat().st_size >= min_bytes(path.name)
 
 
-def hub_download(repo, filename, dest_dir, dest_name=None):
+def hub_download(repo, filename, dest_dir, dest_name=None, force=False, revision=None):
     from huggingface_hub import hf_hub_download
 
     dest_dir = Path(dest_dir)
     dest_dir.mkdir(parents=True, exist_ok=True)
     target = dest_dir / (dest_name or Path(filename).name)
-    if file_ok(target) and not REPAIR:
+    if file_ok(target) and not REPAIR and not force:
         return target
     cached = hf_hub_download(
         repo_id=repo,
         filename=filename,
+        revision=revision,
         cache_dir=str(CACHE / "huggingface"),
-        force_download=REPAIR,
+        force_download=REPAIR or force,
+        token=os.environ.get("HF_TOKEN") or None,
     )
     if not file_ok(cached):
         raise RuntimeError(f"Downloaded file looks incomplete: {cached}")
@@ -633,6 +686,160 @@ def hub_download(repo, filename, dest_dir, dest_name=None):
     if not file_ok(target):
         raise RuntimeError(f"Persistent model file looks incomplete: {target}")
     return target
+
+
+def parse_huggingface_file_url(url):
+    """Return repo, revision and filename from a Hugging Face file URL."""
+    parsed = urlparse(url.strip())
+    if parsed.scheme != "https" or parsed.netloc.lower() not in {
+        "huggingface.co", "www.huggingface.co"
+    }:
+        raise RuntimeError("Custom FLUX encoder must be an https://huggingface.co file URL.")
+    parts = [unquote(part) for part in parsed.path.split("/") if part]
+    if len(parts) < 5 or parts[2] not in {"blob", "resolve"}:
+        raise RuntimeError(
+            "Use the full Hugging Face file URL, for example "
+            "https://huggingface.co/owner/repo/blob/main/encoder.gguf"
+        )
+    repo = "/".join(parts[:2])
+    revision = parts[3]
+    filename = "/".join(parts[4:])
+    suffix = Path(filename).suffix.lower()
+    if suffix not in {".gguf", ".safetensors"}:
+        raise RuntimeError("Custom FLUX encoder must end in .gguf or .safetensors.")
+    return repo, revision, filename, suffix
+
+
+def huggingface_file_size(repo, revision, filename):
+    from huggingface_hub import HfApi
+
+    info = HfApi().model_info(
+        repo_id=repo,
+        revision=revision,
+        files_metadata=True,
+        token=os.environ.get("HF_TOKEN") or None,
+    )
+    sibling = next((item for item in info.siblings if item.rfilename == filename), None)
+    if sibling is None:
+        raise RuntimeError(f"Encoder file was not found in {repo}: {filename}")
+    size = getattr(sibling, "size", None)
+    if not size:
+        raise RuntimeError("Hugging Face did not report the encoder file size; download stopped.")
+    if size < FLUX_CUSTOM_MIN_BYTES:
+        raise RuntimeError(
+            f"Custom encoder is only {size / 1024**2:.0f} MiB; expected a complete Qwen3-4B file."
+        )
+    if size > FLUX_CUSTOM_MAX_BYTES:
+        raise RuntimeError(
+            f"Custom encoder is {size / 1024**3:.2f} GiB. Free Colab limit is 3.00 GiB; "
+            "use a Q4 file around 2.0-2.7 GiB."
+        )
+    return int(size)
+
+
+def validate_flux_encoder_file(path):
+    """Perform cheap structural checks before exposing a custom file to the app."""
+    path = Path(path)
+    size = path.stat().st_size
+    if not FLUX_CUSTOM_MIN_BYTES <= size <= FLUX_CUSTOM_MAX_BYTES:
+        raise RuntimeError(f"Custom FLUX encoder has an unsupported size: {size} bytes")
+    if path.suffix.lower() == ".gguf":
+        from gguf import GGUFReader
+
+        reader = GGUFReader(str(path), mode="r")
+        field = reader.fields.get("general.architecture")
+        arch = None
+        if field is not None and field.parts:
+            value = field.parts[field.data[-1]]
+            arch = bytes(value).decode("utf-8", errors="replace")
+        if arch != "qwen3":
+            raise RuntimeError(
+                f"Custom GGUF architecture is {arch or 'unknown'}, expected qwen3 for FLUX.2 Klein 4B."
+            )
+        return {"format": "gguf", "architecture": arch}
+
+    from safetensors import safe_open
+
+    with safe_open(str(path), framework="numpy", device="cpu") as handle:
+        keys = tuple(handle.keys())
+    qwen_markers = ("model.layers.", "transformer.h.", "text_encoders.qwen")
+    if len(keys) < 100 or not any(any(marker in key for marker in qwen_markers) for key in keys):
+        raise RuntimeError(
+            "Custom Safetensors file does not look like a complete Qwen3-4B text encoder."
+        )
+    return {"format": "safetensors", "architecture": "qwen3-compatible", "tensors": len(keys)}
+
+
+def load_flux_encoder_manifest():
+    if not FLUX_ENCODER_CONFIG.is_file():
+        return None
+    try:
+        data = json.loads(FLUX_ENCODER_CONFIG.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    target = COMFYUI / "models" / "text_encoders" / data.get("local_name", "")
+    if not target.name or not file_ok(target):
+        return None
+    data["path"] = str(target)
+    return data
+
+
+def ensure_custom_flux_encoder():
+    """Download/validate an optional single-file encoder and publish app config."""
+    global FLUX_ENCODER_MODE
+
+    manifest = load_flux_encoder_manifest()
+    if FLUX_CUSTOM_ENCODER_URL:
+        repo, revision, filename, suffix = parse_huggingface_file_url(FLUX_CUSTOM_ENCODER_URL)
+        size = huggingface_file_size(repo, revision, filename)
+        source = f"https://huggingface.co/{repo}/blob/{revision}/{filename}"
+        local_name = f"flux2-klein-custom-encoder{suffix}"
+        changed = not manifest or manifest.get("source") != source
+        step("FLUX custom encoder", f"Verified metadata / {size / 1024**3:.2f} GiB")
+        target = hub_download(
+            repo,
+            filename,
+            COMFYUI / "models" / "text_encoders",
+            local_name,
+            force=changed,
+            revision=revision,
+        )
+        details = validate_flux_encoder_file(target)
+        manifest = {
+            "source": source,
+            "repo": repo,
+            "revision": revision,
+            "remote_filename": filename,
+            "local_name": local_name,
+            "size": target.stat().st_size,
+            **details,
+        }
+        FLUX_ENCODER_CONFIG.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+        done("FLUX custom encoder", f"Ready / {details['format'].upper()}")
+
+    if FLUX_ENCODER_MODE not in {"official", "custom"}:
+        raise RuntimeError("FLUX_ENCODER must be Official or Custom.")
+    if FLUX_ENCODER_MODE == "custom" and not manifest:
+        raise RuntimeError(
+            "FLUX_ENCODER is Custom but no validated custom encoder exists. "
+            "Paste a compatible Hugging Face file URL or choose Official."
+        )
+
+    os.environ["FFS_FLUX_ENCODER_MODE"] = FLUX_ENCODER_MODE
+    if manifest:
+        os.environ["FFS_FLUX_CUSTOM_ENCODER_FILE"] = manifest["local_name"]
+        os.environ["FFS_FLUX_CUSTOM_ENCODER_FORMAT"] = manifest["format"]
+        os.environ["FFS_FLUX_CUSTOM_ENCODER_SIZE"] = str(manifest["size"])
+        os.environ["FFS_FLUX_CUSTOM_ENCODER_SOURCE"] = manifest["source"]
+    else:
+        for name in (
+            "FFS_FLUX_CUSTOM_ENCODER_FILE",
+            "FFS_FLUX_CUSTOM_ENCODER_FORMAT",
+            "FFS_FLUX_CUSTOM_ENCODER_SIZE",
+            "FFS_FLUX_CUSTOM_ENCODER_SOURCE",
+        ):
+            os.environ.pop(name, None)
+    return manifest
 
 
 def ensure_models():
@@ -744,6 +951,7 @@ try:
         step("Diagnostics", f"ComfyUI report: {comfy_report.name}", "ok")
 
     ensure_models()
+    ensure_custom_flux_encoder()
     step("Z-Image checkpoint", "Inspecting GGUF and FP4 headers")
     done("Z-Image checkpoint", verify_z_image_checkpoint())
     models_report = write_debug_report("models")
