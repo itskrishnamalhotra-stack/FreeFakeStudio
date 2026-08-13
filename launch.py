@@ -115,8 +115,12 @@ if not (COMFYUI / 'main.py').exists():
 else:
     step('ComfyUI', 'Cached on Drive', 'ok')
 
-# Disable comfy_aimdo VRAM offloader (requires numpy 1.x, Colab has 2.x)
-os.environ['COMFY_DISABLE_DYNAMIC_VRAM'] = '1'
+# comfy_aimdo is required by latest ComfyUI but its deps pull numpy 1.x
+# Install with --no-deps to keep Colab's numpy 2.x intact
+try:
+    __import__('comfy_aimdo')
+except ImportError:
+    _run('pip install -q comfy-aimdo --no-deps', quiet=False)
 
 # Symlink  /content/ComfyUI  →  persistent copy
 _link = Path('/content/ComfyUI')
