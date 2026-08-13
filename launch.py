@@ -167,18 +167,7 @@ else:
 # ═══════════════════════════════════════════════════════════
 step('Dependencies', 'Checking…')
 
-# Save Colab's pre-installed versions (their C extensions are pre-compiled)
-import importlib
-_pinned = {}
-for _pm in ['numpy', 'scipy', 'PIL']:
-    try:
-        _m = importlib.import_module(_pm if _pm != 'PIL' else 'PIL')
-        _pinned[_pm] = _m.__version__
-    except Exception:
-        pass
-
 _deps = []
-# Use 'rembg' not 'rembg[gpu]' — onnxruntime-gpu is installed separately
 for _mod, _pkg in [('rembg', 'rembg'), ('onnxruntime', 'onnxruntime-gpu'),
                     ('gradio', 'gradio'), ('cv2', 'opencv-python-headless')]:
     try:
@@ -191,22 +180,17 @@ if _deps:
     _render()
     _run(f'pip install -q {" ".join(_deps)}', quiet=False)
 
-    # Restore pinned versions (pip may have upgraded them, breaking C extensions)
-    _restore = []
-    for _pm, _ver in _pinned.items():
-        _pkg_name = 'Pillow' if _pm == 'PIL' else _pm
-        _restore.append(f'{_pkg_name}=={_ver}')
-    if _restore:
-        _steps[-1]['d'] = 'Fixing versions…'
-        _render()
-        _run(f'pip install -q {" ".join(_restore)}', quiet=False)
-        # Clear cached modules so restored versions are used
-        import sys as _sys
-        for _k in list(_sys.modules.keys()):
-            for _pm in _pinned:
-                if _k == _pm or _k.startswith(_pm + '.'):
-                    del _sys.modules[_k]
-                    break
+# ComfyUI + comfy-aimdo require numpy 1.x (2.x breaks Float64DType etc.)
+import numpy as _np
+if int(_np.__version__.split('.')[0]) >= 2:
+    _steps[-1]['d'] = 'Fixing numpy…'
+    _render()
+    _run('pip install -q numpy==1.26.4', quiet=False)
+    # Clear numpy from cache so 1.26.4 is used
+    import sys as _sys
+    for _k in list(_sys.modules.keys()):
+        if _k == 'numpy' or _k.startswith('numpy.'):
+            del _sys.modules[_k]
 
 done('Dependencies', f'{4 - len(_deps)}/4 cached' if len(_deps) < 4 else 'Installed')
 
