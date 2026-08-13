@@ -172,15 +172,19 @@ if _deps:
     _render()
     _run(f'pip install -q {" ".join(_deps)}', quiet=False)
 
-# Always ensure Pillow is up-to-date (ComfyUI may install incompatible version)
-_steps[-1]['d'] = 'Checking Pillow…'
-_render()
-_run('pip install -q --upgrade Pillow', quiet=False)
-# Clear any cached PIL modules so the upgraded version is used
-import sys as _sys
-for _k in list(_sys.modules.keys()):
-    if _k == 'PIL' or _k.startswith('PIL.'):
-        del _sys.modules[_k]
+# Ensure Pillow C extension matches Python package
+# (ComfyUI deps can downgrade Pillow, breaking the pre-built _imaging)
+try:
+    from PIL import Image as _pil_test
+    _pil_test.new('RGB', (1, 1))  # quick sanity check
+except Exception:
+    _steps[-1]['d'] = 'Fixing Pillow…'
+    _render()
+    _run('pip install -q --force-reinstall Pillow', quiet=False)
+    import sys as _sys
+    for _k in list(_sys.modules.keys()):
+        if _k == 'PIL' or _k.startswith('PIL.'):
+            del _sys.modules[_k]
 
 done('Dependencies', f'{4 - len(_deps)}/4 cached' if len(_deps) < 4 else 'Installed')
 
