@@ -173,12 +173,28 @@ for _pm in ['numpy', 'scipy', 'PIL']:
 
 _deps = []
 # Use 'rembg' not 'rembg[gpu]' — onnxruntime-gpu is installed separately
+# Pin gradio<5: Gradio 6 has HTTPS mixed-content bugs with Colab's proxy
 for _mod, _pkg in [('rembg', 'rembg'), ('onnxruntime', 'onnxruntime-gpu'),
-                    ('gradio', 'gradio'), ('cv2', 'opencv-python-headless')]:
+                    ('gradio', 'gradio<5'), ('cv2', 'opencv-python-headless')]:
     try:
         __import__(_mod)
     except ImportError:
         _deps.append(_pkg)
+
+# Force downgrade if Gradio 6+ is installed (breaks on Colab)
+try:
+    import gradio as _gr
+    if int(_gr.__version__.split('.')[0]) >= 5:
+        _deps = [d for d in _deps if 'gradio' not in d]  # remove duplicate
+        _deps.append('gradio<5')
+        # Clear cached gradio modules
+        import sys as _sys2
+        for _k2 in list(_sys2.modules.keys()):
+            if _k2 == 'gradio' or _k2.startswith('gradio.'):
+                del _sys2.modules[_k2]
+except Exception:
+    pass
+
 if _deps:
     _steps[-1]['d'] = f'Installing {len(_deps)} packages…'
     _render()

@@ -747,19 +747,9 @@ ffs_theme = gr.themes.Base(
 )
 
 
-# Detect Gradio version for compatibility
-_GRADIO_V6 = int(gr.__version__.split('.')[0]) >= 6
+with gr.Blocks(theme=ffs_theme, css=CSS, title="FreeFakeStudio") as demo:
 
-# On Gradio 6+, css/theme/head go in launch(). On older, in Blocks().
-if _GRADIO_V6:
-    _blocks_kw = dict(title="FreeFakeStudio")
-else:
-    _blocks_kw = dict(title="FreeFakeStudio", theme=ffs_theme, css=CSS)
-
-with gr.Blocks(**_blocks_kw) as demo:
-
-    if not _GRADIO_V6:
-        gr.HTML(JS_HEAD)
+    gr.HTML(JS_HEAD)
 
     # ── Session State ──────────────────────────────────────
     chat_history = gr.State([])           # list of {role, content, ...}
@@ -822,11 +812,8 @@ with gr.Blocks(**_blocks_kw) as demo:
             visible=False,
             elem_classes="ffs-result-gallery",
         )
-        if _GRADIO_V6:
-            _gallery_kwargs['buttons'] = ['download', 'fullscreen', 'download_all']
-        else:
-            _gallery_kwargs['show_download_button'] = True
-            _gallery_kwargs['show_fullscreen_button'] = True
+        _gallery_kwargs['show_download_button'] = True
+        _gallery_kwargs['show_fullscreen_button'] = True
         result_gallery = gr.Gallery(**_gallery_kwargs)
 
         # Download all
@@ -837,10 +824,10 @@ with gr.Blocks(**_blocks_kw) as demo:
         )
 
         # Seed display
-        _seed_kwargs = dict(label="Seed Used", interactive=False, visible=False)
-        if not _GRADIO_V6:
-            _seed_kwargs['show_copy_button'] = True
-        seed_display = gr.Textbox(**_seed_kwargs)
+        seed_display = gr.Textbox(
+            label="Seed Used", interactive=False, visible=False,
+            show_copy_button=True,
+        )
 
         # ── Action Buttons Row ─────────────────────────────
         with gr.Row(visible=False) as action_row:
@@ -1254,11 +1241,4 @@ demo.queue(default_concurrency_limit=1)
 
 # Launch
 if __name__ == "__main__" or IS_COLAB:
-    _launch_kw = dict(share=IS_COLAB, debug=True)
-    if _GRADIO_V6:
-        _launch_kw.update(css=CSS, theme=ffs_theme, head=JS_HEAD)
-        # Disable SSR on Colab — it generates internal HTTP URLs
-        # that get blocked by the HTTPS proxy (Mixed Content errors)
-        if IS_COLAB:
-            _launch_kw['ssr_mode'] = False
-    demo.launch(**_launch_kw)
+    demo.launch(share=IS_COLAB, debug=True)
