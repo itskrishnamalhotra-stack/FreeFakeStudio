@@ -370,6 +370,9 @@ class MockEngine:
     def _make_placeholder(self, width=512, height=512):
         """Create a placeholder image with model name."""
         from PIL import Image, ImageDraw, ImageFont
+        mock_delay = float(os.environ.get("FFS_MOCK_DELAY", "0") or 0)
+        if mock_delay > 0:
+            time.sleep(mock_delay)
         img = Image.new('RGB', (width, height), color=(30, 30, 40))
         draw = ImageDraw.Draw(img)
         # Draw gradient-like stripes

@@ -237,6 +237,11 @@ def do_generate(model_name, prompt, negative, aspect_ratio,
         images = []
 
         for i in range(int(num_images)):
+            action = "Generating" if mode == "generate" else "Editing" if mode == "img2img" else "Inpainting"
+            yield (
+                _status_html("active", f"{action} image {i + 1} of {int(num_images)}"),
+                [], [], str(seed),
+            )
             if mode == "generate":
                 img = engine.generate(prompt, negative, w, h,
                                       seed + i, cfg, denoise, int(steps))
@@ -331,20 +336,40 @@ def _parse_aspect(aspect_str):
 #  STATUS HTML HELPERS
 # ═══════════════════════════════════════════════════════════
 def _status_html(state, message):
-    """Generate status indicator HTML."""
+    """Generate an accessible, animated generation status surface."""
+    safe_message = html.escape(str(message))
     if state == "active":
-        icon = '<span class="ffs-status-dot ffs-pulse"></span>'
-        cls = "ffs-status-active"
-    elif state == "done":
-        icon = '<span class="ffs-status-check">✓</span>'
-        cls = "ffs-status-done"
-    elif state == "error":
-        icon = '<span class="ffs-status-error">✗</span>'
-        cls = "ffs-status-error-text"
-    else:
-        icon = '<span class="ffs-status-dot"></span>'
-        cls = ""
-    return f'<div class="ffs-status-line {cls}">{icon} {message}</div>'
+        return (
+            '<section class="ffs-generation-stage" aria-live="polite">'
+            '<div class="ffs-generation-preview" aria-hidden="true">'
+            '<span class="ffs-gen-tile ffs-gen-tile-a"></span>'
+            '<span class="ffs-gen-tile ffs-gen-tile-b"></span>'
+            '<span class="ffs-gen-tile ffs-gen-tile-c"></span>'
+            '<span class="ffs-gen-scan"></span>'
+            '</div>'
+            '<div class="ffs-generation-copy">'
+            '<div class="ffs-kicker"><span class="ffs-live-dot"></span>Creating</div>'
+            f'<div class="ffs-generation-title">{safe_message}</div>'
+            '<div class="ffs-progress-track"><span></span></div>'
+            '<div class="ffs-generation-note">The first model load takes the longest.</div>'
+            '</div>'
+            '</section>'
+        )
+    if state == "done":
+        return (
+            '<div class="ffs-notice ffs-notice-success" aria-live="polite">'
+            '<span class="ffs-notice-icon">&#10003;</span>'
+            f'<span>{safe_message}</span>'
+            '</div>'
+        )
+    if state == "error":
+        return (
+            '<div class="ffs-notice ffs-notice-error" role="alert">'
+            '<span class="ffs-notice-icon">!</span>'
+            f'<span>{safe_message}</span>'
+            '</div>'
+        )
+    return f'<div class="ffs-notice">{safe_message}</div>'
 
 
 def _request_html(prompt, model_name, has_image, mask_mode):
@@ -789,6 +814,494 @@ button[aria-label="Pan"], button[aria-label="Move"] {
 }
 """
 
+# Product shell overrides. These use stable element IDs instead of Gradio's
+# generated component numbers so the layout survives Gradio upgrades.
+CSS += """
+:root {
+    --ffs-bg: #f4f5f7;
+    --ffs-surface: #ffffff;
+    --ffs-surface-2: #eceff2;
+    --ffs-text: #15171a;
+    --ffs-text-2: #606770;
+    --ffs-border: #dfe3e8;
+    --ffs-accent: #e65235;
+    --ffs-accent-2: #147d72;
+    --ffs-accent-bg: rgba(230, 82, 53, 0.08);
+    --ffs-success: #147d72;
+    --ffs-danger: #c93c35;
+    --ffs-max-width: 1040px;
+    --ffs-shadow: 0 1px 2px rgba(19, 24, 31, 0.06);
+    --ffs-shadow-lg: 0 18px 50px rgba(25, 30, 38, 0.14), 0 2px 8px rgba(25, 30, 38, 0.08);
+}
+
+@media (prefers-color-scheme: dark) {
+    :root {
+        --ffs-bg: #111315;
+        --ffs-surface: #1a1d20;
+        --ffs-surface-2: #24282c;
+        --ffs-text: #f1f3f5;
+        --ffs-text-2: #a3aab2;
+        --ffs-border: #30353a;
+        --ffs-accent: #ff7558;
+        --ffs-accent-2: #4ec9b9;
+        --ffs-accent-bg: rgba(255, 117, 88, 0.1);
+        --ffs-success: #4ec9b9;
+        --ffs-danger: #ff736c;
+        --ffs-shadow: 0 1px 2px rgba(0, 0, 0, 0.28);
+        --ffs-shadow-lg: 0 22px 60px rgba(0, 0, 0, 0.42), 0 2px 8px rgba(0, 0, 0, 0.3);
+    }
+}
+
+.dark {
+    --ffs-bg: #111315;
+    --ffs-surface: #1a1d20;
+    --ffs-surface-2: #24282c;
+    --ffs-text: #f1f3f5;
+    --ffs-text-2: #a3aab2;
+    --ffs-border: #30353a;
+    --ffs-accent: #ff7558;
+    --ffs-accent-2: #4ec9b9;
+    --ffs-accent-bg: rgba(255, 117, 88, 0.1);
+    --ffs-success: #4ec9b9;
+    --ffs-danger: #ff736c;
+}
+
+html { scroll-padding-top: 88px; }
+body { background: var(--ffs-bg) !important; }
+.gradio-container {
+    min-height: 100vh !important;
+    color: var(--ffs-text) !important;
+    padding-bottom: 190px !important;
+}
+.gradio-container button,
+.gradio-container input,
+.gradio-container textarea { letter-spacing: 0 !important; }
+
+/* Header */
+#ffs-app-header {
+    position: fixed !important;
+    inset: 0 0 auto 0;
+    z-index: 1200;
+    min-height: 72px;
+    padding: 10px max(18px, calc((100vw - var(--ffs-max-width)) / 2)) !important;
+    align-items: center !important;
+    gap: 18px !important;
+    background: color-mix(in srgb, var(--ffs-surface) 92%, transparent) !important;
+    border: 0 !important;
+    border-bottom: 1px solid var(--ffs-border) !important;
+    backdrop-filter: blur(18px) saturate(140%);
+    box-shadow: 0 1px 0 rgba(255,255,255,0.35);
+    flex-wrap: nowrap !important;
+}
+#ffs-brand { flex: 1 1 auto !important; min-width: 230px !important; padding: 0 !important; }
+#ffs-brand .html-container { padding: 0 !important; }
+.ffs-brand-lockup { display: flex; align-items: center; gap: 11px; min-height: 48px; }
+.ffs-brand-mark {
+    width: 38px;
+    height: 38px;
+    display: grid;
+    place-items: center;
+    flex: 0 0 38px;
+    border-radius: 8px;
+    background: #15171a;
+    color: #ffffff;
+    font-size: 12px;
+    font-weight: 800;
+}
+.ffs-wordmark { color: var(--ffs-text); font-size: 18px; font-weight: 800; line-height: 1.05; }
+.ffs-wordmark span { color: var(--ffs-accent); }
+.ffs-brand-sub { margin-top: 4px; color: var(--ffs-text-2); font-size: 10px; font-weight: 700; text-transform: uppercase; }
+#ffs-model-select { min-width: 210px !important; }
+#ffs-model-select > div { border-radius: 7px !important; }
+#ffs-model-state { min-width: 88px !important; padding: 0 !important; }
+#ffs-model-state .html-container { padding: 0 !important; }
+#ffs-new-session { min-width: 78px !important; border-radius: 7px !important; }
+
+/* Workspace */
+#ffs-workspace {
+    width: min(var(--ffs-max-width), calc(100% - 32px)) !important;
+    margin: 0 auto !important;
+    padding: 104px 0 34px !important;
+    min-height: calc(100vh - 160px);
+}
+#ffs-conversation { padding: 0 !important; }
+#ffs-status { min-height: 0; }
+.ffs-chat-area { max-width: none !important; min-height: 0 !important; padding: 0 !important; }
+.ffs-history { gap: 18px !important; }
+.ffs-turn { max-width: 760px; }
+.ffs-turn-user { margin-left: auto; }
+.ffs-turn-assistant { margin-right: auto; }
+.ffs-role { text-transform: uppercase; font-size: 10px !important; letter-spacing: 0 !important; }
+.ffs-bubble { border-radius: 8px !important; box-shadow: none !important; padding: 13px 15px !important; }
+.ffs-turn-user .ffs-bubble { background: var(--ffs-surface-2) !important; }
+
+/* Empty canvas */
+.ffs-empty { min-height: 44vh; display: grid; place-content: center; padding: 70px 20px !important; }
+.ffs-empty-icon {
+    width: 62px;
+    height: 62px;
+    margin: 0 auto 22px !important;
+    border-radius: 8px;
+    background: var(--ffs-surface);
+    border: 1px solid var(--ffs-border);
+    box-shadow: var(--ffs-shadow);
+    color: var(--ffs-accent);
+    display: grid;
+    place-items: center;
+    font-size: 18px !important;
+    font-weight: 800;
+    opacity: 1 !important;
+}
+.ffs-empty-title { font-size: 30px !important; font-weight: 800 !important; }
+.ffs-empty-sub { margin-top: 10px !important; font-size: 14px !important; }
+#ffs-starter-prompts {
+    max-width: 720px !important;
+    margin: -42px auto 26px !important;
+    gap: 8px !important;
+    display: grid !important;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+#ffs-starter-prompts > * { min-width: 0 !important; width: 100% !important; }
+#ffs-starter-prompts button {
+    width: 100% !important;
+    min-width: 0 !important;
+    min-height: 38px !important;
+    border-radius: 7px !important;
+    border-color: var(--ffs-border) !important;
+    background: var(--ffs-surface) !important;
+    color: var(--ffs-text-2) !important;
+    box-shadow: var(--ffs-shadow);
+}
+#ffs-starter-prompts button:hover { color: var(--ffs-text) !important; border-color: var(--ffs-accent) !important; }
+#ffs-workspace:has(#ffs-conversation .ffs-turn) #ffs-starter-prompts { display: none !important; }
+
+/* Generation motion */
+.ffs-generation-stage {
+    display: grid;
+    grid-template-columns: minmax(260px, 0.9fr) minmax(280px, 1.1fr);
+    gap: 34px;
+    align-items: center;
+    margin: 30px 0 22px;
+    padding: 26px;
+    background: var(--ffs-surface);
+    border: 1px solid var(--ffs-border);
+    border-radius: 8px;
+    box-shadow: var(--ffs-shadow);
+    overflow: hidden;
+}
+.ffs-generation-preview {
+    position: relative;
+    height: 220px;
+    overflow: hidden;
+    border-radius: 7px;
+    background: #202326;
+}
+.ffs-gen-tile { position: absolute; border-radius: 5px; animation: ffs-tile 2.8s ease-in-out infinite; }
+.ffs-gen-tile-a { inset: 24px 42% 46% 24px; background: #e65235; }
+.ffs-gen-tile-b { inset: 46% 24px 24px 35%; background: #147d72; animation-delay: -0.9s; }
+.ffs-gen-tile-c { inset: 34px 25px 50% 62%; background: #e4b84f; animation-delay: -1.8s; }
+.ffs-gen-scan {
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(105deg, transparent 35%, rgba(255,255,255,0.26) 50%, transparent 65%);
+    transform: translateX(-100%);
+    animation: ffs-scan 1.8s linear infinite;
+}
+@keyframes ffs-tile { 0%,100% { transform: scale(1); opacity: .72; } 50% { transform: scale(1.045); opacity: 1; } }
+@keyframes ffs-scan { to { transform: translateX(100%); } }
+.ffs-kicker { display: flex; align-items: center; gap: 8px; color: var(--ffs-accent); font-size: 11px; font-weight: 800; text-transform: uppercase; }
+.ffs-live-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--ffs-accent); animation: ffs-pulse 1.1s ease-in-out infinite; }
+.ffs-generation-title { margin-top: 12px; color: var(--ffs-text); font-size: 22px; font-weight: 750; line-height: 1.25; }
+.ffs-progress-track { height: 4px; margin-top: 22px; overflow: hidden; border-radius: 4px; background: var(--ffs-surface-2); }
+.ffs-progress-track span { display: block; width: 42%; height: 100%; background: var(--ffs-accent-2); animation: ffs-progress 1.6s ease-in-out infinite; }
+@keyframes ffs-progress { 0% { transform: translateX(-110%); } 100% { transform: translateX(340%); } }
+.ffs-generation-note { margin-top: 11px; color: var(--ffs-text-2); font-size: 12px; }
+@media (prefers-reduced-motion: reduce) {
+    .ffs-gen-tile, .ffs-gen-scan, .ffs-live-dot, .ffs-progress-track span { animation-duration: 5s !important; }
+}
+
+.ffs-notice { display: flex; align-items: flex-start; gap: 10px; margin: 18px 0; padding: 12px 14px; border: 1px solid var(--ffs-border); border-radius: 7px; background: var(--ffs-surface); color: var(--ffs-text-2); }
+.ffs-notice-icon { display: grid; place-items: center; flex: 0 0 22px; height: 22px; border-radius: 50%; font-size: 12px; font-weight: 800; }
+.ffs-notice-success { color: var(--ffs-success); border-color: color-mix(in srgb, var(--ffs-success) 30%, var(--ffs-border)); }
+.ffs-notice-success .ffs-notice-icon { background: var(--ffs-success); color: #fff; }
+.ffs-notice-error { color: var(--ffs-danger); border-color: color-mix(in srgb, var(--ffs-danger) 35%, var(--ffs-border)); background: color-mix(in srgb, var(--ffs-danger) 5%, var(--ffs-surface)); overflow-wrap: anywhere; }
+.ffs-notice-error .ffs-notice-icon { background: var(--ffs-danger); color: #fff; }
+
+/* Results */
+#ffs-result-gallery { margin-top: 12px; background: transparent !important; border: 0 !important; }
+#ffs-result-gallery .gallery-item { border-radius: 7px !important; border: 1px solid var(--ffs-border) !important; box-shadow: var(--ffs-shadow); overflow: hidden; }
+#ffs-result-actions { justify-content: flex-start !important; gap: 8px !important; margin-top: 10px; }
+#ffs-result-actions button { min-height: 38px; border-radius: 7px !important; }
+#ffs-seed { max-width: 260px; min-height: 38px !important; }
+#ffs-seed textarea { min-height: 38px !important; height: 38px !important; padding: 8px 10px !important; }
+#ffs-downloads { display: none !important; }
+
+/* Tool shelf */
+#ffs-controls-shell { width: min(var(--ffs-max-width), calc(100% - 32px)) !important; margin: 0 auto 26px !important; }
+#ffs-controls-shell .ffs-settings { border: 1px solid var(--ffs-border) !important; border-radius: 7px !important; overflow: hidden; background: var(--ffs-surface) !important; }
+#ffs-controls-shell .ffs-settings + .ffs-settings { margin-top: 9px; }
+#ffs-controls-shell .label-wrap { min-height: 48px; border-radius: 0 !important; font-weight: 700; }
+#ffs-controls-shell .ffs-settings-panel { padding: 14px !important; }
+#ffs-edit-panel, #ffs-settings-panel {
+    width: min(var(--ffs-max-width), calc(100% - 32px)) !important;
+    margin: 0 auto 9px !important;
+    border: 1px solid var(--ffs-border) !important;
+    border-radius: 7px !important;
+    overflow: clip !important;
+    box-sizing: border-box !important;
+    background: var(--ffs-surface) !important;
+}
+#ffs-edit-panel .label-wrap, #ffs-settings-panel .label-wrap {
+    min-height: 48px;
+    border-radius: 0 !important;
+    font-weight: 700;
+}
+#ffs-edit-panel .ffs-settings-panel, #ffs-settings-panel .ffs-settings-panel { padding: 14px !important; }
+#ffs-edit-panel > div, #ffs-settings-panel > div { max-width: 100% !important; overflow-x: clip !important; }
+#ffs-settings-panel > .label-wrap {
+    position: sticky;
+    top: 0;
+    z-index: 2;
+    padding: 0 14px !important;
+    background: var(--ffs-surface) !important;
+    border-bottom: 1px solid var(--ffs-border) !important;
+    color: var(--ffs-text) !important;
+    font-size: 13px !important;
+}
+#ffs-settings-panel .form,
+#ffs-settings-panel .gradio-row {
+    background: transparent !important;
+    border: 0 !important;
+    box-shadow: none !important;
+}
+#ffs-settings-panel .form { padding: 0 !important; }
+#ffs-settings-panel .gradio-row { gap: 9px !important; }
+#ffs-settings-panel .block {
+    min-width: 0 !important;
+    margin: 0 !important;
+    border: 0 !important;
+    border-bottom: 1px solid var(--ffs-border) !important;
+    border-radius: 0 !important;
+    padding: 13px 0 15px !important;
+    background: transparent !important;
+    box-shadow: none !important;
+}
+#ffs-settings-panel .block:last-child { border-bottom: 0 !important; }
+#ffs-settings-panel label > span,
+#ffs-settings-panel .block > label > span {
+    color: var(--ffs-text-2) !important;
+    font-size: 11px !important;
+    font-weight: 750 !important;
+    text-transform: uppercase;
+}
+#ffs-settings-panel input[type="range"] {
+    --ffs-range-progress: 0%;
+    width: 100% !important;
+    min-height: 30px !important;
+    margin: 3px 0 0 !important;
+    padding: 0 !important;
+    appearance: none !important;
+    -webkit-appearance: none !important;
+    background: transparent !important;
+    cursor: pointer;
+}
+#ffs-settings-panel input[type="range"]::-webkit-slider-runnable-track {
+    height: 5px;
+    border-radius: 5px;
+    background: linear-gradient(to right,
+        var(--ffs-accent) 0,
+        var(--ffs-accent) var(--ffs-range-progress),
+        var(--ffs-surface-2) var(--ffs-range-progress),
+        var(--ffs-surface-2) 100%);
+}
+#ffs-settings-panel input[type="range"]::-webkit-slider-thumb {
+    width: 18px;
+    height: 18px;
+    margin-top: -6.5px;
+    appearance: none;
+    -webkit-appearance: none;
+    border: 3px solid var(--ffs-surface);
+    border-radius: 50%;
+    background: var(--ffs-accent);
+    box-shadow: 0 0 0 1px var(--ffs-accent), 0 2px 5px rgba(20, 24, 29, .18);
+}
+#ffs-settings-panel input[type="range"]::-moz-range-track {
+    height: 5px;
+    border-radius: 5px;
+    background: var(--ffs-surface-2);
+}
+#ffs-settings-panel input[type="range"]::-moz-range-progress {
+    height: 5px;
+    border-radius: 5px;
+    background: var(--ffs-accent);
+}
+#ffs-settings-panel input[type="range"]::-moz-range-thumb {
+    width: 14px;
+    height: 14px;
+    border: 3px solid var(--ffs-surface);
+    border-radius: 50%;
+    background: var(--ffs-accent);
+    box-shadow: 0 0 0 1px var(--ffs-accent), 0 2px 5px rgba(20, 24, 29, .18);
+}
+#ffs-settings-panel input[type="range"]:focus-visible::-webkit-slider-thumb {
+    box-shadow: 0 0 0 4px var(--ffs-accent-bg), 0 0 0 1px var(--ffs-accent);
+}
+#ffs-settings-panel input[type="number"] { min-height: 42px !important; border-radius: 6px !important; }
+#ffs-settings-panel textarea { min-height: 82px !important; border-radius: 6px !important; line-height: 1.45 !important; }
+#ffs-settings-panel input[type="number"]:focus,
+#ffs-settings-panel textarea:focus { border-color: var(--ffs-accent) !important; box-shadow: 0 0 0 3px var(--ffs-accent-bg) !important; }
+#ffs-settings-panel button[aria-label="Reset to default value"] { min-width: 38px !important; min-height: 38px !important; }
+#ffs-settings-panel::-webkit-scrollbar { width: 7px; }
+#ffs-settings-panel::-webkit-scrollbar-track { background: transparent; }
+#ffs-settings-panel::-webkit-scrollbar-thumb { background: var(--ffs-border); border-radius: 7px; }
+
+/* Floating composer */
+#ffs-composer-dock {
+    position: fixed !important;
+    z-index: 1100;
+    inset: auto 0 0 0;
+    margin: 0 !important;
+    padding: 12px 18px max(16px, env(safe-area-inset-bottom)) !important;
+    background: linear-gradient(to bottom, transparent, var(--ffs-bg) 28%) !important;
+    border: 0 !important;
+}
+#ffs-composer-inner { width: min(920px, 100%) !important; margin: 0 auto !important; gap: 8px !important; }
+#ffs-attachment-row {
+    width: 100% !important;
+    align-items: center !important;
+    gap: 10px !important;
+    padding: 8px 10px !important;
+    border: 1px solid var(--ffs-border) !important;
+    border-radius: 7px !important;
+    background: var(--ffs-surface) !important;
+    box-shadow: var(--ffs-shadow);
+}
+#ffs-attachment-preview { height: 64px !important; min-height: 64px !important; max-width: 120px !important; border: 0 !important; }
+#ffs-remove-attachment { min-width: 78px !important; border-radius: 7px !important; }
+#ffs-composer {
+    align-items: flex-end !important;
+    gap: 8px !important;
+    padding: 8px !important;
+    border: 1px solid color-mix(in srgb, var(--ffs-border) 75%, var(--ffs-text)) !important;
+    border-radius: 8px !important;
+    background: var(--ffs-surface) !important;
+    box-shadow: var(--ffs-shadow-lg);
+    transition: border-color .18s ease, box-shadow .18s ease;
+}
+#ffs-composer:focus-within { border-color: var(--ffs-accent) !important; box-shadow: 0 18px 50px rgba(25,30,38,.16), 0 0 0 3px var(--ffs-accent-bg); }
+#ffs-prompt { min-height: 46px !important; }
+#ffs-prompt textarea { min-height: 46px !important; padding: 12px 10px !important; line-height: 22px !important; background: transparent !important; color: var(--ffs-text) !important; }
+#ffs-attach, #ffs-generate { min-height: 46px !important; height: 46px !important; border-radius: 7px !important; }
+#ffs-attach { min-width: 46px !important; width: 46px !important; font-size: 20px !important; }
+#ffs-generate { min-width: 104px !important; background: var(--ffs-accent) !important; color: #fff !important; border-color: var(--ffs-accent) !important; font-weight: 750 !important; }
+#ffs-generate:hover { filter: brightness(.96); transform: none !important; }
+
+@media (max-width: 720px) {
+    .gradio-container { padding-bottom: 170px !important; }
+    #ffs-app-header { min-height: 64px; padding: 8px 12px !important; gap: 8px !important; }
+    #ffs-brand { min-width: 46px !important; flex: 0 0 46px !important; }
+    .ffs-wordmark, .ffs-brand-sub { display: none; }
+    #ffs-model-select { min-width: 150px !important; }
+    #ffs-model-state { display: none !important; }
+    #ffs-new-session { min-width: 58px !important; }
+    #ffs-workspace { width: calc(100% - 20px) !important; padding-top: 18px !important; }
+    .ffs-empty { min-height: 42vh; padding: 40px 12px !important; }
+    .ffs-empty-title {
+        width: 100%;
+        max-width: 100%;
+        font-size: 24px !important;
+        line-height: 1.15 !important;
+        white-space: normal !important;
+        overflow-wrap: anywhere;
+    }
+    .ffs-empty-sub {
+        width: 100%;
+        max-width: 100% !important;
+        line-height: 1.45 !important;
+        white-space: normal !important;
+    }
+    .ffs-generation-stage { grid-template-columns: 1fr; gap: 20px; padding: 14px; }
+    .ffs-generation-preview { height: 160px; }
+    #ffs-controls-shell { width: calc(100% - 20px) !important; }
+    #ffs-edit-panel, #ffs-settings-panel { width: calc(100% - 20px) !important; }
+    #ffs-composer-dock { padding: 8px 10px max(10px, env(safe-area-inset-bottom)) !important; }
+    #ffs-generate { min-width: 48px !important; width: 48px !important; }
+    #ffs-generate, #ffs-generate * { font-size: 0 !important; }
+    #ffs-generate::after { content: '↑'; font-size: 22px; line-height: 1; }
+    #ffs-result-actions { flex-direction: column !important; }
+    #ffs-starter-prompts { margin-top: -18px !important; display: grid !important; grid-template-columns: 1fr 1fr; }
+}
+
+@media (max-width: 420px) {
+    .ffs-empty-title { font-size: 22px !important; }
+    .ffs-empty-sub { font-size: 13px !important; }
+}
+
+/* Desktop creation-tool layout, following the established image-AI pattern:
+   persistent controls on the left, creation feed on the right. */
+@media (min-width: 901px) {
+    .gradio-container { padding-left: 0 !important; }
+    #ffs-app-header {
+        padding-left: 22px !important;
+        padding-right: 22px !important;
+    }
+    #ffs-brand { min-width: 236px !important; flex: 0 0 236px !important; }
+    #ffs-workspace {
+        width: min(var(--ffs-max-width), calc(100% - 322px)) !important;
+        margin-left: max(300px, calc((100% - var(--ffs-max-width) + 280px) / 2)) !important;
+        margin-right: 22px !important;
+        padding-top: 104px !important;
+    }
+    #ffs-settings-panel {
+        position: fixed !important;
+        z-index: 900;
+        left: 14px;
+        top: 86px;
+        bottom: 18px;
+        width: 252px !important;
+        margin: 0 !important;
+        overflow-y: auto !important;
+        overflow-x: clip !important;
+        border-color: var(--ffs-border) !important;
+        box-shadow: var(--ffs-shadow);
+    }
+    #ffs-settings-panel > .wrap,
+    #ffs-settings-panel > div { overflow-x: clip !important; }
+    #ffs-edit-panel {
+        width: min(var(--ffs-max-width), calc(100% - 322px)) !important;
+        margin-left: max(300px, calc((100% - var(--ffs-max-width) + 280px) / 2)) !important;
+        margin-right: 22px !important;
+    }
+    #ffs-composer-dock { left: 280px !important; }
+    #ffs-composer-dock { width: auto !important; }
+}
+
+.ffs-canvas-heading {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    margin: 0 0 18px;
+    color: var(--ffs-text);
+    font-size: 20px;
+    font-weight: 800;
+}
+.ffs-canvas-heading i { height: 1px; flex: 1; background: var(--ffs-border); }
+#ffs-canvas-heading, #ffs-canvas-heading .html-container { padding: 0 !important; width: 100% !important; }
+
+@media (max-width: 900px) {
+    .gradio-container { padding-left: 0 !important; }
+    #ffs-workspace { margin-left: auto !important; margin-right: auto !important; }
+    #ffs-settings-panel {
+        position: static !important;
+        width: calc(100% - 20px) !important;
+        margin: 82px auto 0 !important;
+        max-height: min(58vh, 520px);
+        overflow-y: auto !important;
+    }
+    #ffs-composer-dock { left: 0 !important; }
+}
+"""
+
 # ═══════════════════════════════════════════════════════════
 #  JAVASCRIPT — brush size boost, keyboard shortcuts
 # ═══════════════════════════════════════════════════════════
@@ -817,24 +1330,55 @@ JS_HEAD = """
     };
 })();
 
-// Boost brush/eraser max slider from ~100 to 300
-function boostBrushMax() {
-    document.querySelectorAll('input[type="range"]').forEach(function(slider) {
-        if (parseFloat(slider.max) > 10 && parseFloat(slider.max) <= 110) {
-            var parent = slider.closest('.image-editor, .image_editor');
-            if (!parent) {
-                var labels = slider.closest('.block, .wrap, div');
-                if (labels && labels.querySelector('canvas')) parent = labels;
-            }
-            if (parent || slider.closest('[data-testid]')) {
-                slider.max = 300;
-                slider.setAttribute('max', '300');
-            }
+function syncRangeFill(slider) {
+    var min = parseFloat(slider.min || '0');
+    var max = parseFloat(slider.max || '100');
+    var value = parseFloat(slider.value || String(min));
+    var progress = max === min ? 0 : ((value - min) / (max - min)) * 100;
+    slider.style.setProperty('--ffs-range-progress', Math.max(0, Math.min(100, progress)) + '%');
+}
+
+function prepareGenerationSliders() {
+    document.querySelectorAll('#ffs-settings-panel input[type="range"]').forEach(function(slider) {
+        syncRangeFill(slider);
+        if (!slider.dataset.ffsRangeReady) {
+            slider.dataset.ffsRangeReady = 'true';
+            slider.addEventListener('input', function() { syncRangeFill(slider); });
+            slider.addEventListener('change', function() { syncRangeFill(slider); });
         }
     });
 }
-setInterval(boostBrushMax, 2000);
-setTimeout(boostBrushMax, 1000);
+
+function enhanceStudioUI() {
+    var attach = document.querySelector('#ffs-attach button, #ffs-attach');
+    var generate = document.querySelector('#ffs-generate button, #ffs-generate');
+    var fresh = document.querySelector('#ffs-new-session button, #ffs-new-session');
+    if (attach) attach.setAttribute('title', 'Attach image');
+    if (generate) generate.setAttribute('title', 'Generate image');
+    if (fresh) fresh.setAttribute('title', 'Start a new session');
+
+    prepareGenerationSliders();
+
+    var settings = document.querySelector('#ffs-settings-panel');
+    if (settings && window.innerWidth <= 900 && !settings.dataset.ffsMobileCollapsed) {
+        var settingsToggle = settings.querySelector('button.label-wrap, .label-wrap button');
+        if (settingsToggle) {
+            settings.dataset.ffsMobileCollapsed = 'true';
+            settingsToggle.click();
+        }
+    }
+
+    var status = document.querySelector('#ffs-status');
+    if (status && !status.dataset.ffsObserved) {
+        status.dataset.ffsObserved = 'true';
+        new MutationObserver(function() {
+            var active = status.querySelector('.ffs-generation-stage');
+            if (active) active.scrollIntoView({behavior: 'smooth', block: 'center'});
+        }).observe(status, {childList: true, subtree: true});
+    }
+}
+setInterval(enhanceStudioUI, 1200);
+setTimeout(enhanceStudioUI, 500);
 </script>
 """
 
@@ -850,6 +1394,12 @@ ffs_theme = gr.themes.Base(
 )
 
 
+def _ui_trace(message):
+    if DEBUG_MODE:
+        print(f"[ui] {message}", flush=True)
+
+
+_ui_trace("building interface")
 with gr.Blocks(title="FreeFakeStudio") as demo:
 
     # ── Session State ──────────────────────────────────────
@@ -861,62 +1411,105 @@ with gr.Blocks(title="FreeFakeStudio") as demo:
     # ═══════════════════════════════════════════════════════
     # HEADER
     # ═══════════════════════════════════════════════════════
-    with gr.Row(elem_classes="ffs-header"):
+    with gr.Row(elem_id="ffs-app-header"):
         gr.HTML("""
-            <div class="ffs-logo">
-                <span class="ffs-logo-icon">🎭</span>
-                <span class="ffs-logo-gradient">FreeFakeStudio</span>
+            <div class="ffs-brand-lockup">
+                <span class="ffs-brand-mark">FF</span>
+                <span>
+                    <span class="ffs-wordmark">FreeFake<span>Studio</span></span>
+                    <span class="ffs-brand-sub">AI image workspace</span>
+                </span>
             </div>
-        """)
-        with gr.Column(scale=0, min_width=200):
-            model_selector = gr.Dropdown(
-                choices=model_manager.MODEL_NAMES,
-                value="Z-Image Turbo",
-                label="Model",
-                container=False,
-                scale=0,
-                min_width=180,
-            )
-        with gr.Column(scale=0, min_width=100):
-            model_status_display = gr.HTML(
-                '<span class="ffs-model-badge">Not loaded</span>'
-            )
-        with gr.Column(scale=0, min_width=80):
-            new_chat_btn = gr.Button("✨ New", size="sm", variant="secondary")
+        """, elem_id="ffs-brand")
+        model_selector = gr.Dropdown(
+            choices=model_manager.MODEL_NAMES,
+            value="Z-Image Turbo",
+            show_label=False,
+            container=False,
+            scale=0,
+            min_width=210,
+            elem_id="ffs-model-select",
+        )
+        model_status_display = gr.HTML(
+            '<span class="ffs-model-badge">Available</span>',
+            scale=0,
+            min_width=92,
+            elem_id="ffs-model-state",
+        )
+        new_chat_btn = gr.Button(
+            "New", size="sm", variant="secondary", scale=0,
+            min_width=78, elem_id="ffs-new-session",
+        )
 
     # ═══════════════════════════════════════════════════════
     # MAIN CONTENT AREA
     # ═══════════════════════════════════════════════════════
-    with gr.Column(elem_classes="ffs-chat-area"):
+    with gr.Accordion(
+        "Generation controls",
+        open=True,
+        elem_classes="ffs-settings",
+        elem_id="ffs-settings-panel",
+    ) as settings_panel:
+        with gr.Column(elem_classes="ffs-settings-panel"):
+            aspect_ratio = gr.Dropdown(
+                ASPECTS,
+                value="1024x1024 (1:1)",
+                label="Aspect Ratio",
+            )
+            num_images = gr.Slider(1, 8, value=1, step=1, label="Images")
+            gen_seed = gr.Number(value=0, label="Seed (0 = random)", precision=0)
+            gen_steps = gr.Slider(1, 50, value=8, step=1, label="Steps")
+            gen_cfg = gr.Slider(0.5, 10.0, value=1.0, step=0.1, label="CFG")
+            gen_denoise = gr.Slider(0.1, 1.0, value=1.0, step=0.05, label="Denoise")
+            negative_prompt = gr.Textbox(
+                DEFAULT_NEG,
+                label="Negative Prompt",
+                lines=2,
+            )
+
+    with gr.Column(elem_classes="ffs-chat-area", elem_id="ffs-workspace"):
+
+        gr.HTML(
+            '<div class="ffs-canvas-heading"><span>Create</span><i></i></div>',
+            elem_id="ffs-canvas-heading",
+        )
 
         conversation_display = gr.HTML(
             value='<div class="ffs-history"></div>',
             elem_classes="ffs-history",
+            elem_id="ffs-conversation",
         )
 
         # Status display (streaming updates)
         status_display = gr.HTML(
             value="""
             <div class="ffs-empty">
-                <div class="ffs-empty-icon">🎨</div>
-                <div class="ffs-empty-title">What would you like to create?</div>
-                <div class="ffs-empty-sub">
-                    Describe an image, attach a photo to edit, or select a model and start creating.
-                </div>
+                <div class="ffs-empty-icon">FF</div>
+                <div class="ffs-empty-title">What will you make?</div>
+                <div class="ffs-empty-sub">Portrait. Product. Editorial. Concept.</div>
             </div>
             """,
             elem_id="ffs-status",
         )
 
+        with gr.Row(elem_id="ffs-starter-prompts"):
+            starter_portrait = gr.Button("Cinematic portrait", size="sm")
+            starter_product = gr.Button("Product campaign", size="sm")
+            starter_editorial = gr.Button("Editorial fashion", size="sm")
+            starter_concept = gr.Button("Surreal concept", size="sm")
+
         # Results gallery
         _gallery_kwargs = dict(
-            label="Results",
+            show_label=False,
             columns=2,
-            height=520,
+            height="auto",
             object_fit="contain",
-            preview=True,
+            preview=False,
+            allow_preview=True,
+            buttons=["download", "download_all", "fullscreen"],
             visible=False,
             elem_classes="ffs-result-gallery",
+            elem_id="ffs-result-gallery",
         )
         result_gallery = gr.Gallery(**_gallery_kwargs)
 
@@ -925,23 +1518,23 @@ with gr.Blocks(title="FreeFakeStudio") as demo:
             label="Download All",
             file_count="multiple",
             visible=False,
-        )
-
-        # Seed display
-        seed_display = gr.Textbox(
-            label="Seed Used", interactive=False, visible=False,
+            elem_id="ffs-downloads",
         )
 
         # ── Action Buttons Row ─────────────────────────────
-        with gr.Row(visible=False) as action_row:
-            add_to_prompt_btn = gr.Button("📎 Add to Prompt", size="sm")
-            regenerate_btn = gr.Button("🔄 Regenerate", size="sm")
+        with gr.Row(visible=False, elem_id="ffs-result-actions") as action_row:
+            add_to_prompt_btn = gr.Button("Use as input", size="sm")
+            regenerate_btn = gr.Button("Regenerate", size="sm")
+            seed_display = gr.Textbox(
+                interactive=False, visible=False, show_label=False,
+                container=False, elem_id="ffs-seed",
+            )
 
     # ═══════════════════════════════════════════════════════
     # EDITING PANEL (for mask/inpaint)
     # ═══════════════════════════════════════════════════════
-    with gr.Accordion("🎨 Mask / Edit Tools", open=False, visible=False,
-                       elem_classes="ffs-settings") as edit_panel:
+    with gr.Accordion("Mask and edit", open=False, visible=False,
+                       elem_classes="ffs-settings", elem_id="ffs-edit-panel") as edit_panel:
         with gr.Column(elem_classes="ffs-settings-panel"):
             mask_mode = gr.Radio(
                 choices=["None", "Manual Paint", "Background Only", "Everything Except Face"],
@@ -963,50 +1556,34 @@ with gr.Blocks(title="FreeFakeStudio") as demo:
                     label="Mask Preview (white = will be changed)",
                     height=300, interactive=False,
                 )
-                edit_mask_btn = gr.Button("✏️ Edit This Mask Manually", variant="secondary")
+                edit_mask_btn = gr.Button("Edit mask manually", variant="secondary")
 
     # ═══════════════════════════════════════════════════════
     # SETTINGS PANEL
     # ═══════════════════════════════════════════════════════
-    with gr.Accordion("⚙️ Generation Settings", open=False,
-                       elem_classes="ffs-settings") as settings_panel:
-        with gr.Column(elem_classes="ffs-settings-panel"):
-            with gr.Row():
-                aspect_ratio = gr.Dropdown(
-                    ASPECTS, value="1024x1024 (1:1)",
-                    label="Aspect Ratio",
-                )
-                num_images = gr.Slider(1, 8, value=1, step=1, label="Images")
-            with gr.Row():
-                gen_seed = gr.Number(value=0, label="Seed (0 = random)", precision=0)
-                gen_steps = gr.Slider(1, 50, value=8, step=1, label="Steps")
-            with gr.Row():
-                gen_cfg = gr.Slider(0.5, 10.0, value=1.0, step=0.1, label="CFG")
-                gen_denoise = gr.Slider(0.1, 1.0, value=1.0, step=0.05, label="Denoise")
-            negative_prompt = gr.Textbox(
-                DEFAULT_NEG, label="Negative Prompt", lines=2,
-            )
-
     # ═══════════════════════════════════════════════════════
     # COMPOSER (bottom bar)
     # ═══════════════════════════════════════════════════════
-    with gr.Row(elem_classes="ffs-composer-wrap"):
-        with gr.Column(elem_classes="ffs-settings-panel"):
-            # Attachment display
-            attachment_display = gr.Image(
-                label="Attached Image",
-                type="pil",
-                height=80,
-                visible=False,
-                sources=["upload"],
-                interactive=True,
-            )
-            with gr.Row():
+    with gr.Row(elem_id="ffs-composer-dock"):
+        with gr.Column(elem_id="ffs-composer-inner"):
+            with gr.Row(visible=False, elem_id="ffs-attachment-row") as attachment_row:
+                attachment_display = gr.Image(
+                    show_label=False,
+                    type="pil",
+                    height=64,
+                    interactive=False,
+                    elem_id="ffs-attachment-preview",
+                )
+                remove_attachment_btn = gr.Button(
+                    "Remove", size="sm", variant="secondary", elem_id="ffs-remove-attachment"
+                )
+            with gr.Row(elem_id="ffs-composer"):
                 attach_btn = gr.UploadButton(
-                    "📎",
+                    "+",
                     file_types=["image"],
                     size="sm",
                     min_width=40,
+                    elem_id="ffs-attach",
                 )
                 prompt_input = gr.Textbox(
                     placeholder="Describe what you want to create or edit...",
@@ -1015,13 +1592,14 @@ with gr.Blocks(title="FreeFakeStudio") as demo:
                     max_lines=4,
                     scale=10,
                     container=False,
+                    elem_id="ffs-prompt",
                 )
                 send_btn = gr.Button(
-                    "➤",
+                    "Generate",
                     variant="primary",
                     size="sm",
                     min_width=50,
-                    elem_classes="ffs-btn-primary",
+                    elem_id="ffs-generate",
                 )
 
     # ═══════════════════════════════════════════════════════
@@ -1029,21 +1607,47 @@ with gr.Blocks(title="FreeFakeStudio") as demo:
     # ═══════════════════════════════════════════════════════
 
     # ── Attachment handling ─────────────────────────────────
+    starter_examples = {
+        starter_portrait: "A cinematic portrait with soft window light, natural skin texture, 85mm photography",
+        starter_product: "A premium product campaign photograph, precise studio lighting, bold art direction",
+        starter_editorial: "An editorial fashion photograph, sculptural styling, dramatic location, magazine quality",
+        starter_concept: "A surreal architectural landscape at blue hour, dreamlike scale, intricate detail",
+    }
+    for starter_button, starter_prompt in starter_examples.items():
+        starter_button.click(
+            lambda value=starter_prompt: value,
+            outputs=[prompt_input],
+            show_progress="hidden",
+        )
+
     def handle_upload(file):
         if file is None:
-            return gr.update(visible=False, value=None), None, gr.update(visible=True)
+            return gr.update(visible=False), gr.update(value=None), None, gr.update(visible=False)
         img = Image.open(file).convert("RGB")
-        return (gr.update(visible=True, value=img), img,
-                gr.update(visible=True))
+        return (
+            gr.update(visible=True), gr.update(value=img), img,
+            gr.update(visible=True),
+        )
 
     attach_btn.upload(
         handle_upload,
         inputs=[attach_btn],
-        outputs=[attachment_display, attached_image, edit_panel],
+        outputs=[attachment_row, attachment_display, attached_image, edit_panel],
     )
 
     def clear_attachment():
-        return gr.update(visible=False, value=None), None, gr.update(visible=False)
+        return (
+            gr.update(visible=False), gr.update(value=None), None,
+            gr.update(visible=False), "None", None, None,
+        )
+
+    remove_attachment_btn.click(
+        clear_attachment,
+        outputs=[
+            attachment_row, attachment_display, attached_image,
+            edit_panel, mask_mode, mask_editor, mask_preview,
+        ],
+    )
 
     # ── Mask mode toggle ───────────────────────────────────
     def toggle_mask_ui(mode):
@@ -1070,12 +1674,6 @@ with gr.Blocks(title="FreeFakeStudio") as demo:
         update_mask_preview,
         inputs=[attached_image, mask_mode],
         outputs=[mask_preview],
-    )
-
-    attachment_display.change(
-        lambda img: img,
-        inputs=[attachment_display],
-        outputs=[attached_image],
     )
 
     # ── Edit mask manually button ──────────────────────────
@@ -1149,6 +1747,7 @@ with gr.Blocks(title="FreeFakeStudio") as demo:
                 gr.update(), gr.update(),
                 None,
                 _render_history(history), history,
+                gr.update(),
             )
             return
 
@@ -1183,6 +1782,7 @@ with gr.Blocks(title="FreeFakeStudio") as demo:
                     settings,
                     _render_history(final_history),
                     final_history,
+                    gr.update(value=""),
                 )
             else:
                 yield (
@@ -1195,6 +1795,7 @@ with gr.Blocks(title="FreeFakeStudio") as demo:
                     settings if "error" not in status_html.lower() else None,
                     _render_history(request_history),
                     request_history,
+                    gr.update(value=""),
                 )
 
     send_btn.click(
@@ -1209,8 +1810,9 @@ with gr.Blocks(title="FreeFakeStudio") as demo:
             status_display, result_gallery, result_files,
             seed_display, action_row,
             model_status_display, last_gen_settings,
-            conversation_display, chat_history,
+            conversation_display, chat_history, prompt_input,
         ],
+        show_progress="hidden",
     )
 
     # Enter key submit
@@ -1226,8 +1828,9 @@ with gr.Blocks(title="FreeFakeStudio") as demo:
             status_display, result_gallery, result_files,
             seed_display, action_row,
             model_status_display, last_gen_settings,
-            conversation_display, chat_history,
+            conversation_display, chat_history, prompt_input,
         ],
+        show_progress="hidden",
     )
 
     # ── Add to Prompt ──────────────────────────────────────
@@ -1243,7 +1846,8 @@ with gr.Blocks(title="FreeFakeStudio") as demo:
             img_data = Image.open(img_data)
         # Check if current model supports editing
         return (
-            gr.update(visible=True, value=img_data),  # attachment_display
+            gr.update(visible=True),                  # attachment_row
+            gr.update(value=img_data),                # attachment_display
             img_data,                                  # attached_image
             gr.update(visible=True),                  # edit_panel
             gr.update(value=""),                       # clear prompt
@@ -1252,7 +1856,7 @@ with gr.Blocks(title="FreeFakeStudio") as demo:
     add_to_prompt_btn.click(
         on_add_to_prompt,
         inputs=[result_gallery, selected_result_idx],
-        outputs=[attachment_display, attached_image, edit_panel, prompt_input],
+        outputs=[attachment_row, attachment_display, attached_image, edit_panel, prompt_input],
     )
 
     def _on_gallery_select(evt: gr.SelectData):
@@ -1316,17 +1920,16 @@ with gr.Blocks(title="FreeFakeStudio") as demo:
         return (
             # status_display
             """<div class="ffs-empty">
-                <div class="ffs-empty-icon">🎨</div>
-                <div class="ffs-empty-title">What would you like to create?</div>
-                <div class="ffs-empty-sub">
-                    Describe an image, attach a photo to edit, or select a model and start creating.
-                </div>
+                <div class="ffs-empty-icon">FF</div>
+                <div class="ffs-empty-title">What will you make?</div>
+                <div class="ffs-empty-sub">Portrait. Product. Editorial. Concept.</div>
             </div>""",
             gr.update(visible=False, value=None),   # result_gallery
             gr.update(visible=False, value=None),   # result_files
             gr.update(visible=False, value=""),      # seed_display
             gr.update(visible=False),                # action_row
-            gr.update(visible=False, value=None),    # attachment_display
+            gr.update(visible=False),                # attachment_row
+            gr.update(value=None),                   # attachment_display
             None,                                     # attached_image
             gr.update(value=""),                      # prompt_input
             None,                                     # last_gen_settings
@@ -1341,11 +1944,13 @@ with gr.Blocks(title="FreeFakeStudio") as demo:
         outputs=[
             status_display, result_gallery, result_files,
             seed_display, action_row,
-            attachment_display, attached_image, prompt_input,
+            attachment_row, attachment_display, attached_image, prompt_input,
             last_gen_settings, edit_panel, mask_mode,
             conversation_display, chat_history,
         ],
     )
+
+_ui_trace("interface ready")
 
 
 # ═══════════════════════════════════════════════════════════
