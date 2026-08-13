@@ -622,17 +622,22 @@ def hub_download(repo, filename, dest_dir, dest_name=None):
     if target.exists() or target.is_symlink():
         target.unlink()
     cached = Path(cached)
+    cached_is_symlink = cached.is_symlink()
+    material = cached.resolve(strict=True) if cached_is_symlink else cached
     partial = target.with_name(f"{target.name}.part")
     if partial.exists() or partial.is_symlink():
         partial.unlink()
     try:
-        os.replace(str(cached), str(target))
+        os.replace(str(material), str(target))
     except OSError:
-        shutil.copyfile(str(cached.resolve()), str(partial))
+        shutil.copyfile(str(material), str(partial))
         if not file_ok(partial):
             partial.unlink(missing_ok=True)
             raise RuntimeError(f"Could not materialize persistent model file: {target}")
         os.replace(str(partial), str(target))
+    else:
+        if cached_is_symlink:
+            cached.unlink(missing_ok=True)
     if not file_ok(target):
         raise RuntimeError(f"Persistent model file looks incomplete: {target}")
     return target

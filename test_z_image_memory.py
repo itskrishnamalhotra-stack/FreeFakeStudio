@@ -196,6 +196,51 @@ class LauncherRepositoryTests(unittest.TestCase):
             self.assertEqual(target.read_bytes(), b"complete-model")
             self.assertFalse(cached.exists())
 
+    def test_relative_cache_symlink_materializes_real_model_file(self):
+        import os
+        import shutil
+
+        with tempfile.TemporaryDirectory() as root:
+            root = Path(root)
+            blob = root / "cache" / "blobs" / "model-blob"
+            blob.parent.mkdir(parents=True)
+            blob.write_bytes(b"real-model-data")
+            cached = root / "cache" / "snapshots" / "revision" / "model.safetensors"
+            cached.parent.mkdir(parents=True)
+            cached.write_text("relative-link-placeholder", encoding="utf-8")
+
+            destination = root / "ComfyUI" / "models" / "diffusion_models"
+            hub = types.ModuleType("huggingface_hub")
+            hub.hf_hub_download = lambda **kwargs: str(cached)
+            namespace = {
+                "Path": Path,
+                "CACHE": root / "cache",
+                "REPAIR": False,
+                "file_ok": lambda path: Path(path).is_file() and Path(path).stat().st_size > 0,
+                "os": os,
+                "shutil": shutil,
+            }
+            hub_download = self._launch_function("hub_download", namespace)
+
+            original_is_symlink = Path.is_symlink
+            original_resolve = Path.resolve
+
+            def fake_is_symlink(path):
+                return True if path == cached else original_is_symlink(path)
+
+            def fake_resolve(path, *args, **kwargs):
+                return blob if path == cached else original_resolve(path, *args, **kwargs)
+
+            with mock.patch.dict(sys.modules, {"huggingface_hub": hub}), \
+                 mock.patch.object(Path, "is_symlink", fake_is_symlink), \
+                 mock.patch.object(Path, "resolve", fake_resolve):
+                target = hub_download("example/model", "model.safetensors", destination)
+
+            self.assertTrue(target.is_file())
+            self.assertFalse(target.is_symlink())
+            self.assertEqual(target.read_bytes(), b"real-model-data")
+            self.assertFalse(cached.is_symlink())
+
 
 if __name__ == "__main__":
     unittest.main()
