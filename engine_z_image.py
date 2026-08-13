@@ -29,11 +29,13 @@ def _get_nodes():
             "KSampler":         NODE_CLASS_MAPPINGS["KSampler"](),
             "VAEDecode":        NODE_CLASS_MAPPINGS["VAEDecode"](),
             "VAEEncode":        NODE_CLASS_MAPPINGS["VAEEncode"](),
-            "EmptySD3LatentImage": NODE_CLASS_MAPPINGS["EmptySD3LatentImage"](),
             "SetLatentNoiseMask": NODE_CLASS_MAPPINGS["SetLatentNoiseMask"](),
         }
         from comfy_extras.nodes_model_advanced import ModelSamplingAuraFlow
+        from comfy_extras.nodes_sd3 import EmptySD3LatentImage
+
         _nodes["ModelSamplingAuraFlow"] = ModelSamplingAuraFlow()
+        _nodes["EmptySD3LatentImage"] = EmptySD3LatentImage()
     return _nodes
 
 # ── Load / Unload ──────────────────────────────────────────

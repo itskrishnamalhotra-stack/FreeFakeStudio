@@ -89,6 +89,7 @@ First run:
 - enforces the model-compatible ComfyUI `v0.28.0` backend revision;
 - reconciles ComfyUI and ComfyUI-GGUF Python requirements in every fresh Colab session;
 - verifies `torchsde`, `comfy.samplers`, and `comfy.sd` imports before opening the UI;
+- constructs and validates the complete Z-Image engine node set before opening the UI;
 - checks Z-Image model-detection support and its safetensors header before launch;
 - downloads only missing or repair-requested model files;
 - creates one HTTPS route (ngrok when configured, otherwise Colab proxy);

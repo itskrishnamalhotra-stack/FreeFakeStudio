@@ -409,6 +409,37 @@ def verify_comfy_runtime():
     return probe.stdout.strip()
 
 
+def verify_engine_nodes():
+    required = (
+        "UNETLoader",
+        "CLIPLoader",
+        "VAELoader",
+        "CLIPTextEncode",
+        "KSampler",
+        "VAEDecode",
+        "VAEEncode",
+        "EmptySD3LatentImage",
+        "SetLatentNoiseMask",
+        "ModelSamplingAuraFlow",
+    )
+    code = (
+        "import sys; "
+        f"sys.path.insert(0, {str(APP)!r}); "
+        f"sys.path.insert(0, {str(COMFYUI)!r}); "
+        "import engine_z_image; "
+        "node_map = engine_z_image._get_nodes(); "
+        f"required = {required!r}; "
+        "missing = [name for name in required if name not in node_map]; "
+        "assert not missing, 'Missing Z-Image engine nodes: ' + ', '.join(missing); "
+        "print('Z-Image engine nodes: OK')"
+    )
+    probe = subprocess.run([sys.executable, "-c", code], text=True, capture_output=True)
+    if probe.returncode != 0:
+        detail = (probe.stderr or probe.stdout or "Engine node probe failed")[-3000:]
+        raise RuntimeError(f"Engine node construction check failed:\n{detail}")
+    return probe.stdout.strip()
+
+
 def verify_z_image_checkpoint():
     from safetensors import safe_open
 
@@ -641,6 +672,9 @@ try:
 
     step("ComfyUI runtime", "Import smoke test")
     done("ComfyUI runtime", verify_comfy_runtime())
+
+    step("Engine nodes", "Constructing Z-Image node set")
+    done("Engine nodes", verify_engine_nodes())
 
     comfy_report = write_debug_report("comfy_runtime")
     if comfy_report:
