@@ -3,8 +3,9 @@
 #  Uses: UnetLoaderGGUF + Ministral 3.3B CLIP + Flux2 VAE
 #  8 inference steps, CFG 1.0, euler/simple
 # ============================================================
-import gc, importlib.util, os, sys, torch, numpy as np
+import gc, os, sys, torch, numpy as np
 from PIL import Image
+from gguf_nodes import load_gguf_node_mappings
 
 _loaded = False
 _unet = None
@@ -27,16 +28,7 @@ def _get_nodes():
                 print(f"Warning: ComfyUI extra node initialization failed: {exc}")
         from nodes import NODE_CLASS_MAPPINGS
 
-        gguf_mappings = {}
-        gguf_nodes = os.path.join(comfyui_root, "custom_nodes", "ComfyUI-GGUF", "nodes.py")
-        if os.path.isfile(gguf_nodes):
-            try:
-                spec = importlib.util.spec_from_file_location("freefakestudio_comfyui_gguf_nodes", gguf_nodes)
-                gguf_module = importlib.util.module_from_spec(spec)
-                spec.loader.exec_module(gguf_module)
-                gguf_mappings = getattr(gguf_module, "NODE_CLASS_MAPPINGS", {})
-            except Exception as exc:
-                print(f"Warning: direct ComfyUI-GGUF import failed: {exc}")
+        gguf_mappings = load_gguf_node_mappings(comfyui_root)
 
         all_nodes = {**NODE_CLASS_MAPPINGS, **gguf_mappings}
 

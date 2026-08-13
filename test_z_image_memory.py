@@ -7,6 +7,7 @@ from pathlib import Path
 from unittest import mock
 
 import engine_z_image
+import gguf_nodes
 import model_manager
 
 
@@ -100,6 +101,32 @@ class ZImageMemoryTests(unittest.TestCase):
         self.assertTrue(args.disable_pinned_memory)
         self.assertFalse(args.high_ram)
         self.assertFalse(args.disable_dynamic_vram)
+
+    def test_gguf_nodes_are_loaded_as_a_package(self):
+        with tempfile.TemporaryDirectory() as root:
+            package_dir = Path(root) / "custom_nodes" / "ComfyUI-GGUF"
+            package_dir.mkdir(parents=True)
+            (package_dir / "__init__.py").write_text(
+                "from .nodes import NODE_CLASS_MAPPINGS\n",
+                encoding="utf-8",
+            )
+            (package_dir / "nodes.py").write_text(
+                "from .ops import Loader\nNODE_CLASS_MAPPINGS = {'UnetLoaderGGUF': Loader}\n",
+                encoding="utf-8",
+            )
+            (package_dir / "ops.py").write_text("class Loader: pass\n", encoding="utf-8")
+
+            for name in tuple(sys.modules):
+                if name == gguf_nodes.PACKAGE_NAME or name.startswith(gguf_nodes.PACKAGE_NAME + "."):
+                    sys.modules.pop(name, None)
+            try:
+                mappings = gguf_nodes.load_gguf_node_mappings(root)
+                self.assertIn("UnetLoaderGGUF", mappings)
+                self.assertEqual(mappings["UnetLoaderGGUF"].__module__, gguf_nodes.PACKAGE_NAME + ".ops")
+            finally:
+                for name in tuple(sys.modules):
+                    if name == gguf_nodes.PACKAGE_NAME or name.startswith(gguf_nodes.PACKAGE_NAME + "."):
+                        sys.modules.pop(name, None)
 
     def test_manager_releases_comfy_registry(self):
         calls = []
