@@ -105,24 +105,15 @@ def _run(cmd, quiet=True):
 
 
 # ═══════════════════════════════════════════════════════════
-#  1. COMFYUI  (pinned to stable commit — before comfy_aimdo/comfy_kitchen
-#     which require numpy 1.x and break Colab's numpy 2.x environment)
+#  1. COMFYUI
 # ═══════════════════════════════════════════════════════════
-_COMFY_COMMIT = '35fa09134'  # Jan 2025, stable, no numpy 1.x deps
 if not (COMFYUI / 'main.py').exists():
     step('ComfyUI', 'Cloning repository…')
     _run(f'git clone https://github.com/comfyanonymous/ComfyUI.git "{COMFYUI}"', quiet=False)
-    _run(f'git -C "{COMFYUI}" checkout {_COMFY_COMMIT}', quiet=False)
     _run(f'pip install -q -r "{COMFYUI}/requirements.txt"', quiet=False)
     done('ComfyUI', 'Installed')
 else:
     step('ComfyUI', 'Cached on Drive', 'ok')
-    # Ensure pinned to stable commit
-    _rc, _cur = _run(f'git -C "{COMFYUI}" rev-parse --short HEAD')
-    if _cur.strip() != _COMFY_COMMIT[:len(_cur.strip())]:
-        _run(f'git -C "{COMFYUI}" fetch --all', quiet=False)
-        _run(f'git -C "{COMFYUI}" checkout {_COMFY_COMMIT}', quiet=False)
-        _run(f'pip install -q -r "{COMFYUI}/requirements.txt"', quiet=False)
 
 # Symlink  /content/ComfyUI  →  persistent copy
 _link = Path('/content/ComfyUI')
@@ -171,26 +162,13 @@ else:
 # ═══════════════════════════════════════════════════════════
 step('Dependencies', 'Checking…')
 
-_deps = []
-for _mod, _pkg in [('rembg', 'rembg'), ('onnxruntime', 'onnxruntime-gpu'),
-                    ('gradio', 'gradio'), ('cv2', 'opencv-python-headless')]:
-    try:
-        __import__(_mod)
-    except ImportError:
-        _deps.append(_pkg)
+_run('pip install -q rembg onnxruntime-gpu opencv-python-headless gradio pyngrok', quiet=False)
 
-if _deps:
-    _steps[-1]['d'] = f'Installing {len(_deps)} packages…'
-    _render()
-    _run(f'pip install -q {" ".join(_deps)}', quiet=False)
+# Fix numpy/Pillow (ComfyUI needs numpy 1.x; Pillow 12+ breaks _Ink)
+# These are installed via pip to the system — the fresh subprocess will use them
+_run('pip install -q "numpy==1.26.4" "Pillow<12"', quiet=False)
 
-# Pillow 12+ removed _Ink from PIL._typing — pin to <12
-try:
-    from PIL._typing import _Ink  # noqa: F401
-except ImportError:
-    _run('pip install -q "Pillow<12"', quiet=False)
-
-done('Dependencies', f'{4 - len(_deps)}/4 cached' if len(_deps) < 4 else 'Installed')
+done('Dependencies', 'Installed')
 
 
 # ═══════════════════════════════════════════════════════════
@@ -319,19 +297,18 @@ step('FreeFakeStudio', 'Launching…')
 # Final render — don't clear output so Gradio URL appears below
 _render(final=True)
 
-os.chdir(str(APP))
-if str(APP) not in sys.path:
-    sys.path.insert(0, str(APP))
-
-# Disable Gradio 6 SSR BEFORE import
-os.environ['GRADIO_SSR_MODE'] = 'false'
-
-# Set up ngrok tunnel (Gradio 6 share is broken on Colab)
-_run('pip install -q pyngrok', quiet=True)
+# Set up ngrok tunnel (Gradio share is unreliable on Colab)
 from pyngrok import ngrok
 ngrok.set_auth_token('38tl51VOlFnqeTOilqpVzH0oOtW_Qv126eAUN1EdvYcNrcgg')
 _tunnel = ngrok.connect(7860, proto='http')
 print(f'\n🌐 FreeFakeStudio is live at: {_tunnel.public_url}\n')
 
-# Execute app.py in this process (launches with share=False)
-exec(open(str(APP / 'app.py')).read())
+# Run app.py as a SUBPROCESS (fresh Python process)
+# This is the same as the original `!python app.py` approach.
+# A fresh process loads numpy 1.26.4 correctly — no module conflicts.
+os.environ['GRADIO_SSR_MODE'] = 'false'
+subprocess.run(
+    [sys.executable, str(APP / 'app.py')],
+    cwd=str(APP),
+    env={**os.environ, 'PYTHONPATH': str(APP)}
+)

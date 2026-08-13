@@ -747,7 +747,7 @@ ffs_theme = gr.themes.Base(
 )
 
 
-with gr.Blocks(title="FreeFakeStudio") as demo:
+with gr.Blocks(theme=ffs_theme, css=CSS, head=JS_HEAD, title="FreeFakeStudio") as demo:
 
     # ── Session State ──────────────────────────────────────
     chat_history = gr.State([])           # list of {role, content, ...}
@@ -1234,10 +1234,9 @@ else:
 # Configure Gradio queue for single GPU concurrency
 demo.queue(default_concurrency_limit=1)
 
-# Launch
+# Launch — ngrok provides the public URL, so share=False
 if __name__ == "__main__" or IS_COLAB:
     demo.launch(
         share=False, debug=True,
-        css=CSS, theme=ffs_theme, head=JS_HEAD,
         server_name="0.0.0.0", server_port=7860,
     )
