@@ -105,18 +105,24 @@ def _run(cmd, quiet=True):
 
 
 # ═══════════════════════════════════════════════════════════
-#  1. COMFYUI
+#  1. COMFYUI  (pinned to stable commit — before comfy_aimdo/comfy_kitchen
+#     which require numpy 1.x and break Colab's numpy 2.x environment)
 # ═══════════════════════════════════════════════════════════
+_COMFY_COMMIT = '35fa09134'  # Jan 2025, stable, no numpy 1.x deps
 if not (COMFYUI / 'main.py').exists():
     step('ComfyUI', 'Cloning repository…')
     _run(f'git clone https://github.com/comfyanonymous/ComfyUI.git "{COMFYUI}"', quiet=False)
-    done('ComfyUI', 'Cloned')
+    _run(f'git -C "{COMFYUI}" checkout {_COMFY_COMMIT}', quiet=False)
+    _run(f'pip install -q -r "{COMFYUI}/requirements.txt"', quiet=False)
+    done('ComfyUI', 'Installed')
 else:
     step('ComfyUI', 'Cached on Drive', 'ok')
-
-# Always ensure ComfyUI deps are installed (new versions add deps like
-# comfy_aimdo, comfy_kitchen etc. that aren't in Colab by default)
-_run(f'pip install -q --no-deps -r "{COMFYUI}/requirements.txt"', quiet=False)
+    # Ensure pinned to stable commit
+    _rc, _cur = _run(f'git -C "{COMFYUI}" rev-parse --short HEAD')
+    if _cur.strip() != _COMFY_COMMIT[:len(_cur.strip())]:
+        _run(f'git -C "{COMFYUI}" fetch --all', quiet=False)
+        _run(f'git -C "{COMFYUI}" checkout {_COMFY_COMMIT}', quiet=False)
+        _run(f'pip install -q -r "{COMFYUI}/requirements.txt"', quiet=False)
 
 # Symlink  /content/ComfyUI  →  persistent copy
 _link = Path('/content/ComfyUI')
