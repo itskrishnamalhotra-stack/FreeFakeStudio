@@ -747,9 +747,7 @@ ffs_theme = gr.themes.Base(
 )
 
 
-with gr.Blocks(theme=ffs_theme, css=CSS, title="FreeFakeStudio") as demo:
-
-    gr.HTML(JS_HEAD)
+with gr.Blocks(title="FreeFakeStudio") as demo:
 
     # ── Session State ──────────────────────────────────────
     chat_history = gr.State([])           # list of {role, content, ...}
@@ -812,8 +810,6 @@ with gr.Blocks(theme=ffs_theme, css=CSS, title="FreeFakeStudio") as demo:
             visible=False,
             elem_classes="ffs-result-gallery",
         )
-        _gallery_kwargs['show_download_button'] = True
-        _gallery_kwargs['show_fullscreen_button'] = True
         result_gallery = gr.Gallery(**_gallery_kwargs)
 
         # Download all
@@ -826,7 +822,6 @@ with gr.Blocks(theme=ffs_theme, css=CSS, title="FreeFakeStudio") as demo:
         # Seed display
         seed_display = gr.Textbox(
             label="Seed Used", interactive=False, visible=False,
-            show_copy_button=True,
         )
 
         # ── Action Buttons Row ─────────────────────────────
@@ -1241,4 +1236,10 @@ demo.queue(default_concurrency_limit=1)
 
 # Launch
 if __name__ == "__main__" or IS_COLAB:
-    demo.launch(share=IS_COLAB, debug=True)
+    _launch_kw = dict(
+        share=IS_COLAB, debug=True,
+        css=CSS, theme=ffs_theme, head=JS_HEAD,
+    )
+    if IS_COLAB:
+        _launch_kw['ssr_mode'] = False
+    demo.launch(**_launch_kw)
