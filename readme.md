@@ -40,6 +40,15 @@ The older FLUX.2-klein 9B and Qwen-Image-Edit engine files may remain in the rep
 
 Later runs reuse the Drive workspace and should skip existing downloads.
 
+If Gradio share is unreliable, paste your ngrok auth token into the notebook's
+`NGROK_AUTH_TOKEN` field. The launcher will print:
+
+```text
+OPEN INTERFACE (ngrok): https://...
+```
+
+Leave `NGROK_AUTH_TOKEN` blank to use Gradio share and the Colab proxy fallback.
+
 ## Persistent Workspace Layout
 
 The notebook stores project-owned files under the selected Drive workspace:

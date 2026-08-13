@@ -41,6 +41,7 @@ REPAIR = os.environ.get("FFS_REPAIR", "") == "1"
 UPDATE_APP = os.environ.get("FFS_UPDATE", "") == "1"
 COMFY_TAG = os.environ.get("FFS_COMFY_TAG", "v0.3.10")
 DEBUG = os.environ.get("FFS_DEBUG", "1").lower() not in ("0", "false", "no", "off")
+NGROK_AUTHTOKEN = os.environ.get("FFS_NGROK_AUTHTOKEN", "").strip()
 
 COMFYUI = WS / "ComfyUI"
 CACHE = WS / "cache"
@@ -69,7 +70,7 @@ os.environ["COMFYUI_ROOT"] = str(COMFYUI)
 os.environ["FREEFAKESTUDIO_WORKSPACE"] = str(WS)
 os.environ["GRADIO_TEMP_DIR"] = str(WS / "gradio_tmp")
 os.environ["GRADIO_SSR_MODE"] = "false"
-os.environ["FREEFAKESTUDIO_SHARE"] = "1"
+os.environ["FREEFAKESTUDIO_SHARE"] = "0" if NGROK_AUTHTOKEN else "1"
 os.environ["FFS_DEBUG"] = "1" if DEBUG else "0"
 
 
@@ -244,6 +245,8 @@ def launch_app_process(timeout_seconds=180):
     history = []
     url_pattern = re.compile(r"https://[^\s]+\.gradio\.live|Running on public URL:\s*(https://[^\s]+)")
     proxy_url = None
+    ngrok_url = None
+    tunnel = None
     try:
         from google.colab.output import eval_js
 
@@ -251,6 +254,17 @@ def launch_app_process(timeout_seconds=180):
         print(f"\nOPEN INTERFACE (Colab proxy): {proxy_url}\n")
     except Exception as exc:
         print(f"Colab proxy URL unavailable before launch: {exc}")
+
+    if NGROK_AUTHTOKEN:
+        try:
+            from pyngrok import ngrok
+
+            ngrok.set_auth_token(NGROK_AUTHTOKEN)
+            tunnel = ngrok.connect(7860, proto="http")
+            ngrok_url = tunnel.public_url
+            print(f"\nOPEN INTERFACE (ngrok): {ngrok_url}\n")
+        except Exception as exc:
+            print(f"ngrok tunnel failed: {exc}")
 
     env = {**os.environ, "PYTHONPATH": str(APP), "PYTHONUNBUFFERED": "1"}
     cmd = [sys.executable, "-u", str(APP / "app.py")]
@@ -289,6 +303,8 @@ def launch_app_process(timeout_seconds=180):
                 match = url_pattern.search(line)
                 if "Running on local URL:" in line:
                     local_started = True
+                    if ngrok_url:
+                        print(f"\nOPEN INTERFACE (ngrok): {ngrok_url}\n")
                     if proxy_url:
                         print(f"\nOPEN INTERFACE (Colab proxy): {proxy_url}\n")
                 if match:
@@ -500,6 +516,8 @@ try:
         "rembg": "rembg",
         "cv2": "opencv-python-headless",
     }
+    if NGROK_AUTHTOKEN:
+        required["pyngrok"] = "pyngrok"
     missing = [pkg for module, pkg in required.items() if not package_ok(module)]
     if missing:
         pip_install(*missing)
