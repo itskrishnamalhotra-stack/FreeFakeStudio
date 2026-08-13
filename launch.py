@@ -103,15 +103,6 @@ def _run(cmd, quiet=True):
     return r.returncode, r.stdout
 
 
-# ═══════════════════════════════════════════════════════════
-#  0. FIX NUMPY (must happen BEFORE any library imports it)
-# ═══════════════════════════════════════════════════════════
-# ComfyUI needs numpy 1.x; Colab ships 2.x which breaks Float64DType etc.
-_rc, _nv = _run('python -c "import numpy; print(numpy.__version__)"')
-_nv = _nv.strip()
-if _nv and int(_nv.split('.')[0]) >= 2:
-    _run('pip install -q numpy==1.26.4', quiet=False)
-
 
 # ═══════════════════════════════════════════════════════════
 #  1. COMFYUI
@@ -120,15 +111,12 @@ if not (COMFYUI / 'main.py').exists():
     step('ComfyUI', 'Cloning repository…')
     _run(f'git clone https://github.com/comfyanonymous/ComfyUI.git "{COMFYUI}"', quiet=False)
     _run(f'pip install -q -r "{COMFYUI}/requirements.txt"', quiet=False)
-    _run('pip install -q comfy-aimdo', quiet=False)
     done('ComfyUI', 'Installed')
 else:
     step('ComfyUI', 'Cached on Drive', 'ok')
-    # Ensure comfy-aimdo is installed (new ComfyUI dependency)
-    try:
-        __import__('comfy_aimdo')
-    except ImportError:
-        _run('pip install -q comfy-aimdo', quiet=False)
+
+# Disable comfy_aimdo VRAM offloader (requires numpy 1.x, Colab has 2.x)
+os.environ['COMFY_DISABLE_DYNAMIC_VRAM'] = '1'
 
 # Symlink  /content/ComfyUI  →  persistent copy
 _link = Path('/content/ComfyUI')
