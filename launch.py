@@ -104,6 +104,16 @@ def _run(cmd, quiet=True):
 
 
 # ═══════════════════════════════════════════════════════════
+#  0. FIX NUMPY (must happen BEFORE any library imports it)
+# ═══════════════════════════════════════════════════════════
+# ComfyUI needs numpy 1.x; Colab ships 2.x which breaks Float64DType etc.
+_rc, _nv = _run('python -c "import numpy; print(numpy.__version__)"')
+_nv = _nv.strip()
+if _nv and int(_nv.split('.')[0]) >= 2:
+    _run('pip install -q numpy==1.26.4', quiet=False)
+
+
+# ═══════════════════════════════════════════════════════════
 #  1. COMFYUI
 # ═══════════════════════════════════════════════════════════
 if not (COMFYUI / 'main.py').exists():
@@ -180,17 +190,6 @@ if _deps:
     _render()
     _run(f'pip install -q {" ".join(_deps)}', quiet=False)
 
-# ComfyUI + comfy-aimdo require numpy 1.x (2.x breaks Float64DType etc.)
-import numpy as _np
-if int(_np.__version__.split('.')[0]) >= 2:
-    _steps[-1]['d'] = 'Fixing numpy…'
-    _render()
-    _run('pip install -q numpy==1.26.4', quiet=False)
-    # Clear numpy from cache so 1.26.4 is used
-    import sys as _sys
-    for _k in list(_sys.modules.keys()):
-        if _k == 'numpy' or _k.startswith('numpy.'):
-            del _sys.modules[_k]
 
 done('Dependencies', f'{4 - len(_deps)}/4 cached' if len(_deps) < 4 else 'Installed')
 
