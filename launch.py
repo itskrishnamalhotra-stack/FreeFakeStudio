@@ -110,9 +110,15 @@ if not (COMFYUI / 'main.py').exists():
     step('ComfyUI', 'Cloning repository…')
     _run(f'git clone https://github.com/comfyanonymous/ComfyUI.git "{COMFYUI}"', quiet=False)
     _run(f'pip install -q -r "{COMFYUI}/requirements.txt"', quiet=False)
+    _run('pip install -q comfy-aimdo', quiet=False)
     done('ComfyUI', 'Installed')
 else:
     step('ComfyUI', 'Cached on Drive', 'ok')
+    # Ensure comfy-aimdo is installed (new ComfyUI dependency)
+    try:
+        __import__('comfy_aimdo')
+    except ImportError:
+        _run('pip install -q comfy-aimdo', quiet=False)
 
 # Symlink  /content/ComfyUI  →  persistent copy
 _link = Path('/content/ComfyUI')
