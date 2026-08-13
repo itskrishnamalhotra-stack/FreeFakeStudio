@@ -160,8 +160,20 @@ else:
 #  3. PYTHON DEPENDENCIES
 # ═══════════════════════════════════════════════════════════
 step('Dependencies', 'Checking…')
+
+# Save Colab's pre-installed versions (their C extensions are pre-compiled)
+import importlib
+_pinned = {}
+for _pm in ['numpy', 'scipy', 'PIL']:
+    try:
+        _m = importlib.import_module(_pm if _pm != 'PIL' else 'PIL')
+        _pinned[_pm] = _m.__version__
+    except Exception:
+        pass
+
 _deps = []
-for _mod, _pkg in [('rembg', 'rembg[gpu]'), ('onnxruntime', 'onnxruntime-gpu'),
+# Use 'rembg' not 'rembg[gpu]' — onnxruntime-gpu is installed separately
+for _mod, _pkg in [('rembg', 'rembg'), ('onnxruntime', 'onnxruntime-gpu'),
                     ('gradio', 'gradio'), ('cv2', 'opencv-python-headless')]:
     try:
         __import__(_mod)
@@ -172,19 +184,22 @@ if _deps:
     _render()
     _run(f'pip install -q {" ".join(_deps)}', quiet=False)
 
-# Ensure Pillow C extension matches Python package
-# (ComfyUI deps can downgrade Pillow, breaking the pre-built _imaging)
-try:
-    from PIL import Image as _pil_test
-    _pil_test.new('RGB', (1, 1))  # quick sanity check
-except Exception:
-    _steps[-1]['d'] = 'Fixing Pillow…'
-    _render()
-    _run('pip install -q --force-reinstall Pillow', quiet=False)
-    import sys as _sys
-    for _k in list(_sys.modules.keys()):
-        if _k == 'PIL' or _k.startswith('PIL.'):
-            del _sys.modules[_k]
+    # Restore pinned versions (pip may have upgraded them, breaking C extensions)
+    _restore = []
+    for _pm, _ver in _pinned.items():
+        _pkg_name = 'Pillow' if _pm == 'PIL' else _pm
+        _restore.append(f'{_pkg_name}=={_ver}')
+    if _restore:
+        _steps[-1]['d'] = 'Fixing versions…'
+        _render()
+        _run(f'pip install -q {" ".join(_restore)}', quiet=False)
+        # Clear cached modules so restored versions are used
+        import sys as _sys
+        for _k in list(_sys.modules.keys()):
+            for _pm in _pinned:
+                if _k == _pm or _k.startswith(_pm + '.'):
+                    del _sys.modules[_k]
+                    break
 
 done('Dependencies', f'{4 - len(_deps)}/4 cached' if len(_deps) < 4 else 'Installed')
 
