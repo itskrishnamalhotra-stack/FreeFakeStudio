@@ -50,7 +50,7 @@ class ZImageMemoryTests(unittest.TestCase):
         vae = _Loader("vae")
         aura = _Aura()
         nodes = {
-            "UNETLoader": unet,
+            "UnetLoaderGGUF": unet,
             "CLIPLoader": clip,
             "VAELoader": vae,
             "ModelSamplingAuraFlow": aura,
@@ -64,7 +64,7 @@ class ZImageMemoryTests(unittest.TestCase):
 
         self.assertEqual(
             unet.calls[0][0],
-            ("z-image-turbo-fp8-e4m3fn.safetensors", "fp8_e4m3fn_fast"),
+            ("z_image_turbo-Q3_K_M.gguf",),
         )
         self.assertEqual(
             clip.calls[0],
@@ -73,6 +73,14 @@ class ZImageMemoryTests(unittest.TestCase):
         self.assertEqual(vae.calls[0][0], ("ae.safetensors",))
         self.assertEqual(aura.calls[0], ("raw-unet", 3.0))
         self.assertTrue(engine_z_image.is_loaded())
+
+    def test_registry_requires_z_image_gguf(self):
+        info = model_manager.MODEL_REGISTRY["Z-Image Turbo"]
+        self.assertEqual(info["model_file"], "z_image_turbo-Q3_K_M.gguf")
+        self.assertIn(
+            ("diffusion_models", "z_image_turbo-Q3_K_M.gguf"),
+            info["required_files"],
+        )
 
     def test_comfy_memory_defaults(self):
         args = types.SimpleNamespace()

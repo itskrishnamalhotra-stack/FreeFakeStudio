@@ -1,10 +1,10 @@
 # ============================================================
-#  Engine: Z-Image Turbo FP8
+#  Engine: Z-Image Turbo GGUF Q3_K_M
 #  Fast generation (8 steps), img2img, mask-based inpaint
 #  Uses ComfyUI nodes
 # ============================================================
 
-import gc, os, sys, torch, numpy as np
+import gc, importlib.util, os, sys, torch, numpy as np
 from PIL import Image, ImageFilter
 
 _loaded = False
@@ -14,6 +14,7 @@ _vae = None
 _nodes = {}
 
 Z_IMAGE_TEXT_ENCODER = "qwen_3_4b_fp4_mixed.safetensors"
+Z_IMAGE_UNET = "z_image_turbo-Q3_K_M.gguf"
 
 
 def _read_kib(path, key):
@@ -73,8 +74,21 @@ def _get_nodes():
             sys.path.insert(0, comfyui_root)
         _configure_comfy_memory()
         from nodes import NODE_CLASS_MAPPINGS
+
+        gguf_nodes = os.path.join(comfyui_root, "custom_nodes", "ComfyUI-GGUF", "nodes.py")
+        if not os.path.isfile(gguf_nodes):
+            raise RuntimeError(
+                "ComfyUI-GGUF is missing. Run the notebook cell with UPDATE_APP=True once."
+            )
+        spec = importlib.util.spec_from_file_location("freefakestudio_z_gguf_nodes", gguf_nodes)
+        gguf_module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(gguf_module)
+        gguf_mappings = getattr(gguf_module, "NODE_CLASS_MAPPINGS", {})
+        if "UnetLoaderGGUF" not in gguf_mappings:
+            raise RuntimeError("ComfyUI-GGUF did not register UnetLoaderGGUF.")
+
         _nodes = {
-            "UNETLoader":       NODE_CLASS_MAPPINGS["UNETLoader"](),
+            "UnetLoaderGGUF":   gguf_mappings["UnetLoaderGGUF"](),
             "CLIPLoader":       NODE_CLASS_MAPPINGS["CLIPLoader"](),
             "VAELoader":        NODE_CLASS_MAPPINGS["VAELoader"](),
             "CLIPTextEncode":   NODE_CLASS_MAPPINGS["CLIPTextEncode"](),
@@ -96,11 +110,11 @@ def load():
     if _loaded:
         return
     n = _get_nodes()
-    print("⏳ Loading Z-Image Turbo FP8...")
+    print("⏳ Loading Z-Image Turbo GGUF Q3_K_M...")
     with torch.inference_mode():
-        _require_host_headroom("Z-Image diffusion model", 5.0)
-        raw_unet = n["UNETLoader"].load_unet("z-image-turbo-fp8-e4m3fn.safetensors", "fp8_e4m3fn_fast")[0]
-        _memory_status("after diffusion model")
+        _require_host_headroom("Z-Image GGUF diffusion model", 4.5)
+        raw_unet = n["UnetLoaderGGUF"].load_unet(Z_IMAGE_UNET)[0]
+        _memory_status("after GGUF diffusion model")
         _unet = n["ModelSamplingAuraFlow"].patch_aura(raw_unet, 3.0)[0]
         _require_host_headroom("Z-Image FP4 text encoder", 3.8)
         _clip = n["CLIPLoader"].load_clip(Z_IMAGE_TEXT_ENCODER, type="lumina2")[0]

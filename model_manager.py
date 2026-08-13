@@ -33,9 +33,9 @@ MODEL_REGISTRY = {
         "default_steps": 8,
         "default_cfg": 1.0,
         "default_denoise": 1.0,
-        "model_file": "z-image-turbo-fp8-e4m3fn.safetensors",
+        "model_file": "z_image_turbo-Q3_K_M.gguf",
         "required_files": [
-            ("diffusion_models", "z-image-turbo-fp8-e4m3fn.safetensors"),
+            ("diffusion_models", "z_image_turbo-Q3_K_M.gguf"),
             ("text_encoders", "qwen_3_4b_fp4_mixed.safetensors"),
             ("vae", "ae.safetensors"),
         ],

@@ -199,7 +199,7 @@ def gpu_summary():
 
 def required_model_targets():
     return [
-        COMFYUI / "models" / "diffusion_models" / "z-image-turbo-fp8-e4m3fn.safetensors",
+        COMFYUI / "models" / "diffusion_models" / "z_image_turbo-Q3_K_M.gguf",
         COMFYUI / "models" / "text_encoders" / "qwen_3_4b_fp4_mixed.safetensors",
         COMFYUI / "models" / "vae" / "ae.safetensors",
         COMFYUI / "models" / "diffusion_models" / "flux-2-klein-4b.safetensors",
@@ -441,7 +441,7 @@ def verify_comfy_runtime():
 
 def verify_engine_nodes():
     required = (
-        "UNETLoader",
+        "UnetLoaderGGUF",
         "CLIPLoader",
         "VAELoader",
         "CLIPTextEncode",
@@ -473,33 +473,25 @@ def verify_engine_nodes():
 def verify_z_image_checkpoint():
     from safetensors import safe_open
 
-    path = COMFYUI / "models" / "diffusion_models" / "z-image-turbo-fp8-e4m3fn.safetensors"
+    path = COMFYUI / "models" / "diffusion_models" / "z_image_turbo-Q3_K_M.gguf"
     text_path = COMFYUI / "models" / "text_encoders" / "qwen_3_4b_fp4_mixed.safetensors"
     if not file_ok(path):
         raise RuntimeError(f"Z-Image checkpoint is missing or incomplete: {path}")
     if not file_ok(text_path):
         raise RuntimeError(f"Z-Image FP4 text encoder is missing or incomplete: {text_path}")
-    with safe_open(str(path), framework="numpy", device="cpu") as handle:
-        keys = tuple(handle.keys())
+    with path.open("rb") as handle:
+        magic = handle.read(4)
+    if magic != b"GGUF":
+        raise RuntimeError(f"Z-Image diffusion model has an invalid GGUF header: {path}")
     with safe_open(str(text_path), framework="numpy", device="cpu") as handle:
         text_keys = tuple(handle.keys())
-    required_suffixes = (
-        "cap_embedder.1.weight",
-        "noise_refiner.0.attention.k_norm.weight",
-    )
-    missing = [suffix for suffix in required_suffixes if not any(key.endswith(suffix) for key in keys)]
-    if missing:
-        raise RuntimeError(
-            "Z-Image checkpoint has an unsupported safetensors layout. "
-            f"Missing model-detection keys: {', '.join(missing)}"
-        )
     quantized_keys = [key for key in text_keys if "weight_scale" in key]
     if not quantized_keys:
         raise RuntimeError(
             "Z-Image text encoder is not the expected mixed-FP4 checkpoint: "
             "no quantization scale tensors were found."
         )
-    return f"Headers OK / diffusion={len(keys)} tensors / FP4 encoder={len(text_keys)} tensors"
+    return f"Headers OK / diffusion=GGUF Q3_K_M / FP4 encoder={len(text_keys)} tensors"
 
 
 def ensure_numpy():
@@ -650,7 +642,7 @@ def ensure_models():
 
     specs = {
         "Z-Image Turbo": [
-            ("T5B/Z-Image-Turbo-FP8", "z-image-turbo-fp8-e4m3fn.safetensors", diff, None),
+            ("jayn7/Z-Image-Turbo-GGUF", "z_image_turbo-Q3_K_M.gguf", diff, None),
             ("Comfy-Org/z_image_turbo", "split_files/text_encoders/qwen_3_4b_fp4_mixed.safetensors", text, "qwen_3_4b_fp4_mixed.safetensors"),
             ("Comfy-Org/z_image_turbo", "split_files/vae/ae.safetensors", vae, "ae.safetensors"),
         ],
@@ -752,7 +744,7 @@ try:
         step("Diagnostics", f"ComfyUI report: {comfy_report.name}", "ok")
 
     ensure_models()
-    step("Z-Image checkpoint", "Inspecting safetensors header")
+    step("Z-Image checkpoint", "Inspecting GGUF and FP4 headers")
     done("Z-Image checkpoint", verify_z_image_checkpoint())
     models_report = write_debug_report("models")
     if models_report:

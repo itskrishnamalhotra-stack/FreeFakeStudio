@@ -90,8 +90,8 @@ First run:
 - reconciles ComfyUI and ComfyUI-GGUF Python requirements in every fresh Colab session;
 - verifies `torchsde`, `comfy.samplers`, and `comfy.sd` imports before opening the UI;
 - constructs and validates the complete Z-Image engine node set before opening the UI;
-- checks Z-Image model-detection support and its safetensors header before launch;
-- uses Comfy-Org's 3.48 GB mixed-FP4 Z-Image text encoder to stay within free Colab host RAM;
+- checks the Z-Image GGUF and mixed-FP4 headers before launch;
+- uses the 4.12 GB Q3_K_M Z-Image GGUF diffusion model with Comfy-Org's 3.48 GB mixed-FP4 text encoder to fit free Colab host RAM;
 - enables DynamicVRAM, disables execution caching and pinned-memory duplication, and logs RAM/VRAM around every Z-Image component load;
 - downloads only missing or repair-requested model files;
 - creates one HTTPS route (ngrok when configured, otherwise Colab proxy);
