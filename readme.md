@@ -86,6 +86,8 @@ First run:
 - checks/repairs NumPy consistency before ComfyUI imports;
 - installs only missing required Python packages where practical;
 - installs ComfyUI and ComfyUI-GGUF if missing;
+- reconciles ComfyUI and ComfyUI-GGUF Python requirements in every fresh Colab session;
+- verifies `torchsde`, `comfy.samplers`, and `comfy.sd` imports before opening the UI;
 - downloads only missing or repair-requested model files;
 - creates one HTTPS route (ngrok when configured, otherwise Colab proxy);
 - launches Gradio with that route set as its absolute proxy root.
@@ -113,6 +115,7 @@ WORKSPACE_DIR/diagnostics/latest.json
 WORKSPACE_DIR/diagnostics/startup_*.json
 WORKSPACE_DIR/diagnostics/dependencies_*.json
 WORKSPACE_DIR/diagnostics/models_*.json
+WORKSPACE_DIR/diagnostics/comfy_runtime_*.json
 WORKSPACE_DIR/diagnostics/launch_*.json
 WORKSPACE_DIR/diagnostics/error_*.json
 ```

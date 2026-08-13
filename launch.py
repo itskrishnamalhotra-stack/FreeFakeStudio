@@ -204,6 +204,9 @@ def write_debug_report(stage, exc=None):
             for name in [
                 "numpy",
                 "torch",
+                "torchsde",
+                "transformers",
+                "safetensors",
                 "gradio",
                 "huggingface_hub",
                 "Pillow",
@@ -375,6 +378,22 @@ def package_ok(module_name):
         return False
 
 
+def verify_comfy_runtime():
+    code = (
+        "import sys; "
+        f"sys.path.insert(0, {str(COMFYUI)!r}); "
+        "import torchsde; "
+        "import comfy.samplers; "
+        "import comfy.sd; "
+        "print('torchsde + comfy.samplers + comfy.sd: OK')"
+    )
+    probe = subprocess.run([sys.executable, "-c", code], text=True, capture_output=True)
+    if probe.returncode != 0:
+        detail = (probe.stderr or probe.stdout or "ComfyUI import probe failed")[-3000:]
+        raise RuntimeError(f"ComfyUI runtime import check failed:\n{detail}")
+    return probe.stdout.strip()
+
+
 def ensure_numpy():
     step("NumPy", "Checking binary consistency")
     code = "import numpy; import numpy._core.strings; print(numpy.__version__)"
@@ -544,18 +563,39 @@ try:
 
     step("ComfyUI", "Checking")
     state = ensure_repo(COMFYUI, "https://github.com/comfyanonymous/ComfyUI.git", COMFY_TAG, UPDATE_APP)
-    if state == "installed" or REPAIR:
-        run_cmd([sys.executable, "-m", "pip", "install", "-q", "--cache-dir", str(CACHE / "pip"), "-r", str(COMFYUI / "requirements.txt")], quiet=True)
     done("ComfyUI", state)
 
     ensure_symlink(Path("/content/ComfyUI"), COMFYUI)
 
+    step("ComfyUI dependencies", "Reconciling this Colab session")
+    run_cmd(
+        [
+            sys.executable,
+            "-m",
+            "pip",
+            "install",
+            "-q",
+            "--cache-dir",
+            str(CACHE / "pip"),
+            "-r",
+            str(COMFYUI / "requirements.txt"),
+        ],
+        quiet=True,
+    )
+    done("ComfyUI dependencies", "Installed / already satisfied")
+
     step("ComfyUI-GGUF", "Checking")
     gguf = COMFYUI / "custom_nodes" / "ComfyUI-GGUF"
     state = ensure_repo(gguf, "https://github.com/city96/ComfyUI-GGUF.git", None, UPDATE_APP)
-    if (state == "installed" or REPAIR) and (gguf / "requirements.txt").exists():
+    if (gguf / "requirements.txt").exists():
         run_cmd([sys.executable, "-m", "pip", "install", "-q", "--cache-dir", str(CACHE / "pip"), "-r", str(gguf / "requirements.txt")], quiet=True)
     done("ComfyUI-GGUF", state)
+
+    step("ComfyUI runtime", "Import smoke test")
+    done("ComfyUI runtime", verify_comfy_runtime())
+    comfy_report = write_debug_report("comfy_runtime")
+    if comfy_report:
+        step("Diagnostics", f"ComfyUI report: {comfy_report.name}", "ok")
 
     ensure_models()
     models_report = write_debug_report("models")
