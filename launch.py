@@ -45,12 +45,10 @@ REPAIR = os.environ.get("FFS_REPAIR", "") == "1"
 UPDATE_APP = os.environ.get("FFS_UPDATE", "") == "1"
 COMFY_TAG = os.environ.get("FFS_COMFY_TAG", "v0.28.0")
 DEBUG = os.environ.get("FFS_DEBUG", "1").lower() not in ("0", "false", "no", "off")
-NGROK_AUTHTOKEN = os.environ.get("FFS_NGROK_AUTHTOKEN", "").strip()
-FLUX_ENCODER_MODE = os.environ.get("FFS_FLUX_ENCODER_MODE", "official").strip().lower()
-FLUX_CUSTOM_ENCODER_URL = os.environ.get("FFS_FLUX_CUSTOM_ENCODER_URL", "").strip()
 FLUX_CUSTOM_MAX_BYTES = 3 * 1024**3
 FLUX_CUSTOM_MIN_BYTES = 500 * 1024**2
 FLUX_ENCODER_CONFIG = WS / "config" / "flux_encoder.json"
+PRIVATE_SETTINGS_FILE = WS / "config" / "private_settings.json"
 APP_PID_FILE = WS / "config" / "app.pid"
 
 COMFYUI = WS / "ComfyUI"
@@ -67,6 +65,62 @@ for directory in [
     FLUX_ENCODER_CONFIG.parent,
 ]:
     directory.mkdir(parents=True, exist_ok=True)
+
+
+def load_private_settings():
+    if not PRIVATE_SETTINGS_FILE.is_file():
+        return {}
+    try:
+        data = json.loads(PRIVATE_SETTINGS_FILE.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def private_value(settings, env_name, key, default=""):
+    """Prefer this run's form value, then reuse the private Drive value."""
+    current = os.environ.get(env_name, "").strip()
+    if current:
+        return current
+    return str(settings.get(key, default) or default).strip()
+
+
+def save_private_settings(settings):
+    """Atomically persist stable single-user settings outside the Git checkout."""
+    values = {
+        "ngrok_auth_token": NGROK_AUTHTOKEN,
+        "flux_encoder_mode": FLUX_ENCODER_MODE,
+        "flux_custom_encoder_url": FLUX_CUSTOM_ENCODER_URL,
+        "huggingface_token": os.environ.get("HF_TOKEN", "").strip(),
+    }
+    merged = {**settings, **{key: value for key, value in values.items() if value}}
+    partial = PRIVATE_SETTINGS_FILE.with_suffix(".json.part")
+    partial.write_text(json.dumps(merged, indent=2), encoding="utf-8")
+    try:
+        partial.chmod(0o600)
+    except OSError:
+        pass
+    os.replace(str(partial), str(PRIVATE_SETTINGS_FILE))
+    try:
+        PRIVATE_SETTINGS_FILE.chmod(0o600)
+    except OSError:
+        pass
+
+
+_private_settings = load_private_settings()
+NGROK_AUTHTOKEN = private_value(
+    _private_settings, "FFS_NGROK_AUTHTOKEN", "ngrok_auth_token"
+)
+FLUX_ENCODER_MODE = private_value(
+    _private_settings, "FFS_FLUX_ENCODER_MODE", "flux_encoder_mode", "official"
+).lower()
+FLUX_CUSTOM_ENCODER_URL = private_value(
+    _private_settings, "FFS_FLUX_CUSTOM_ENCODER_URL", "flux_custom_encoder_url"
+)
+_hf_token = private_value(_private_settings, "HF_TOKEN", "huggingface_token")
+if _hf_token:
+    os.environ["HF_TOKEN"] = _hf_token
+save_private_settings(_private_settings)
 
 os.environ["HF_HOME"] = str(CACHE / "huggingface")
 os.environ["HUGGINGFACE_HUB_CACHE"] = str(CACHE / "huggingface")
