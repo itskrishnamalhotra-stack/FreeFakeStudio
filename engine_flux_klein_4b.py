@@ -138,7 +138,7 @@ def _resize_to_multiple(img, multiple=64, max_dim=1024):
 
 # ── Generate ───────────────────────────────────────────────
 @torch.inference_mode()
-def generate(prompt, negative, width, height, seed, cfg, denoise, steps=20):
+def generate(prompt, negative, width, height, seed, cfg, denoise, steps=4):
     n = _get_nodes()
     pos = n["CLIPTextEncode"].encode(_clip, prompt)[0]
     neg = n["CLIPTextEncode"].encode(_clip, negative)[0]
@@ -152,13 +152,13 @@ def generate(prompt, negative, width, height, seed, cfg, denoise, steps=20):
 
 # ── Img2Img ────────────────────────────────────────────────
 @torch.inference_mode()
-def img2img(input_image, prompt, negative, seed, cfg, denoise, steps=20, mask=None):
+def img2img(input_image, prompt, negative, seed, cfg, denoise, steps=4, mask=None):
     """img2img with optional mask support.
     If mask is provided (numpy uint8, 255=areas to regenerate), routes through
     the inpaint pipeline which preserves unmasked regions pixel-perfectly.
     """
     if mask is not None:
-        return inpaint(input_image, mask, prompt, negative, seed, cfg, float(denoise), 8)
+        return inpaint(input_image, mask, prompt, negative, seed, cfg, float(denoise), steps)
 
     # Fallback: standard img2img
     n = _get_nodes()
@@ -204,7 +204,7 @@ def _fooocus_fill(image_np, mask_np):
     return current
 
 @torch.inference_mode()
-def inpaint(original, mask_combined, prompt, negative, seed, cfg, denoise, steps=20):
+def inpaint(original, mask_combined, prompt, negative, seed, cfg, denoise, steps=4):
     """original: PIL Image, mask_combined: numpy uint8 array (255=masked)"""
     n = _get_nodes()
 

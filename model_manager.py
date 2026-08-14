@@ -45,7 +45,7 @@ MODEL_REGISTRY = {
         "engine_module": "engine_flux_klein_4b",
         "description": "Generate + image editing",
         "capabilities": ["generate", "img2img", "inpaint"],
-        "default_steps": 20,
+        "default_steps": 4,
         "max_steps": 50,
         "default_cfg": 1.0,
         "default_denoise": 1.0,
@@ -462,14 +462,14 @@ class MockEngine:
     def generate(self, prompt, negative, width, height, seed, cfg, denoise, steps=8):
         return self._make_placeholder(width, height)
 
-    def img2img(self, input_image, prompt, negative, seed, cfg, denoise, steps=20, mask=None):
+    def img2img(self, input_image, prompt, negative, seed, cfg, denoise, steps=4, mask=None):
         if input_image:
             w, h = input_image.size
         else:
             w, h = 512, 512
         return self._make_placeholder(w, h)
 
-    def inpaint(self, original, mask_combined, prompt, negative, seed, cfg, denoise, steps=20):
+    def inpaint(self, original, mask_combined, prompt, negative, seed, cfg, denoise, steps=4):
         if original:
             w, h = original.size
         else:

@@ -344,6 +344,16 @@ class FluxEncoderTests(unittest.TestCase):
         )
         self.assertEqual(engine_flux_klein_4b.get_loaded_encoder(), "official")
 
+    def test_distilled_flux_defaults_to_four_steps(self):
+        self.assertEqual(
+            model_manager.MODEL_REGISTRY["FLUX.2-klein 4B"]["default_steps"],
+            4,
+        )
+        self.assertEqual(
+            engine_flux_klein_4b.generate.__wrapped__.__defaults__[-1],
+            4,
+        )
+
     def test_custom_gguf_uses_gguf_clip_loader(self):
         import os
 
