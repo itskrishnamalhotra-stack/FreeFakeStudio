@@ -148,6 +148,47 @@ class StudioUiRegressionTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "at most 4"):
             engine_flux_klein_4b._normalize_references(images)
 
+    def test_attachment_queue_appends_and_reorders_generation_inputs(self):
+        namespace = {"MAX_FLUX_REFERENCES": 4}
+        namespace["_as_image_list"] = _source_function("app.py", "_as_image_list", namespace)
+        append_images = _source_function("app.py", "_append_attachment_images", namespace)
+        apply_action = _source_function("app.py", "_apply_attachment_action", namespace)
+        images = [Image.new("RGB", (8, 8), color) for color in ("red", "blue", "green")]
+
+        queue = append_images([images[0]], images[1:])
+        self.assertEqual(queue, images)
+        self.assertEqual(apply_action(queue, 2, "canvas"), [images[2], images[0], images[1]])
+        self.assertEqual(apply_action(queue, 1, "left"), [images[1], images[0], images[2]])
+        self.assertEqual(apply_action(queue, 1, "right"), [images[0], images[2], images[1]])
+        self.assertEqual(apply_action(queue, 1, "remove"), [images[0], images[2]])
+        with self.assertRaisesRegex(ValueError, "up to 4"):
+            append_images(queue, [images[0], images[1]])
+
+    def test_generated_gallery_item_can_be_added_from_gradio_file_data(self):
+        converter = _source_function(
+            "app.py", "_gallery_item_to_pil", {"Image": Image, "os": os}
+        )
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = os.path.join(temp_dir, "result.png")
+            Image.new("RGB", (17, 19), "purple").save(path)
+            restored = converter({"image": {"path": path}})
+        self.assertEqual(restored.size, (17, 19))
+
+    def test_chat_history_round_trips_through_persistent_json(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            namespace = {
+                "CHAT_HISTORY_PATH": os.path.join(temp_dir, "sessions", "current_chat.json"),
+                "datetime": __import__("datetime").datetime,
+                "json": __import__("json"),
+                "os": os,
+                "uuid": __import__("uuid"),
+            }
+            save_history = _source_function("app.py", "_save_chat_history", namespace)
+            load_history = _source_function("app.py", "_load_chat_history", namespace)
+            turns = ["<div>You</div>", "<div>FreeFakeStudio</div>"]
+            save_history(turns)
+            self.assertEqual(load_history(), turns)
+
 
 class _Loader:
     def __init__(self, result):

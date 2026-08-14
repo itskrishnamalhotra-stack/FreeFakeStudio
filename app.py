@@ -36,11 +36,51 @@ import gradio as gr
 # ── Save directory ─────────────────────────────────────────
 import workspace as ws
 SAVE_DIR = ws.get_save_dir()
+CHAT_HISTORY_PATH = os.path.join(SAVE_DIR, "_sessions", "current_chat.json")
 
 def get_save_path(prefix="img"):
     safe = re.sub(r'[^a-zA-Z0-9_-]', '_', prefix)[:20]
     uid = uuid.uuid4().hex[:6]
     return os.path.join(SAVE_DIR, f"{safe}_{uid}.png")
+
+
+def _load_chat_history():
+    try:
+        with open(CHAT_HISTORY_PATH, "r", encoding="utf-8") as history_file:
+            payload = json.load(history_file)
+        history = payload.get("history", []) if isinstance(payload, dict) else []
+        if not isinstance(history, list) or not all(isinstance(item, str) for item in history):
+            raise ValueError("Saved chat history has an invalid format.")
+        return history[-200:]
+    except FileNotFoundError:
+        return []
+    except Exception as exc:
+        print(f"[history] Could not restore saved chat: {exc}", flush=True)
+        return []
+
+
+def _save_chat_history(history):
+    history = [item for item in (history or []) if isinstance(item, str)][-200:]
+    session_dir = os.path.dirname(CHAT_HISTORY_PATH)
+    os.makedirs(session_dir, exist_ok=True)
+    temporary_path = CHAT_HISTORY_PATH + f".{uuid.uuid4().hex}.tmp"
+    payload = {
+        "version": 1,
+        "updated_at": datetime.now().isoformat(timespec="seconds"),
+        "history": history,
+    }
+    try:
+        with open(temporary_path, "w", encoding="utf-8") as history_file:
+            json.dump(payload, history_file, ensure_ascii=False)
+        os.replace(temporary_path, CHAT_HISTORY_PATH)
+    except Exception as exc:
+        try:
+            if os.path.exists(temporary_path):
+                os.remove(temporary_path)
+        except OSError:
+            pass
+        print(f"[history] Could not save chat: {exc}", flush=True)
+    return history
 
 
 def _write_runtime_error(context, exc):
@@ -423,14 +463,14 @@ def _status_html(state, message):
     return f'<div class="ffs-notice">{safe_message}</div>'
 
 
-def _image_thumbnail_data_uri(image):
+def _image_thumbnail_data_uri(image, max_size=220):
     if image is None:
         return ""
     try:
         if not isinstance(image, Image.Image):
             image = Image.fromarray(image)
         preview = image.convert("RGB").copy()
-        preview.thumbnail((220, 220), Image.Resampling.LANCZOS)
+        preview.thumbnail((max_size, max_size), Image.Resampling.LANCZOS)
         buffer = BytesIO()
         preview.save(buffer, format="JPEG", quality=78, optimize=True)
         return "data:image/jpeg;base64," + base64.b64encode(buffer.getvalue()).decode("ascii")
@@ -449,7 +489,7 @@ def _request_html(prompt, model_name, input_image, mask_mode):
     mask_note = f" / {html.escape(edit_method)}" if edit_method else ""
     attachment_items = []
     for index, image in enumerate(input_images):
-        attachment_src = _image_thumbnail_data_uri(image)
+        attachment_src = _image_thumbnail_data_uri(image, max_size=640)
         if attachment_src:
             role = "Canvas" if index == 0 else "Reference"
             attachment_items.append(
@@ -533,6 +573,53 @@ def _attachment_status_html(count):
         '<small>Refer to them as image 1, image 2, and so on in your prompt.</small>'
         '</div>'
     )
+
+
+def _append_attachment_images(existing, additions):
+    images = _as_image_list(existing)
+    additions = _as_image_list(additions)
+    if len(images) + len(additions) > MAX_FLUX_REFERENCES:
+        raise ValueError(
+            f"FLUX.2 Klein accepts up to {MAX_FLUX_REFERENCES} reference images. "
+            f"You already have {len(images)} and selected {len(additions)} more."
+        )
+    return images + additions
+
+
+def _apply_attachment_action(images, index, action):
+    images = _as_image_list(images)
+    if not images:
+        return []
+    index = max(0, min(int(index or 0), len(images) - 1))
+    if action == "canvas" and index > 0:
+        images.insert(0, images.pop(index))
+    elif action == "left" and index > 0:
+        images[index - 1], images[index] = images[index], images[index - 1]
+    elif action == "right" and index < len(images) - 1:
+        images[index + 1], images[index] = images[index], images[index + 1]
+    elif action == "remove":
+        images.pop(index)
+    return images
+
+
+def _gallery_item_to_pil(item):
+    if isinstance(item, Image.Image):
+        return item.convert("RGB")
+    if isinstance(item, (list, tuple)) and item:
+        item = item[0]
+    if isinstance(item, dict):
+        nested = item.get("image")
+        item = (
+            item.get("path")
+            or (nested.get("path") if isinstance(nested, dict) else None)
+            or nested
+        )
+    path = getattr(item, "path", None) or item
+    if isinstance(path, Image.Image):
+        return path.convert("RGB")
+    if isinstance(path, (str, os.PathLike)):
+        return Image.open(path).convert("RGB")
+    raise ValueError("The selected generated image could not be read.")
 
 
 # ═══════════════════════════════════════════════════════════
@@ -2225,15 +2312,17 @@ html[data-ffs-settings="open"] #ffs-settings-backdrop {
 
 /* The input image and its edit tools belong to the same request. */
 #ffs-attachment-row {
-    align-items: center !important;
+    align-items: stretch !important;
     gap: 10px !important;
-    min-height: 76px !important;
-    padding: 6px 8px !important;
+    min-height: 112px !important;
+    padding: 8px !important;
     border: 1px solid var(--ffs-border) !important;
     border-bottom: 0 !important;
     border-radius: 8px 8px 0 0 !important;
     background: var(--ffs-surface) !important;
 }
+#ffs-attachment-manager { gap: 7px !important; min-width: 0 !important; }
+#ffs-attachment-footer { align-items: center !important; gap: 7px !important; }
 #ffs-attachment-copy,
 #ffs-attachment-copy .html-container { min-width: 0 !important; padding: 0 !important; }
 .ffs-attachment-copy strong,
@@ -2242,9 +2331,119 @@ html[data-ffs-settings="open"] #ffs-settings-backdrop {
 .ffs-attachment-copy strong { color: var(--ffs-text); font-size: 12px; font-weight: 800; }
 .ffs-attachment-copy span { margin-top: 2px; color: var(--ffs-muted); font-size: 10px; }
 .ffs-attachment-copy small { margin-top: 4px; color: var(--ffs-muted); font-size: 9px; line-height: 1.35; }
-#ffs-attachment-preview .grid-wrap { gap: 5px !important; }
-#ffs-attachment-preview .gallery-item { min-width: 0 !important; border-radius: 6px !important; }
-#ffs-remove-attachment { margin-left: auto !important; }
+#ffs-attachment-preview {
+    width: 100% !important;
+    max-width: none !important;
+    height: 112px !important;
+    min-height: 112px !important;
+    border: 0 !important;
+    overflow: hidden !important;
+}
+#ffs-attachment-preview .grid-wrap {
+    display: grid !important;
+    grid-template-columns: repeat(4, minmax(94px, 1fr)) !important;
+    gap: 7px !important;
+    overflow-x: auto !important;
+    scrollbar-width: thin;
+}
+#ffs-attachment-preview .gallery-item {
+    position: relative !important;
+    min-width: 94px !important;
+    height: 104px !important;
+    overflow: hidden !important;
+    border: 1px solid var(--ffs-border) !important;
+    border-radius: 7px !important;
+    background: var(--ffs-surface-2) !important;
+}
+#ffs-attachment-preview .gallery-item img { cursor: zoom-in !important; }
+.ffs-attachment-role {
+    position: absolute;
+    z-index: 4;
+    top: 6px;
+    left: 6px;
+    max-width: calc(100% - 12px);
+    padding: 3px 6px;
+    border-radius: 5px;
+    background: rgba(12, 16, 22, .78);
+    color: #fff;
+    font-size: 9px;
+    font-weight: 800;
+    line-height: 1.15;
+    pointer-events: none;
+    backdrop-filter: blur(7px);
+}
+.ffs-attachment-actions {
+    position: absolute;
+    z-index: 5;
+    inset: auto 5px 5px 5px;
+    display: flex;
+    justify-content: center;
+    gap: 3px;
+    opacity: 0;
+    transform: translateY(5px);
+    transition: opacity .16s ease, transform .16s ease;
+}
+#ffs-attachment-preview .gallery-item:hover .ffs-attachment-actions,
+#ffs-attachment-preview .gallery-item:focus-within .ffs-attachment-actions {
+    opacity: 1;
+    transform: translateY(0);
+}
+.ffs-attachment-action {
+    width: 25px;
+    min-width: 25px;
+    height: 25px;
+    min-height: 25px;
+    padding: 0;
+    border: 1px solid rgba(255,255,255,.16);
+    border-radius: 5px;
+    background: rgba(12,16,22,.86);
+    color: #fff;
+    font: 800 12px/1 Inter, sans-serif;
+    cursor: pointer;
+    backdrop-filter: blur(7px);
+}
+.ffs-attachment-action:hover { background: var(--ffs-coral); }
+.ffs-attachment-action:disabled { opacity: .38; cursor: default; }
+#ffs-open-mask-settings,
+#ffs-clear-attachments { flex: 0 0 auto !important; min-width: 86px !important; }
+.ffs-internal-control { display: none !important; }
+
+/* Shared full-screen image viewer */
+#ffs-lightbox {
+    position: fixed;
+    z-index: 5000;
+    inset: 0;
+    display: none;
+    align-items: center;
+    justify-content: center;
+    padding: 28px;
+    background: rgba(7, 10, 14, .9);
+    backdrop-filter: blur(12px);
+}
+#ffs-lightbox.ffs-open { display: flex; }
+#ffs-lightbox img {
+    display: block;
+    max-width: min(94vw, 1600px);
+    max-height: 92vh;
+    object-fit: contain;
+    border-radius: 7px;
+    box-shadow: 0 26px 80px rgba(0,0,0,.5);
+}
+#ffs-lightbox button {
+    position: absolute;
+    top: max(16px, env(safe-area-inset-top));
+    right: 18px;
+    width: 40px;
+    min-width: 40px;
+    height: 40px;
+    padding: 0;
+    border: 1px solid rgba(255,255,255,.22);
+    border-radius: 7px;
+    background: rgba(12,16,22,.82);
+    color: #fff;
+    font-size: 22px;
+    cursor: pointer;
+}
 
 #ffs-settings-panel #ffs-edit-panel {
     width: 100% !important;
@@ -2331,7 +2530,10 @@ html[data-ffs-settings="open"] #ffs-settings-backdrop {
     }
     .ffs-chat-images { grid-template-columns: minmax(0, 1fr); }
     #ffs-attachment-copy { flex: 1 1 auto !important; }
-    #ffs-attachment-preview { max-width: 46% !important; }
+    #ffs-attachment-preview .grid-wrap { grid-template-columns: repeat(4, 98px) !important; }
+    .ffs-attachment-actions { opacity: 1; transform: none; }
+    #ffs-open-mask-settings,
+    #ffs-clear-attachments { min-width: 72px !important; }
 }
 
 @media (max-width: 420px) {
@@ -2484,6 +2686,145 @@ function prepareSettingsDrawer() {
     setSettingsDrawer(document.documentElement.dataset.ffsSettings === 'open');
 }
 
+function openMaskSettings() {
+    setSettingsDrawer(true);
+    window.setTimeout(function() {
+        var panel = document.querySelector('#ffs-edit-panel');
+        if (panel) panel.scrollIntoView({behavior: 'smooth', block: 'center'});
+    }, 180);
+}
+
+function setStudioControlValue(selector, value) {
+    var input = document.querySelector(selector);
+    if (!input) return false;
+    var descriptor = Object.getOwnPropertyDescriptor(
+        input instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype,
+        'value'
+    );
+    if (descriptor && descriptor.set) descriptor.set.call(input, String(value));
+    else input.value = String(value);
+    input.dispatchEvent(new Event('input', {bubbles: true}));
+    input.dispatchEvent(new Event('change', {bubbles: true}));
+    return true;
+}
+
+function triggerAttachmentAction(index, action) {
+    var indexReady = setStudioControlValue('#ffs-attachment-action-index input', index);
+    var actionReady = setStudioControlValue(
+        '#ffs-attachment-action-name textarea, #ffs-attachment-action-name input', action
+    );
+    if (!indexReady || !actionReady) return;
+    window.setTimeout(function() {
+        var run = document.querySelector('#ffs-attachment-action-run button, #ffs-attachment-action-run');
+        if (run) run.click();
+    }, 60);
+}
+
+function ensureLightbox() {
+    var lightbox = document.querySelector('#ffs-lightbox');
+    if (lightbox) return lightbox;
+    lightbox = document.createElement('div');
+    lightbox.id = 'ffs-lightbox';
+    lightbox.setAttribute('role', 'dialog');
+    lightbox.setAttribute('aria-modal', 'true');
+    lightbox.setAttribute('aria-label', 'Image preview');
+    lightbox.innerHTML = '<button type="button" aria-label="Close image preview">&times;</button><img alt="Full-screen preview">';
+    document.body.appendChild(lightbox);
+    lightbox.addEventListener('click', function(event) {
+        if (event.target === lightbox || event.target.closest('button')) closeLightbox();
+    });
+    return lightbox;
+}
+
+function openLightbox(src, alt) {
+    if (!src) return;
+    var lightbox = ensureLightbox();
+    var image = lightbox.querySelector('img');
+    image.src = src;
+    image.alt = alt || 'Full-screen preview';
+    lightbox.classList.add('ffs-open');
+    document.documentElement.style.overflow = 'hidden';
+    lightbox.querySelector('button').focus();
+}
+
+function closeLightbox() {
+    var lightbox = document.querySelector('#ffs-lightbox');
+    if (!lightbox) return;
+    lightbox.classList.remove('ffs-open');
+    document.documentElement.style.overflow = '';
+}
+
+function makeAttachmentAction(label, title, index, action, disabled) {
+    var button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'ffs-attachment-action';
+    button.textContent = label;
+    button.title = title;
+    button.setAttribute('aria-label', title);
+    button.disabled = Boolean(disabled);
+    button.addEventListener('click', function(event) {
+        event.preventDefault();
+        event.stopPropagation();
+        if (action === 'preview') {
+            var image = button.closest('.gallery-item').querySelector('img');
+            openLightbox(image.currentSrc || image.src, image.alt);
+        } else if (action === 'mask') {
+            openMaskSettings();
+        } else {
+            triggerAttachmentAction(index, action);
+        }
+    });
+    return button;
+}
+
+function prepareAttachmentCards() {
+    var items = Array.from(document.querySelectorAll('#ffs-attachment-preview .gallery-item'));
+    items.forEach(function(item, index) {
+        if (item.dataset.ffsAttachmentReady) return;
+        item.dataset.ffsAttachmentReady = 'true';
+        var image = item.querySelector('img');
+        if (!image) return;
+        image.setAttribute('title', 'Open image ' + (index + 1) + ' full screen');
+        image.addEventListener('click', function(event) {
+            event.preventDefault();
+            event.stopPropagation();
+            openLightbox(image.currentSrc || image.src, image.alt);
+        });
+
+        var role = document.createElement('span');
+        role.className = 'ffs-attachment-role';
+        role.textContent = index === 0 ? 'Image 1 / Canvas' : 'Image ' + (index + 1) + ' / Reference';
+        item.appendChild(role);
+
+        var actions = document.createElement('div');
+        actions.className = 'ffs-attachment-actions';
+        actions.appendChild(makeAttachmentAction('[]', 'Open full-screen preview', index, 'preview'));
+        actions.appendChild(makeAttachmentAction('C', 'Make this image the canvas', index, 'canvas', index === 0));
+        actions.appendChild(makeAttachmentAction('<', 'Move image left', index, 'left', index === 0));
+        actions.appendChild(makeAttachmentAction('>', 'Move image right', index, 'right', index === items.length - 1));
+        if (index === 0) actions.appendChild(makeAttachmentAction('M', 'Open canvas mask settings', index, 'mask'));
+        actions.appendChild(makeAttachmentAction('x', 'Remove this image', index, 'remove'));
+        item.appendChild(actions);
+    });
+}
+
+function prepareImagePreviews() {
+    document.querySelectorAll('.ffs-chat-image img, .ffs-request-attachment img').forEach(function(image) {
+        image.setAttribute('title', 'Open full-screen preview');
+    });
+    if (document.documentElement.dataset.ffsPreviewDelegated) return;
+    document.documentElement.dataset.ffsPreviewDelegated = 'true';
+    document.addEventListener('click', function(event) {
+        var image = event.target.closest(
+            '#ffs-attachment-preview .gallery-item img, .ffs-chat-image img, .ffs-request-attachment img'
+        );
+        if (!image) return;
+        event.preventDefault();
+        event.stopPropagation();
+        openLightbox(image.currentSrc || image.src, image.alt);
+    }, true);
+}
+
 function enhanceStudioUI() {
     var attach = document.querySelector('#ffs-attach button, #ffs-attach');
     var generate = document.querySelector('#ffs-generate button, #ffs-generate');
@@ -2492,9 +2833,17 @@ function enhanceStudioUI() {
     if (generate) generate.setAttribute('title', 'Generate image');
     if (fresh) fresh.setAttribute('title', 'Start a new session');
 
+    var maskSettings = document.querySelector('#ffs-open-mask-settings button, #ffs-open-mask-settings');
+    if (maskSettings && !maskSettings.dataset.ffsMaskReady) {
+        maskSettings.dataset.ffsMaskReady = 'true';
+        maskSettings.addEventListener('click', openMaskSettings);
+    }
+
     prepareGenerationSliders();
     prepareThemeToggle();
     prepareSettingsDrawer();
+    prepareAttachmentCards();
+    prepareImagePreviews();
 
     var status = document.querySelector('#ffs-status');
     if (status && !status.dataset.ffsObserved) {
@@ -2505,6 +2854,9 @@ function enhanceStudioUI() {
         }).observe(status, {childList: true, subtree: true});
     }
 }
+document.addEventListener('keydown', function(event) {
+    if (event.key === 'Escape') closeLightbox();
+});
 setInterval(enhanceStudioUI, 1200);
 setTimeout(enhanceStudioUI, 500);
 </script>
@@ -2568,14 +2920,16 @@ def _ui_trace(message):
         print(f"[ui] {message}", flush=True)
 
 
+_initial_chat_history = _load_chat_history()
 _ui_trace("building interface")
 with gr.Blocks(title="FreeFakeStudio") as demo:
 
     # ── Session State ──────────────────────────────────────
-    chat_history = gr.State([])           # list of {role, content, ...}
+    chat_history = gr.State(_initial_chat_history)  # rendered conversation turns
     attached_image = gr.State(None)       # PIL Image or None
     last_gen_settings = gr.State(None)    # for Regenerate
     selected_result_idx = gr.State(0)
+    latest_result_paths = gr.State([])
 
     # ═══════════════════════════════════════════════════════
     # HEADER
@@ -2741,20 +3095,23 @@ with gr.Blocks(title="FreeFakeStudio") as demo:
         )
 
         conversation_display = gr.HTML(
-            value='<div class="ffs-history"></div>',
+            value=_render_history(_initial_chat_history),
             elem_classes="ffs-history",
             elem_id="ffs-conversation",
         )
 
         # Status display (streaming updates)
         status_display = gr.HTML(
-            value="""
+            value=(
+                '<div class="ffs-notice ffs-notice-success">Saved conversation restored</div>'
+                if _initial_chat_history else """
             <div class="ffs-empty">
                 <div class="ffs-empty-icon">FF</div>
                 <div class="ffs-empty-title">What will you make?</div>
                 <div class="ffs-empty-sub">Portrait. Product. Editorial. Concept.</div>
             </div>
-            """,
+            """
+            ),
             elem_id="ffs-status",
         )
 
@@ -2789,7 +3146,7 @@ with gr.Blocks(title="FreeFakeStudio") as demo:
 
         # ── Action Buttons Row ─────────────────────────────
         with gr.Row(visible=False, elem_id="ffs-result-actions") as action_row:
-            add_to_prompt_btn = gr.Button("Use first as input", size="sm", visible=False)
+            add_to_prompt_btn = gr.Button("Use result as input", size="sm", visible=False)
             regenerate_btn = gr.Button("Regenerate", size="sm")
             seed_display = gr.Textbox(
                 interactive=False, visible=False, show_label=False,
@@ -2805,22 +3162,53 @@ with gr.Blocks(title="FreeFakeStudio") as demo:
     with gr.Row(elem_id="ffs-composer-dock"):
         with gr.Column(elem_id="ffs-composer-inner"):
             with gr.Row(visible=False, elem_id="ffs-attachment-row") as attachment_row:
-                attachment_display = gr.Gallery(
+                with gr.Column(elem_id="ffs-attachment-manager"):
+                    attachment_display = gr.Gallery(
+                        show_label=False,
+                        columns=4,
+                        rows=1,
+                        height=112,
+                        object_fit="cover",
+                        preview=False,
+                        allow_preview=False,
+                        elem_id="ffs-attachment-preview",
+                    )
+                    with gr.Row(elem_id="ffs-attachment-footer"):
+                        attachment_summary = gr.HTML(
+                            "",
+                            elem_id="ffs-attachment-copy",
+                        )
+                        open_mask_settings_btn = gr.Button(
+                            "Edit canvas",
+                            size="sm",
+                            variant="secondary",
+                            elem_id="ffs-open-mask-settings",
+                        )
+                        clear_attachments_btn = gr.Button(
+                            "Clear all",
+                            size="sm",
+                            variant="secondary",
+                            elem_id="ffs-clear-attachments",
+                        )
+                attachment_action_index = gr.Number(
+                    value=0,
+                    precision=0,
                     show_label=False,
-                    columns=4,
-                    rows=1,
-                    height=88,
-                    object_fit="cover",
-                    preview=False,
-                    allow_preview=True,
-                    elem_id="ffs-attachment-preview",
+                    container=False,
+                    elem_id="ffs-attachment-action-index",
+                    elem_classes="ffs-internal-control",
                 )
-                attachment_summary = gr.HTML(
-                    "",
-                    elem_id="ffs-attachment-copy",
+                attachment_action_name = gr.Textbox(
+                    value="",
+                    show_label=False,
+                    container=False,
+                    elem_id="ffs-attachment-action-name",
+                    elem_classes="ffs-internal-control",
                 )
-                remove_attachment_btn = gr.Button(
-                    "Remove", size="sm", variant="secondary", elem_id="ffs-remove-attachment"
+                attachment_action_btn = gr.Button(
+                    "Apply attachment action",
+                    elem_id="ffs-attachment-action-run",
+                    elem_classes="ffs-internal-control",
                 )
             with gr.Row(elem_id="ffs-composer"):
                 attach_btn = gr.UploadButton(
@@ -2867,54 +3255,66 @@ with gr.Blocks(title="FreeFakeStudio") as demo:
             show_progress="hidden",
         )
 
-    def handle_upload(file, model_name):
-        files = _as_image_list(file)
-        if not files:
+    def _attachment_updates(images, model_name, reset_mask=True):
+        images = _as_image_list(images)
+        defaults = model_manager.get_defaults(model_name)
+        if not images:
             return (
                 gr.update(visible=False), gr.update(value=None), None,
-                "", gr.update(visible=False), gr.update(visible=False),
-                "Smart", None, gr.update(visible=False), gr.update(visible=False),
+                "", gr.update(visible=False), "Smart", None, None,
+                gr.update(visible=False, value=defaults.get("denoise", 1.0)),
+                gr.update(visible=False), gr.update(visible=False),
             )
+        return (
+            gr.update(visible=True), gr.update(value=images), images,
+            _attachment_status_html(len(images)), gr.update(visible=True),
+            "Smart" if reset_mask else gr.update(),
+            None if reset_mask else gr.update(),
+            None if reset_mask else gr.update(),
+            gr.update(
+                visible=True,
+                value=defaults.get("img2img_denoise", 1.0),
+            ),
+            gr.update(visible=False) if reset_mask else gr.update(),
+            gr.update(visible=False) if reset_mask else gr.update(),
+        )
+
+    def handle_upload(file, model_name, existing_images):
+        files = _as_image_list(file)
+        if not files:
+            return (*_attachment_updates(existing_images, model_name, reset_mask=False), gr.update(value=None))
         if not model_manager.supports_img2img(model_name):
             raise gr.Error(
                 f"{model_name} supports text-to-image only. "
                 "Choose FLUX.2-klein 4B to edit an image."
             )
-        if len(files) > MAX_FLUX_REFERENCES:
+        existing = _as_image_list(existing_images)
+        if len(existing) + len(files) > MAX_FLUX_REFERENCES:
             raise gr.Error(
                 f"FLUX.2 Klein accepts up to {MAX_FLUX_REFERENCES} reference images. "
-                f"You selected {len(files)}."
+                f"You already have {len(existing)} and selected {len(files)} more."
             )
-        images = [Image.open(path).convert("RGB") for path in files]
-        defaults = model_manager.get_defaults(model_name)
+        additions = [Image.open(path).convert("RGB") for path in files]
+        images = _append_attachment_images(existing, additions)
         return (
-            gr.update(visible=True), gr.update(value=images), images,
-            _attachment_status_html(len(images)),
-            gr.update(visible=True),
-            gr.update(visible=True, value=defaults.get("img2img_denoise", 0.45)),
-            "Smart", None, gr.update(visible=False), gr.update(visible=False),
+            *_attachment_updates(images, model_name, reset_mask=not existing),
+            gr.update(value=None),
         )
 
     attach_btn.upload(
         handle_upload,
-        inputs=[attach_btn, model_selector],
+        inputs=[attach_btn, model_selector, attached_image],
         outputs=[
             attachment_row, attachment_display, attached_image,
-            attachment_summary, edit_panel, gen_denoise, mask_mode, mask_editor,
-            manual_mask_group, auto_mask_group,
+            attachment_summary, edit_panel, mask_mode, mask_editor, mask_preview,
+            gen_denoise, manual_mask_group, auto_mask_group, attach_btn,
         ],
     )
 
     def clear_attachment(model_name):
-        defaults = model_manager.get_defaults(model_name)
-        return (
-            gr.update(visible=False), gr.update(value=None), None,
-            "", gr.update(visible=False), "Smart", None, None,
-            gr.update(visible=False, value=defaults.get("denoise", 1.0)),
-            gr.update(visible=False), gr.update(visible=False),
-        )
+        return _attachment_updates([], model_name)
 
-    remove_attachment_btn.click(
+    clear_attachments_btn.click(
         clear_attachment,
         inputs=[model_selector],
         outputs=[
@@ -2922,6 +3322,31 @@ with gr.Blocks(title="FreeFakeStudio") as demo:
             attachment_summary, edit_panel, mask_mode, mask_editor, mask_preview,
             gen_denoise, manual_mask_group, auto_mask_group,
         ],
+    )
+
+    def apply_attachment_action(images, index, action, model_name):
+        images = _as_image_list(images)
+        if not images:
+            return _attachment_updates([], model_name)
+        if action not in ("canvas", "left", "right", "remove"):
+            return _attachment_updates(images, model_name, reset_mask=False)
+        previous_canvas = images[0]
+        updated = _apply_attachment_action(images, index, action)
+        canvas_changed = not updated or updated[0] is not previous_canvas
+        return _attachment_updates(updated, model_name, reset_mask=canvas_changed)
+
+    attachment_action_btn.click(
+        apply_attachment_action,
+        inputs=[
+            attached_image, attachment_action_index,
+            attachment_action_name, model_selector,
+        ],
+        outputs=[
+            attachment_row, attachment_display, attached_image,
+            attachment_summary, edit_panel, mask_mode, mask_editor, mask_preview,
+            gen_denoise, manual_mask_group, auto_mask_group,
+        ],
+        show_progress="hidden",
     )
 
     # ── Mask mode toggle ───────────────────────────────────
@@ -3076,7 +3501,7 @@ with gr.Blocks(title="FreeFakeStudio") as demo:
         if not prompt.strip() and image is None:
             yield (
                 _status_html("error", "Please enter a prompt or attach an image."),
-                gr.update(), gr.update(), gr.update(),
+                gr.update(), gr.update(), gr.update(), gr.update(),
                 gr.update(), gr.update(),
                 None,
                 _render_history(history), history,
@@ -3096,6 +3521,7 @@ with gr.Blocks(title="FreeFakeStudio") as demo:
             "mask_mode": mask_m,
         }
 
+        request_saved = False
         for status_html, images, paths, seed_str in do_generate(
             model_name, prompt, neg, aspect,
             seed, cfg, denoise, n_images, steps,
@@ -3104,10 +3530,12 @@ with gr.Blocks(title="FreeFakeStudio") as demo:
         ):
             if images:
                 final_history = request_history + [_assistant_html(paths, seed_str)]
+                _save_chat_history(final_history)
                 # Show results
                 yield (
                     status_html,
                     gr.update(visible=False, value=paths),
+                    paths,
                     gr.update(visible=False, value=paths),
                     gr.update(visible=True, value=seed_str),
                     gr.update(visible=True),  # action_row
@@ -3118,8 +3546,12 @@ with gr.Blocks(title="FreeFakeStudio") as demo:
                     gr.update(value=""),
                 )
             else:
+                if not request_saved:
+                    _save_chat_history(request_history)
+                    request_saved = True
                 yield (
                     status_html,
+                    gr.update(),
                     gr.update(),
                     gr.update(),
                     gr.update(),
@@ -3140,7 +3572,7 @@ with gr.Blocks(title="FreeFakeStudio") as demo:
             num_images, negative_prompt, chat_history,
         ],
         outputs=[
-            status_display, result_gallery, result_files,
+            status_display, result_gallery, latest_result_paths, result_files,
             seed_display, action_row,
             model_status_display, last_gen_settings,
             conversation_display, chat_history, prompt_input,
@@ -3158,7 +3590,7 @@ with gr.Blocks(title="FreeFakeStudio") as demo:
             num_images, negative_prompt, chat_history,
         ],
         outputs=[
-            status_display, result_gallery, result_files,
+            status_display, result_gallery, latest_result_paths, result_files,
             seed_display, action_row,
             model_status_display, last_gen_settings,
             conversation_display, chat_history, prompt_input,
@@ -3167,40 +3599,31 @@ with gr.Blocks(title="FreeFakeStudio") as demo:
     )
 
     # ── Add to Prompt ──────────────────────────────────────
-    def on_add_to_prompt(gallery_data, selected_idx, model_name):
-        """Take the first generated result and set it as the single attachment."""
+    def on_add_to_prompt(gallery_data, selected_idx, model_name, existing_images):
+        """Append the selected latest result to the FLUX reference queue."""
         if not model_manager.supports_img2img(model_name):
             raise gr.Error(f"{model_name} cannot use an image as input.")
         if not gallery_data:
             raise gr.Error("No results to add!")
+        existing = _as_image_list(existing_images)
+        if len(existing) >= MAX_FLUX_REFERENCES:
+            raise gr.Error(
+                f"Remove a reference before adding another. FLUX supports up to {MAX_FLUX_REFERENCES}."
+            )
         idx = min(int(selected_idx or 0), len(gallery_data) - 1)
-        img_data = gallery_data[idx]
-        if isinstance(img_data, tuple):
-            img_data = img_data[0]
-        if isinstance(img_data, str):
-            img_data = Image.open(img_data)
-        defaults = model_manager.get_defaults(model_name)
-        return (
-            gr.update(visible=True),                  # attachment_row
-            gr.update(value=img_data),                # attachment_display
-            [img_data],                                # attached_image
-            _attachment_status_html(1),                # attachment_summary
-            gr.update(visible=True),                  # edit_panel
-            gr.update(value=""),                       # clear prompt
-            gr.update(visible=True, value=defaults.get("img2img_denoise", 0.45)),
-            "Smart",
-            None,
-            gr.update(visible=False),
-            gr.update(visible=False),
-        )
+        img_data = _gallery_item_to_pil(gallery_data[idx])
+        images = _append_attachment_images(existing, [img_data])
+        updates = _attachment_updates(images, model_name, reset_mask=not existing)
+        return (*updates[:5], gr.update(), *updates[5:])
 
     add_to_prompt_btn.click(
         on_add_to_prompt,
-        inputs=[result_gallery, selected_result_idx, model_selector],
+        inputs=[latest_result_paths, selected_result_idx, model_selector, attached_image],
         outputs=[
             attachment_row, attachment_display, attached_image,
-            attachment_summary, edit_panel, prompt_input, gen_denoise, mask_mode,
-            mask_editor, manual_mask_group, auto_mask_group,
+            attachment_summary, edit_panel, prompt_input,
+            mask_mode, mask_editor, mask_preview, gen_denoise,
+            manual_mask_group, auto_mask_group,
         ],
     )
 
@@ -3224,6 +3647,7 @@ with gr.Blocks(title="FreeFakeStudio") as demo:
             image,
             settings.get("mask_mode", "None"),
         )]
+        request_saved = False
         # Force new random seed
         for status_html, images, paths, seed_str in do_generate(
             settings["model"], settings["prompt"], settings["neg"],
@@ -3239,18 +3663,23 @@ with gr.Blocks(title="FreeFakeStudio") as demo:
         ):
             if images:
                 final_history = request_history + [_assistant_html(paths, seed_str)]
+                _save_chat_history(final_history)
                 yield (
                     status_html,
                     gr.update(visible=False, value=paths),
+                    paths,
                     gr.update(visible=False, value=paths),
                     gr.update(visible=True, value=seed_str),
                     _render_history(final_history),
                     final_history,
                 )
             else:
+                if not request_saved:
+                    _save_chat_history(request_history)
+                    request_saved = True
                 yield (
                     status_html,
-                    gr.update(), gr.update(), gr.update(),
+                    gr.update(), gr.update(), gr.update(), gr.update(),
                     _render_history(request_history),
                     request_history,
                 )
@@ -3259,13 +3688,14 @@ with gr.Blocks(title="FreeFakeStudio") as demo:
         on_regenerate,
         inputs=[last_gen_settings, attached_image, chat_history],
         outputs=[
-            status_display, result_gallery, result_files, seed_display,
+            status_display, result_gallery, latest_result_paths, result_files, seed_display,
             conversation_display, chat_history,
         ],
     )
 
     # ── New Chat ───────────────────────────────────────────
     def on_new_chat():
+        _save_chat_history([])
         return (
             # status_display
             """<div class="ffs-empty">
@@ -3274,6 +3704,7 @@ with gr.Blocks(title="FreeFakeStudio") as demo:
                 <div class="ffs-empty-sub">Portrait. Product. Editorial. Concept.</div>
             </div>""",
             gr.update(visible=False, value=None),   # result_gallery
+            [],                                      # latest_result_paths
             gr.update(visible=False, value=None),   # result_files
             gr.update(visible=False, value=""),      # seed_display
             gr.update(visible=False),                # action_row
@@ -3295,7 +3726,7 @@ with gr.Blocks(title="FreeFakeStudio") as demo:
     new_chat_btn.click(
         on_new_chat,
         outputs=[
-            status_display, result_gallery, result_files,
+            status_display, result_gallery, latest_result_paths, result_files,
             seed_display, action_row,
             attachment_row, attachment_display, attached_image, attachment_summary,
             prompt_input,
@@ -3303,6 +3734,16 @@ with gr.Blocks(title="FreeFakeStudio") as demo:
             conversation_display, chat_history, gen_denoise,
             manual_mask_group, auto_mask_group,
         ],
+    )
+
+    def restore_saved_chat():
+        history = _load_chat_history()
+        return _render_history(history), history
+
+    demo.load(
+        restore_saved_chat,
+        outputs=[conversation_display, chat_history],
+        show_progress="hidden",
     )
 
 _ui_trace("interface ready")
