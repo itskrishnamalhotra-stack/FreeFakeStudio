@@ -114,13 +114,15 @@ class StudioUiRegressionTests(unittest.TestCase):
             def encode(self, _vae, image):
                 return ({"samples": image},)
 
-        class FakeReferenceLatent:
-            def append(self, conditioning, latent):
-                return (conditioning + [latent],)
+        calls = []
+
+        def fake_conditioning_set_values(conditioning, values, append=False):
+            calls.append((values, append))
+            return conditioning + values["reference_latents"]
 
         nodes = {
             "VAEEncode": FakeVaeEncode(),
-            "ReferenceLatent": FakeReferenceLatent(),
+            "conditioning_set_values": fake_conditioning_set_values,
         }
         references = [
             Image.new("RGB", (640, 480), "red"),
@@ -136,8 +138,10 @@ class StudioUiRegressionTests(unittest.TestCase):
             )
 
         self.assertEqual(len(conditioned), 3)
-        for latent in conditioned:
-            self.assertLessEqual(latent["samples"].width * latent["samples"].height, 1024**2 // 3)
+        self.assertEqual(len(calls), 3)
+        self.assertTrue(all(append for _values, append in calls))
+        for latent_samples in conditioned:
+            self.assertLessEqual(latent_samples.width * latent_samples.height, 1024**2 // 3)
 
     def test_flux_reference_limit_is_four(self):
         images = [Image.new("RGB", (32, 32)) for _ in range(5)]

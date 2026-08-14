@@ -54,11 +54,12 @@ def _get_nodes():
                 pass
 
         try:
-            from comfy_extras.nodes_edit_model import ReferenceLatent
-            _nodes["ReferenceLatent"] = ReferenceLatent()
-        except ImportError as exc:
+            import node_helpers
+            _nodes["conditioning_set_values"] = node_helpers.conditioning_set_values
+        except (ImportError, AttributeError) as exc:
             raise RuntimeError(
-                "ComfyUI ReferenceLatent support is missing. Update ComfyUI and restart the Colab runtime."
+                "ComfyUI reference-conditioning support is missing. "
+                "Update ComfyUI and restart the Colab runtime."
             ) from exc
 
     return _nodes
@@ -175,7 +176,11 @@ def _add_reference_conditioning(nodes, conditioning, references):
         resized = _resize_reference(image, pixels_per_reference)
         tensor = _pil_to_tensor(resized)
         latent = nodes["VAEEncode"].encode(_vae, tensor)[0]
-        conditioning = nodes["ReferenceLatent"].append(conditioning, latent)[0]
+        conditioning = nodes["conditioning_set_values"](
+            conditioning,
+            {"reference_latents": [latent["samples"]]},
+            append=True,
+        )
         print(f"[flux-reference] image={index} encoded={resized.width}x{resized.height}")
     return conditioning
 
