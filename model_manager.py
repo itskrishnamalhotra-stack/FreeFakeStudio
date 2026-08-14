@@ -49,7 +49,7 @@ MODEL_REGISTRY = {
         "max_steps": 50,
         "default_cfg": 1.0,
         "default_denoise": 1.0,
-        "img2img_denoise": 0.45,
+        "img2img_denoise": 1.0,
         "inpaint_denoise": 0.75,
         "model_file": "flux-2-klein-4b.safetensors",
         "required_files": [
@@ -463,8 +463,10 @@ class MockEngine:
         return self._make_placeholder(width, height)
 
     def img2img(self, input_image, prompt, negative, seed, cfg, denoise, steps=4, mask=None):
-        if input_image:
-            w, h = input_image.size
+        images = input_image if isinstance(input_image, (list, tuple)) else [input_image]
+        primary = next((image for image in images if image is not None), None)
+        if primary:
+            w, h = primary.size
         else:
             w, h = 512, 512
         return self._make_placeholder(w, h)

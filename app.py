@@ -7,9 +7,10 @@
 
 import os, random, time, sys, gc, re, uuid, json, base64, traceback, html
 import numpy as np
-from PIL import Image, ImageFilter
+from PIL import Image, ImageDraw, ImageFilter
 from io import BytesIO
 from datetime import datetime
+from urllib.parse import quote
 
 # ── Environment detection ──────────────────────────────────
 def _running_in_colab():
@@ -29,7 +30,6 @@ import model_manager
 # ── Conditional imports ────────────────────────────────────
 if not DEV_MODE:
     import torch
-    import cv2
 
 import gradio as gr
 
@@ -104,12 +104,31 @@ def auto_mask_except_face(image_pil):
         mask[circle] = 0
         return mask
     img_np = np.array(image_pil.convert("RGB"))
-    gray = cv2.cvtColor(img_np, cv2.COLOR_RGB2GRAY)
-    face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
-    faces = face_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(50, 50))
     h, w = img_np.shape[:2]
     mask = np.ones((h, w), dtype=np.uint8) * 255
+    faces = []
+    try:
+        import cv2
+
+        if not all(hasattr(cv2, name) for name in ("CascadeClassifier", "cvtColor", "ellipse")):
+            raise ImportError("OpenCV face detection is unavailable")
+        cascade_root = getattr(getattr(cv2, "data", None), "haarcascades", "")
+        cascade_path = os.path.join(cascade_root, "haarcascade_frontalface_default.xml")
+        if not cascade_root or not os.path.isfile(cascade_path):
+            raise ImportError("OpenCV Haar cascade data is unavailable")
+        gray = cv2.cvtColor(img_np, cv2.COLOR_RGB2GRAY)
+        face_cascade = cv2.CascadeClassifier(cascade_path)
+        if face_cascade.empty():
+            raise RuntimeError("OpenCV could not load its face cascade")
+        faces = face_cascade.detectMultiScale(
+            gray, scaleFactor=1.1, minNeighbors=5, minSize=(50, 50)
+        )
+    except (AttributeError, ImportError, RuntimeError) as exc:
+        print(f"[mask] OpenCV face detector unavailable; using geometric fallback: {exc}")
+
     if len(faces) > 0:
+        import cv2
+
         for (fx, fy, fw, fh) in faces:
             pad_w, pad_h = int(fw * 0.3), int(fh * 0.3)
             x1, y1 = max(0, fx - pad_w), max(0, fy - pad_h)
@@ -118,7 +137,23 @@ def auto_mask_except_face(image_pil):
             ax, ay = (x2 - x1) // 2, (y2 - y1) // 2
             cv2.ellipse(mask, (cx, cy), (ax, ay), 0, 0, 360, 0, -1)
     else:
-        mask = auto_mask_background(image_pil)
+        # Estimate the face from the upper portion of the segmented foreground.
+        # This keeps image editing functional even when Colab's cv2 package is partial.
+        foreground = auto_mask_background(image_pil) < 127
+        ys, xs = np.where(foreground)
+        if len(xs) and len(ys):
+            x1, x2 = int(xs.min()), int(xs.max())
+            y1, y2 = int(ys.min()), int(ys.max())
+            fw, fh = max(1, x2 - x1), max(1, y2 - y1)
+            cx = x1 + fw // 2
+            cy = y1 + int(fh * 0.20)
+            rx = max(20, int(fw * 0.18))
+            ry = max(24, int(fh * 0.16))
+            pil_mask = Image.fromarray(mask)
+            ImageDraw.Draw(pil_mask).ellipse(
+                (cx - rx, cy - ry, cx + rx, cy + ry), fill=0
+            )
+            mask = np.array(pil_mask)
     return mask
 
 def generate_auto_mask_preview(image_pil, mask_mode):
@@ -151,11 +186,18 @@ def _select_mask_for_prompt(prompt, image_pil):
         else:
             cleaned = prompt
         return mask, cleaned, 1.0
-    # Non-background edit: clothing/body mask
-    except_face = auto_mask_except_face(image_pil)
-    background = auto_mask_background(image_pil)
-    clothing_mask = np.where((except_face > 127) & (background < 127), 255, 0).astype(np.uint8)
-    return clothing_mask, prompt, 0.75
+    clothing_keywords = r'\b(clothes|clothing|outfit|dress|shirt|jacket|pants|trousers|body|garment|wearing)\b'
+    if re.search(clothing_keywords, p):
+        except_face = auto_mask_except_face(image_pil)
+        background = auto_mask_background(image_pil)
+        clothing_mask = np.where(
+            (except_face > 127) & (background < 127), 255, 0
+        ).astype(np.uint8)
+        return clothing_mask, prompt, 0.75
+
+    # Ordinary attached-image requests use native img2img. Masking is only
+    # introduced when the prompt or the explicit mask control asks for it.
+    return None, prompt, 1.0
 
 
 # ═══════════════════════════════════════════════════════════
@@ -175,9 +217,11 @@ def do_generate(model_name, prompt, negative, aspect_ratio,
     seed = make_seed(seed)
     w, h = _parse_aspect(aspect_ratio)
     mode = "generate"
+    input_images = _as_image_list(input_image)
+    primary_image = input_images[0] if input_images else None
 
     # Determine mode
-    if input_image is not None:
+    if input_images:
         if mask_mode and mask_mode != "None":
             mode = "inpaint"
         else:
@@ -228,7 +272,8 @@ def do_generate(model_name, prompt, negative, aspect_ratio,
     if mode == "generate":
         yield (_status_html("active", f"Generating with {model_name}"), [], [], str(seed))
     elif mode == "img2img":
-        yield (_status_html("active", f"Editing image with {model_name}"), [], [], str(seed))
+        ref_label = f"{len(input_images)} reference image" + ("s" if len(input_images) != 1 else "")
+        yield (_status_html("active", f"Editing with {ref_label} in {model_name}"), [], [], str(seed))
     else:
         yield (_status_html("active", f"Inpainting with {model_name}"), [], [], str(seed))
 
@@ -248,20 +293,26 @@ def do_generate(model_name, prompt, negative, aspect_ratio,
             elif mode == "img2img":
                 # For FLUX models, use smart mask selection
                 if model_name == "FLUX.2-klein 4B":
-                    mask, img_prompt, effective_denoise = _select_mask_for_prompt(prompt, input_image)
-                    img = engine.img2img(input_image, img_prompt, negative,
+                    mask, img_prompt, effective_denoise = _select_mask_for_prompt(prompt, primary_image)
+                    img = engine.img2img(input_images, img_prompt, negative,
                                          seed + i, cfg, effective_denoise, int(steps), mask=mask)
                 else:
-                    img = engine.img2img(input_image, prompt, negative,
+                    img = engine.img2img(primary_image, prompt, negative,
                                          seed + i, cfg, denoise, int(steps))
             elif mode == "inpaint":
-                mask_combined = _resolve_mask(input_image, mask_mode, editor_data)
+                mask_combined = _resolve_mask(primary_image, mask_mode, editor_data)
                 if mask_combined is None:
                     yield (_status_html("error", "No mask detected. Paint or select a mask mode."),
                            [], [], str(seed))
                     return
-                img = engine.inpaint(input_image, mask_combined, prompt, negative,
-                                     seed + i, cfg, denoise, int(steps))
+                if model_name == "FLUX.2-klein 4B":
+                    img = engine.inpaint(
+                        primary_image, mask_combined, prompt, negative,
+                        seed + i, cfg, denoise, int(steps), references=input_images,
+                    )
+                else:
+                    img = engine.inpaint(primary_image, mask_combined, prompt, negative,
+                                         seed + i, cfg, denoise, int(steps))
 
             path = get_save_path("gen" if mode == "generate" else mode)
             img.save(path)
@@ -372,14 +423,50 @@ def _status_html(state, message):
     return f'<div class="ffs-notice">{safe_message}</div>'
 
 
-def _request_html(prompt, model_name, has_image, mask_mode):
+def _image_thumbnail_data_uri(image):
+    if image is None:
+        return ""
+    try:
+        if not isinstance(image, Image.Image):
+            image = Image.fromarray(image)
+        preview = image.convert("RGB").copy()
+        preview.thumbnail((220, 220), Image.Resampling.LANCZOS)
+        buffer = BytesIO()
+        preview.save(buffer, format="JPEG", quality=78, optimize=True)
+        return "data:image/jpeg;base64," + base64.b64encode(buffer.getvalue()).decode("ascii")
+    except Exception as exc:
+        _ui_trace(f"could not render attachment thumbnail: {exc}")
+        return ""
+
+
+def _request_html(prompt, model_name, input_image, mask_mode):
     prompt = html.escape(prompt or "(image edit)")
+    input_images = _as_image_list(input_image)
+    has_image = bool(input_images)
     mode = "image edit" if has_image else "text to image"
-    mask_note = f" / {html.escape(mask_mode)}" if mask_mode and mask_mode != "None" else ""
+    explicit_mask = mask_mode not in (None, "None", "Smart")
+    edit_method = mask_mode if explicit_mask else "Smart edit" if has_image else ""
+    mask_note = f" / {html.escape(edit_method)}" if edit_method else ""
+    attachment_items = []
+    for index, image in enumerate(input_images):
+        attachment_src = _image_thumbnail_data_uri(image)
+        if attachment_src:
+            role = "Canvas" if index == 0 else "Reference"
+            attachment_items.append(
+                '<div class="ffs-request-attachment">'
+                f'<img src="{attachment_src}" alt="Attached image {index + 1}">'
+                f'<span><strong>Image {index + 1}</strong><small>{role}</small></span>'
+                '</div>'
+            )
+    attachment_html = (
+        f'<div class="ffs-request-attachments">{"".join(attachment_items)}</div>'
+        if attachment_items else ""
+    )
     return (
         '<div class="ffs-turn ffs-turn-user">'
         '<div class="ffs-role">You</div>'
         f'<div class="ffs-bubble">{prompt}</div>'
+        f'{attachment_html}'
         f'<div class="ffs-meta">{html.escape(model_name)} / {mode}{mask_note}</div>'
         '</div>'
     )
@@ -387,11 +474,21 @@ def _request_html(prompt, model_name, has_image, mask_mode):
 
 def _assistant_html(paths, seed_str):
     count = len(paths or [])
-    noun = "image" if count == 1 else "images"
+    images = []
+    for index, path in enumerate(paths or []):
+        absolute = os.path.abspath(path)
+        src = "/gradio_api/file=" + quote(absolute, safe="/:")
+        images.append(
+            '<a class="ffs-chat-image" href="{src}" target="_blank" '
+            'rel="noopener" aria-label="Open generated image {number}">'
+            '<img src="{src}" alt="Generated image {number}" loading="lazy">'
+            '</a>'.format(src=html.escape(src, quote=True), number=index + 1)
+        )
     return (
         '<div class="ffs-turn ffs-turn-assistant">'
         '<div class="ffs-role">FreeFakeStudio</div>'
-        f'<div class="ffs-bubble">Generated {count} {noun}. Seed: {html.escape(str(seed_str))}.</div>'
+        f'<div class="ffs-chat-images count-{min(count, 4)}">{"".join(images)}</div>'
+        f'<div class="ffs-assistant-meta">Seed {html.escape(str(seed_str))}</div>'
         '</div>'
     )
 
@@ -409,6 +506,33 @@ ASPECTS = [
     "832x1248 (2:3)", "1280x720 (16:9)", "720x1280 (9:16)",
 ]
 DEFAULT_NEG = "low quality, blurry, pixelated, noise, watermark, text, logo"
+MAX_FLUX_REFERENCES = 4
+
+
+def _as_image_list(value):
+    if value is None:
+        return []
+    values = value if isinstance(value, (list, tuple)) else [value]
+    return [item for item in values if item is not None]
+
+
+def _primary_image(value):
+    images = _as_image_list(value)
+    return images[0] if images else None
+
+
+def _attachment_status_html(count):
+    if count <= 0:
+        return ""
+    noun = "image" if count == 1 else "images"
+    references = "Canvas only" if count == 1 else f"Image 1 canvas / {count - 1} additional references"
+    return (
+        '<div class="ffs-attachment-copy">'
+        f'<strong>{count} {noun} attached</strong>'
+        f'<span>{references} / FLUX edit</span>'
+        '<small>Refer to them as image 1, image 2, and so on in your prompt.</small>'
+        '</div>'
+    )
 
 
 # ═══════════════════════════════════════════════════════════
@@ -1042,7 +1166,7 @@ body { background: var(--ffs-bg) !important; }
 #ffs-controls-shell .ffs-settings + .ffs-settings { margin-top: 9px; }
 #ffs-controls-shell .label-wrap { min-height: 48px; border-radius: 0 !important; font-weight: 700; }
 #ffs-controls-shell .ffs-settings-panel { padding: 14px !important; }
-#ffs-edit-panel, #ffs-settings-panel {
+#ffs-settings-panel {
     width: min(var(--ffs-max-width), calc(100% - 32px)) !important;
     margin: 0 auto 9px !important;
     border: 1px solid var(--ffs-border) !important;
@@ -1051,13 +1175,13 @@ body { background: var(--ffs-bg) !important; }
     box-sizing: border-box !important;
     background: var(--ffs-surface) !important;
 }
-#ffs-edit-panel .label-wrap, #ffs-settings-panel .label-wrap {
+#ffs-settings-panel .label-wrap {
     min-height: 48px;
     border-radius: 0 !important;
     font-weight: 700;
 }
-#ffs-edit-panel .ffs-settings-panel, #ffs-settings-panel .ffs-settings-panel { padding: 14px !important; }
-#ffs-edit-panel > div, #ffs-settings-panel > div { max-width: 100% !important; overflow-x: clip !important; }
+#ffs-settings-panel .ffs-settings-panel { padding: 14px !important; }
+#ffs-settings-panel > div { max-width: 100% !important; overflow-x: clip !important; }
 #ffs-settings-panel > .label-wrap {
     position: sticky;
     top: 0;
@@ -1176,7 +1300,7 @@ body { background: var(--ffs-bg) !important; }
     background: var(--ffs-surface) !important;
     box-shadow: var(--ffs-shadow);
 }
-#ffs-attachment-preview { height: 64px !important; min-height: 64px !important; max-width: 120px !important; border: 0 !important; }
+#ffs-attachment-preview { height: 88px !important; min-height: 88px !important; max-width: 320px !important; border: 0 !important; }
 #ffs-remove-attachment { min-width: 78px !important; border-radius: 7px !important; }
 #ffs-composer {
     align-items: flex-end !important;
@@ -1223,7 +1347,7 @@ body { background: var(--ffs-bg) !important; }
     .ffs-generation-stage { grid-template-columns: 1fr; gap: 20px; padding: 14px; }
     .ffs-generation-preview { height: 160px; }
     #ffs-controls-shell { width: calc(100% - 20px) !important; }
-    #ffs-edit-panel, #ffs-settings-panel { width: calc(100% - 20px) !important; }
+    #ffs-settings-panel { width: calc(100% - 20px) !important; }
     #ffs-composer-dock { padding: 8px 10px max(10px, env(safe-area-inset-bottom)) !important; }
     #ffs-generate { min-width: 48px !important; width: 48px !important; }
     #ffs-generate, #ffs-generate * { font-size: 0 !important; }
@@ -1267,11 +1391,6 @@ body { background: var(--ffs-bg) !important; }
     }
     #ffs-settings-panel > .wrap,
     #ffs-settings-panel > div { overflow-x: clip !important; }
-    #ffs-edit-panel {
-        width: min(var(--ffs-max-width), calc(100% - 322px)) !important;
-        margin-left: max(300px, calc((100% - var(--ffs-max-width) + 280px) / 2)) !important;
-        margin-right: 22px !important;
-    }
     #ffs-composer-dock { left: 280px !important; }
     #ffs-composer-dock { width: auto !important; }
 }
@@ -2039,6 +2158,137 @@ html[data-ffs-settings="open"] #ffs-settings-backdrop {
     pointer-events: auto;
 }
 
+/* Conversational result feed */
+.ffs-chat-images {
+    display: grid;
+    width: min(760px, 100%);
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px;
+}
+.ffs-chat-images.count-1 {
+    width: min(680px, 100%);
+    grid-template-columns: minmax(0, 1fr);
+}
+.ffs-chat-image {
+    display: block;
+    min-width: 0;
+    overflow: hidden;
+    border: 1px solid var(--ffs-border);
+    border-radius: 8px;
+    background: var(--ffs-surface-2);
+    box-shadow: var(--ffs-shadow);
+}
+.ffs-chat-image img {
+    display: block;
+    width: 100%;
+    height: auto;
+    max-height: 720px;
+    object-fit: contain;
+}
+.ffs-assistant-meta {
+    margin-top: 6px;
+    color: var(--ffs-muted);
+    font-size: 11px;
+    font-weight: 650;
+}
+.ffs-request-attachment {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    width: max-content;
+    max-width: 100%;
+    margin-top: 7px;
+    padding: 6px;
+    border: 1px solid var(--ffs-border);
+    border-radius: 7px;
+    background: var(--ffs-surface);
+}
+.ffs-request-attachments {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 7px;
+    margin-top: 7px;
+}
+.ffs-request-attachments .ffs-request-attachment { margin-top: 0; }
+.ffs-request-attachment img {
+    width: 54px;
+    height: 54px;
+    flex: 0 0 54px;
+    border-radius: 5px;
+    object-fit: cover;
+}
+.ffs-request-attachment span,
+.ffs-request-attachment strong,
+.ffs-request-attachment small { display: block; }
+.ffs-request-attachment strong { color: var(--ffs-text); font-size: 11px; }
+.ffs-request-attachment small { margin-top: 2px; color: var(--ffs-muted); font-size: 10px; }
+
+/* The input image and its edit tools belong to the same request. */
+#ffs-attachment-row {
+    align-items: center !important;
+    gap: 10px !important;
+    min-height: 76px !important;
+    padding: 6px 8px !important;
+    border: 1px solid var(--ffs-border) !important;
+    border-bottom: 0 !important;
+    border-radius: 8px 8px 0 0 !important;
+    background: var(--ffs-surface) !important;
+}
+#ffs-attachment-copy,
+#ffs-attachment-copy .html-container { min-width: 0 !important; padding: 0 !important; }
+.ffs-attachment-copy strong,
+.ffs-attachment-copy span,
+.ffs-attachment-copy small { display: block; overflow-wrap: anywhere; }
+.ffs-attachment-copy strong { color: var(--ffs-text); font-size: 12px; font-weight: 800; }
+.ffs-attachment-copy span { margin-top: 2px; color: var(--ffs-muted); font-size: 10px; }
+.ffs-attachment-copy small { margin-top: 4px; color: var(--ffs-muted); font-size: 9px; line-height: 1.35; }
+#ffs-attachment-preview .grid-wrap { gap: 5px !important; }
+#ffs-attachment-preview .gallery-item { min-width: 0 !important; border-radius: 6px !important; }
+#ffs-remove-attachment { margin-left: auto !important; }
+
+#ffs-settings-panel #ffs-edit-panel {
+    width: 100% !important;
+    min-width: 0 !important;
+    margin: 0 !important;
+    padding: 15px 0 2px !important;
+    overflow: visible !important;
+    border: 0 !important;
+    border-top: 1px solid var(--ffs-border) !important;
+    border-radius: 0 !important;
+    background: transparent !important;
+    box-shadow: none !important;
+}
+#ffs-edit-heading,
+#ffs-edit-heading .html-container { padding: 0 !important; }
+.ffs-section-heading {
+    margin-bottom: 10px;
+    color: var(--ffs-text);
+    font-size: 13px;
+    font-weight: 800;
+}
+.ffs-section-heading small {
+    display: block;
+    margin-top: 3px;
+    color: var(--ffs-muted);
+    font-size: 9px;
+    font-weight: 600;
+    line-height: 1.35;
+}
+#ffs-edit-panel .block {
+    padding-top: 8px !important;
+    padding-bottom: 10px !important;
+}
+#ffs-edit-panel .gradio-radio .wrap { gap: 6px !important; }
+#ffs-edit-panel .gradio-radio label {
+    min-height: 34px !important;
+    padding: 7px 8px !important;
+    border: 1px solid var(--ffs-border) !important;
+    border-radius: 6px !important;
+    background: var(--ffs-surface-2) !important;
+    font-size: 11px !important;
+}
+#ffs-edit-panel .image-container { border-radius: 6px !important; overflow: hidden !important; }
+
 /* The drawer overlays compact layouts and shifts the canvas on wide screens. */
 @media (min-width: 901px) {
     #ffs-workspace {
@@ -2079,6 +2329,9 @@ html[data-ffs-settings="open"] #ffs-settings-backdrop {
         width: 36px !important;
         min-width: 36px !important;
     }
+    .ffs-chat-images { grid-template-columns: minmax(0, 1fr); }
+    #ffs-attachment-copy { flex: 1 1 auto !important; }
+    #ffs-attachment-preview { max-width: 46% !important; }
 }
 
 @media (max-width: 420px) {
@@ -2235,7 +2488,7 @@ function enhanceStudioUI() {
     var attach = document.querySelector('#ffs-attach button, #ffs-attach');
     var generate = document.querySelector('#ffs-generate button, #ffs-generate');
     var fresh = document.querySelector('#ffs-new-session button, #ffs-new-session');
-    if (attach) attach.setAttribute('title', 'Attach image');
+    if (attach) attach.setAttribute('title', 'Attach up to four FLUX reference images');
     if (generate) generate.setAttribute('title', 'Generate image');
     if (fresh) fresh.setAttribute('title', 'Start a new session');
 
@@ -2278,6 +2531,8 @@ def _model_capabilities_html(model_name):
         labels.append("Image edit")
     if "inpaint" in capabilities:
         labels.append("Mask edit")
+    if model_name == model_manager.FLUX_MODEL_NAME:
+        labels.append("Up to 4 references")
     chips = "".join(f'<span>{html.escape(label)}</span>' for label in labels)
     description = html.escape(info.get("description", "Image generation"))
     return (
@@ -2429,6 +2684,54 @@ with gr.Blocks(title="FreeFakeStudio") as demo:
                 label="Negative Prompt",
                 lines=2,
             )
+            with gr.Column(
+                visible=False,
+                scale=0,
+                elem_classes="ffs-image-edit-panel",
+                elem_id="ffs-edit-panel",
+            ) as edit_panel:
+                gr.HTML(
+                    '<div class="ffs-section-heading">Image edit'
+                    '<small>Mask tools apply to image 1, the canvas.</small></div>',
+                    elem_id="ffs-edit-heading",
+                )
+                mask_mode = gr.Radio(
+                    choices=[
+                        ("Smart", "Smart"),
+                        ("Paint", "Manual Paint"),
+                        ("Background", "Background Only"),
+                        ("Protect face", "Everything Except Face"),
+                    ],
+                    value="Smart",
+                    label="Edit area",
+                )
+                with gr.Column(visible=False, scale=0) as manual_mask_group:
+                    mask_editor = gr.ImageEditor(
+                        label="Paint area to change",
+                        type="pil",
+                        height=280,
+                        canvas_size=(768, 768),
+                        brush=gr.Brush(
+                            colors=["#ffffff"],
+                            default_size=40,
+                            default_color="#ffffff",
+                        ),
+                        eraser=gr.Eraser(default_size=40),
+                        sources=["upload"],
+                        transforms=[],
+                        layers=False,
+                    )
+                with gr.Column(visible=False, scale=0) as auto_mask_group:
+                    mask_preview = gr.Image(
+                        label="Area to change",
+                        height=190,
+                        interactive=False,
+                    )
+                    edit_mask_btn = gr.Button(
+                        "Paint this mask",
+                        size="sm",
+                        variant="secondary",
+                    )
 
     with gr.Column(elem_classes="ffs-chat-area", elem_id="ffs-workspace"):
 
@@ -2486,40 +2789,12 @@ with gr.Blocks(title="FreeFakeStudio") as demo:
 
         # ── Action Buttons Row ─────────────────────────────
         with gr.Row(visible=False, elem_id="ffs-result-actions") as action_row:
-            add_to_prompt_btn = gr.Button("Use as input", size="sm", visible=False)
+            add_to_prompt_btn = gr.Button("Use first as input", size="sm", visible=False)
             regenerate_btn = gr.Button("Regenerate", size="sm")
             seed_display = gr.Textbox(
                 interactive=False, visible=False, show_label=False,
                 container=False, elem_id="ffs-seed",
             )
-
-    # ═══════════════════════════════════════════════════════
-    # EDITING PANEL (for mask/inpaint)
-    # ═══════════════════════════════════════════════════════
-    with gr.Accordion("Mask and edit", open=False, visible=False,
-                       elem_classes="ffs-settings", elem_id="ffs-edit-panel") as edit_panel:
-        with gr.Column(elem_classes="ffs-settings-panel"):
-            mask_mode = gr.Radio(
-                choices=["None", "Manual Paint", "Background Only", "Everything Except Face"],
-                value="None",
-                label="Mask Mode",
-            )
-            with gr.Group(visible=False) as manual_mask_group:
-                mask_editor = gr.ImageEditor(
-                    label="Paint Mask (white = change)",
-                    type="pil",
-                    canvas_size=(2048, 2048),
-                    brush=gr.Brush(colors=["#ffffff"], default_size=40, default_color="#ffffff"),
-                    eraser=gr.Eraser(default_size=40),
-                    sources=["upload"], transforms=[],
-                    layers=False,
-                )
-            with gr.Group(visible=False) as auto_mask_group:
-                mask_preview = gr.Image(
-                    label="Mask Preview (white = will be changed)",
-                    height=300, interactive=False,
-                )
-                edit_mask_btn = gr.Button("Edit mask manually", variant="secondary")
 
     # ═══════════════════════════════════════════════════════
     # SETTINGS PANEL
@@ -2530,12 +2805,19 @@ with gr.Blocks(title="FreeFakeStudio") as demo:
     with gr.Row(elem_id="ffs-composer-dock"):
         with gr.Column(elem_id="ffs-composer-inner"):
             with gr.Row(visible=False, elem_id="ffs-attachment-row") as attachment_row:
-                attachment_display = gr.Image(
+                attachment_display = gr.Gallery(
                     show_label=False,
-                    type="pil",
-                    height=64,
-                    interactive=False,
+                    columns=4,
+                    rows=1,
+                    height=88,
+                    object_fit="cover",
+                    preview=False,
+                    allow_preview=True,
                     elem_id="ffs-attachment-preview",
+                )
+                attachment_summary = gr.HTML(
+                    "",
+                    elem_id="ffs-attachment-copy",
                 )
                 remove_attachment_btn = gr.Button(
                     "Remove", size="sm", variant="secondary", elem_id="ffs-remove-attachment"
@@ -2544,6 +2826,7 @@ with gr.Blocks(title="FreeFakeStudio") as demo:
                 attach_btn = gr.UploadButton(
                     "+",
                     file_types=["image"],
+                    file_count="multiple",
                     size="sm",
                     min_width=40,
                     visible=False,
@@ -2585,22 +2868,31 @@ with gr.Blocks(title="FreeFakeStudio") as demo:
         )
 
     def handle_upload(file, model_name):
-        if file is None:
+        files = _as_image_list(file)
+        if not files:
             return (
                 gr.update(visible=False), gr.update(value=None), None,
-                gr.update(visible=False), gr.update(visible=False),
+                "", gr.update(visible=False), gr.update(visible=False),
+                "Smart", None, gr.update(visible=False), gr.update(visible=False),
             )
         if not model_manager.supports_img2img(model_name):
             raise gr.Error(
                 f"{model_name} supports text-to-image only. "
-                "Choose Z-Image Turbo or FLUX.2-klein 4B to edit an image."
+                "Choose FLUX.2-klein 4B to edit an image."
             )
-        img = Image.open(file).convert("RGB")
+        if len(files) > MAX_FLUX_REFERENCES:
+            raise gr.Error(
+                f"FLUX.2 Klein accepts up to {MAX_FLUX_REFERENCES} reference images. "
+                f"You selected {len(files)}."
+            )
+        images = [Image.open(path).convert("RGB") for path in files]
         defaults = model_manager.get_defaults(model_name)
         return (
-            gr.update(visible=True), gr.update(value=img), img,
+            gr.update(visible=True), gr.update(value=images), images,
+            _attachment_status_html(len(images)),
             gr.update(visible=True),
             gr.update(visible=True, value=defaults.get("img2img_denoise", 0.45)),
+            "Smart", None, gr.update(visible=False), gr.update(visible=False),
         )
 
     attach_btn.upload(
@@ -2608,7 +2900,8 @@ with gr.Blocks(title="FreeFakeStudio") as demo:
         inputs=[attach_btn, model_selector],
         outputs=[
             attachment_row, attachment_display, attached_image,
-            edit_panel, gen_denoise,
+            attachment_summary, edit_panel, gen_denoise, mask_mode, mask_editor,
+            manual_mask_group, auto_mask_group,
         ],
     )
 
@@ -2616,8 +2909,9 @@ with gr.Blocks(title="FreeFakeStudio") as demo:
         defaults = model_manager.get_defaults(model_name)
         return (
             gr.update(visible=False), gr.update(value=None), None,
-            gr.update(visible=False), "None", None, None,
+            "", gr.update(visible=False), "Smart", None, None,
             gr.update(visible=False, value=defaults.get("denoise", 1.0)),
+            gr.update(visible=False), gr.update(visible=False),
         )
 
     remove_attachment_btn.click(
@@ -2625,8 +2919,8 @@ with gr.Blocks(title="FreeFakeStudio") as demo:
         inputs=[model_selector],
         outputs=[
             attachment_row, attachment_display, attached_image,
-            edit_panel, mask_mode, mask_editor, mask_preview,
-            gen_denoise,
+            attachment_summary, edit_panel, mask_mode, mask_editor, mask_preview,
+            gen_denoise, manual_mask_group, auto_mask_group,
         ],
     )
 
@@ -2647,7 +2941,8 @@ with gr.Blocks(title="FreeFakeStudio") as demo:
 
     # ── Auto mask preview ──────────────────────────────────
     def update_mask_preview(image, mode):
-        if image is None or mode in ("None", "Manual Paint"):
+        image = _primary_image(image)
+        if image is None or mode in ("None", "Smart", "Manual Paint"):
             return None
         return generate_auto_mask_preview(image, mode)
 
@@ -2659,6 +2954,7 @@ with gr.Blocks(title="FreeFakeStudio") as demo:
 
     # ── Edit mask manually button ──────────────────────────
     def do_edit_mask_manually(image, mode):
+        image = _primary_image(image)
         if image is None:
             raise gr.Error("Attach an image first!")
         if not isinstance(image, Image.Image):
@@ -2742,8 +3038,9 @@ with gr.Blocks(title="FreeFakeStudio") as demo:
             gr.update(visible=False),
             gr.update(value=None),
             None,
+            "",
             gr.update(visible=False),
-            "None",
+            "Smart",
             None,
             None,
             gr.update(visible=supports_image),
@@ -2753,6 +3050,8 @@ with gr.Blocks(title="FreeFakeStudio") as demo:
                 value="Custom" if encoder_config["mode"] == "custom" else "Official",
             ),
             _flux_encoder_status_html(),
+            gr.update(visible=False),
+            gr.update(visible=False),
         )
 
     model_selector.change(
@@ -2762,9 +3061,10 @@ with gr.Blocks(title="FreeFakeStudio") as demo:
             model_status_display, model_capabilities_display,
             gen_steps, gen_cfg, gen_denoise, attach_btn,
             attachment_row, attachment_display, attached_image,
-            edit_panel, mask_mode, mask_editor, mask_preview,
+            attachment_summary, edit_panel, mask_mode, mask_editor, mask_preview,
             add_to_prompt_btn,
             flux_encoder_panel, flux_encoder_choice, flux_encoder_status,
+            manual_mask_group, auto_mask_group,
         ],
     )
 
@@ -2785,8 +3085,8 @@ with gr.Blocks(title="FreeFakeStudio") as demo:
             return
 
         # Determine effective mask mode
-        effective_mask = mask_m if mask_m != "None" else None
-        request_history = history + [_request_html(prompt, model_name, image is not None, mask_m)]
+        effective_mask = mask_m if mask_m not in (None, "None", "Smart") else None
+        request_history = history + [_request_html(prompt, model_name, image, mask_m)]
 
         # Save settings for regenerate
         settings = {
@@ -2807,8 +3107,8 @@ with gr.Blocks(title="FreeFakeStudio") as demo:
                 # Show results
                 yield (
                     status_html,
-                    gr.update(visible=True, value=paths),
-                    gr.update(visible=True, value=paths),
+                    gr.update(visible=False, value=paths),
+                    gr.update(visible=False, value=paths),
                     gr.update(visible=True, value=seed_str),
                     gr.update(visible=True),  # action_row
                     '<span class="ffs-model-badge ready">● Ready</span>',
@@ -2868,7 +3168,7 @@ with gr.Blocks(title="FreeFakeStudio") as demo:
 
     # ── Add to Prompt ──────────────────────────────────────
     def on_add_to_prompt(gallery_data, selected_idx, model_name):
-        """Take the selected/first result and set it as attachment."""
+        """Take the first generated result and set it as the single attachment."""
         if not model_manager.supports_img2img(model_name):
             raise gr.Error(f"{model_name} cannot use an image as input.")
         if not gallery_data:
@@ -2883,10 +3183,15 @@ with gr.Blocks(title="FreeFakeStudio") as demo:
         return (
             gr.update(visible=True),                  # attachment_row
             gr.update(value=img_data),                # attachment_display
-            img_data,                                  # attached_image
+            [img_data],                                # attached_image
+            _attachment_status_html(1),                # attachment_summary
             gr.update(visible=True),                  # edit_panel
             gr.update(value=""),                       # clear prompt
             gr.update(visible=True, value=defaults.get("img2img_denoise", 0.45)),
+            "Smart",
+            None,
+            gr.update(visible=False),
+            gr.update(visible=False),
         )
 
     add_to_prompt_btn.click(
@@ -2894,7 +3199,8 @@ with gr.Blocks(title="FreeFakeStudio") as demo:
         inputs=[result_gallery, selected_result_idx, model_selector],
         outputs=[
             attachment_row, attachment_display, attached_image,
-            edit_panel, prompt_input, gen_denoise,
+            attachment_summary, edit_panel, prompt_input, gen_denoise, mask_mode,
+            mask_editor, manual_mask_group, auto_mask_group,
         ],
     )
 
@@ -2915,7 +3221,7 @@ with gr.Blocks(title="FreeFakeStudio") as demo:
         request_history = history + [_request_html(
             f"Regenerate: {settings['prompt']}",
             settings["model"],
-            image is not None,
+            image,
             settings.get("mask_mode", "None"),
         )]
         # Force new random seed
@@ -2925,14 +3231,18 @@ with gr.Blocks(title="FreeFakeStudio") as demo:
             settings["cfg"], settings["denoise"],
             settings["n_images"], settings["steps"],
             input_image=image,
-            mask_mode=settings.get("mask_mode") if settings.get("mask_mode") != "None" else None,
+            mask_mode=(
+                settings.get("mask_mode")
+                if settings.get("mask_mode") not in (None, "None", "Smart")
+                else None
+            ),
         ):
             if images:
                 final_history = request_history + [_assistant_html(paths, seed_str)]
                 yield (
                     status_html,
-                    gr.update(visible=True, value=paths),
-                    gr.update(visible=True, value=paths),
+                    gr.update(visible=False, value=paths),
+                    gr.update(visible=False, value=paths),
                     gr.update(visible=True, value=seed_str),
                     _render_history(final_history),
                     final_history,
@@ -2970,13 +3280,16 @@ with gr.Blocks(title="FreeFakeStudio") as demo:
             gr.update(visible=False),                # attachment_row
             gr.update(value=None),                   # attachment_display
             None,                                     # attached_image
+            "",                                       # attachment_summary
             gr.update(value=""),                      # prompt_input
             None,                                     # last_gen_settings
             gr.update(visible=False),                # edit_panel
-            "None",                                   # mask_mode
+            "Smart",                                  # mask_mode
             '<div class="ffs-history"></div>',        # conversation_display
             [],                                       # chat_history
             gr.update(visible=False),                 # gen_denoise
+            gr.update(visible=False),                 # manual_mask_group
+            gr.update(visible=False),                 # auto_mask_group
         )
 
     new_chat_btn.click(
@@ -2984,9 +3297,11 @@ with gr.Blocks(title="FreeFakeStudio") as demo:
         outputs=[
             status_display, result_gallery, result_files,
             seed_display, action_row,
-            attachment_row, attachment_display, attached_image, prompt_input,
+            attachment_row, attachment_display, attached_image, attachment_summary,
+            prompt_input,
             last_gen_settings, edit_panel, mask_mode,
             conversation_display, chat_history, gen_denoise,
+            manual_mask_group, auto_mask_group,
         ],
     )
 
@@ -3034,7 +3349,7 @@ if __name__ == "__main__":
         show_error=True,
         inline=False,
         server_name="0.0.0.0",
-        server_port=7860,
+        server_port=int(os.environ.get("FREEFAKESTUDIO_PORT", "7860")),
         theme=ffs_theme,
         css=CSS,
         head=JS_HEAD,

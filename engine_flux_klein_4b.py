@@ -53,6 +53,14 @@ def _get_nodes():
             except ImportError:
                 pass
 
+        try:
+            from comfy_extras.nodes_edit_model import ReferenceLatent
+            _nodes["ReferenceLatent"] = ReferenceLatent()
+        except ImportError as exc:
+            raise RuntimeError(
+                "ComfyUI ReferenceLatent support is missing. Update ComfyUI and restart the Colab runtime."
+            ) from exc
+
     return _nodes
 
 # ── Load / Unload ──────────────────────────────────────────
@@ -136,6 +144,41 @@ def _resize_to_multiple(img, multiple=64, max_dim=1024):
     new_h = max(multiple, int(h * scale) // multiple * multiple)
     return img.resize((new_w, new_h), Image.LANCZOS)
 
+
+def _normalize_references(input_images):
+    references = input_images if isinstance(input_images, (list, tuple)) else [input_images]
+    references = [image.convert("RGB") for image in references if image is not None]
+    if not references:
+        raise ValueError("At least one FLUX reference image is required.")
+    if len(references) > 4:
+        raise ValueError("FLUX.2 Klein supports at most 4 reference images in this app.")
+    return references
+
+
+def _resize_reference(img, max_pixels, multiple=64):
+    width, height = img.size
+    scale = min((max_pixels / max(1, width * height)) ** 0.5, 1.0)
+    resized_width = max(multiple, int(width * scale) // multiple * multiple)
+    resized_height = max(multiple, int(height * scale) // multiple * multiple)
+    return img.resize((resized_width, resized_height), Image.LANCZOS)
+
+
+def _add_reference_conditioning(nodes, conditioning, references):
+    # Keep the total reference-token budget close to one 1024px image. This
+    # makes 2-4 reference editing practical on a free Colab T4.
+    pixels_per_reference = (1024 * 1024) // len(references)
+    print(
+        f"[flux-reference] count={len(references)} "
+        f"pixel_budget_each={pixels_per_reference}"
+    )
+    for index, image in enumerate(references, start=1):
+        resized = _resize_reference(image, pixels_per_reference)
+        tensor = _pil_to_tensor(resized)
+        latent = nodes["VAEEncode"].encode(_vae, tensor)[0]
+        conditioning = nodes["ReferenceLatent"].append(conditioning, latent)[0]
+        print(f"[flux-reference] image={index} encoded={resized.width}x{resized.height}")
+    return conditioning
+
 # ── Generate ───────────────────────────────────────────────
 @torch.inference_mode()
 def generate(prompt, negative, width, height, seed, cfg, denoise, steps=4):
@@ -153,19 +196,24 @@ def generate(prompt, negative, width, height, seed, cfg, denoise, steps=4):
 # ── Img2Img ────────────────────────────────────────────────
 @torch.inference_mode()
 def img2img(input_image, prompt, negative, seed, cfg, denoise, steps=4, mask=None):
-    """img2img with optional mask support.
+    """Native FLUX.2 reference editing with optional mask support.
     If mask is provided (numpy uint8, 255=areas to regenerate), routes through
     the inpaint pipeline which preserves unmasked regions pixel-perfectly.
     """
+    references = _normalize_references(input_image)
+    primary = references[0]
     if mask is not None:
-        return inpaint(input_image, mask, prompt, negative, seed, cfg, float(denoise), steps)
+        return inpaint(
+            primary, mask, prompt, negative, seed, cfg, float(denoise), steps,
+            references=references,
+        )
 
-    # Fallback: standard img2img
     n = _get_nodes()
-    input_image = _resize_to_multiple(input_image)
-    img_tensor = _pil_to_tensor(input_image)
+    primary = _resize_to_multiple(primary)
+    img_tensor = _pil_to_tensor(primary)
     pos = n["CLIPTextEncode"].encode(_clip, prompt)[0]
     neg = n["CLIPTextEncode"].encode(_clip, negative)[0]
+    pos = _add_reference_conditioning(n, pos, references)
     latent = n["VAEEncode"].encode(_vae, img_tensor)[0]
     samples = n["KSampler"].sample(
         _unet, seed, int(steps), float(cfg),
@@ -204,7 +252,8 @@ def _fooocus_fill(image_np, mask_np):
     return current
 
 @torch.inference_mode()
-def inpaint(original, mask_combined, prompt, negative, seed, cfg, denoise, steps=4):
+def inpaint(original, mask_combined, prompt, negative, seed, cfg, denoise, steps=4,
+            references=None):
     """original: PIL Image, mask_combined: numpy uint8 array (255=masked)"""
     n = _get_nodes()
 
@@ -222,6 +271,8 @@ def inpaint(original, mask_combined, prompt, negative, seed, cfg, denoise, steps
 
     pos = n["CLIPTextEncode"].encode(_clip, prompt)[0]
     neg = n["CLIPTextEncode"].encode(_clip, negative)[0]
+    if references:
+        pos = _add_reference_conditioning(n, pos, _normalize_references(references))
 
     latent = n["SetLatentNoiseMask"].set_mask(latent_base, mask_tensor)[0]
     

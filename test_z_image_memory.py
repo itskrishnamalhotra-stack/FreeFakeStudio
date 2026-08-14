@@ -1,4 +1,7 @@
 import ast
+import base64
+import html
+import os
 import sys
 import tempfile
 import types
@@ -7,10 +10,139 @@ from pathlib import Path
 from urllib.parse import unquote, urlparse
 from unittest import mock
 
+import numpy as np
+from PIL import Image, ImageDraw
+
 import engine_flux_klein_4b
 import engine_z_image
 import gguf_nodes
 import model_manager
+
+
+def _source_function(source_path, name, namespace):
+    source = Path(source_path).read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    function = next(
+        node for node in tree.body
+        if isinstance(node, ast.FunctionDef) and node.name == name
+    )
+    exec(compile(ast.Module(body=[function], type_ignores=[]), source_path, "exec"), namespace)
+    return namespace[name]
+
+
+class StudioUiRegressionTests(unittest.TestCase):
+    def test_smart_image_edit_does_not_force_a_face_mask(self):
+        def unexpected_mask(_image):
+            raise AssertionError("ordinary img2img must not invoke automatic masks")
+
+        select_mask = _source_function(
+            "app.py",
+            "_select_mask_for_prompt",
+            {
+                "re": __import__("re"),
+                "np": np,
+                "auto_mask_background": unexpected_mask,
+                "auto_mask_except_face": unexpected_mask,
+            },
+        )
+        image = Image.new("RGB", (64, 64), "white")
+
+        mask, prompt, denoise = select_mask("turn this into a watercolor", image)
+
+        self.assertIsNone(mask)
+        self.assertEqual(prompt, "turn this into a watercolor")
+        self.assertEqual(denoise, 1.0)
+
+    def test_partial_cv2_install_uses_safe_face_fallback(self):
+        partial_cv2 = types.ModuleType("cv2")
+        namespace = {
+            "DEV_MODE": False,
+            "np": np,
+            "os": os,
+            "Image": Image,
+            "ImageDraw": ImageDraw,
+            "auto_mask_background": lambda image: np.zeros(
+                (image.height, image.width), dtype=np.uint8
+            ),
+        }
+        auto_mask = _source_function("app.py", "auto_mask_except_face", namespace)
+
+        with mock.patch.dict(sys.modules, {"cv2": partial_cv2}):
+            mask = auto_mask(Image.new("RGB", (96, 128), "white"))
+
+        self.assertEqual(mask.shape, (128, 96))
+        self.assertEqual(mask.dtype, np.uint8)
+        self.assertGreater(np.count_nonzero(mask == 0), 0)
+
+    def test_chat_turn_contains_reference_and_generated_images(self):
+        namespace = {
+            "Image": Image,
+            "BytesIO": __import__("io").BytesIO,
+            "base64": base64,
+            "html": html,
+            "os": os,
+            "quote": __import__("urllib.parse", fromlist=["quote"]).quote,
+            "_ui_trace": lambda _message: None,
+        }
+        thumbnail = _source_function("app.py", "_image_thumbnail_data_uri", namespace)
+        namespace["_image_thumbnail_data_uri"] = thumbnail
+        namespace["_as_image_list"] = _source_function("app.py", "_as_image_list", namespace)
+        request_html = _source_function("app.py", "_request_html", namespace)
+        assistant_html = _source_function("app.py", "_assistant_html", namespace)
+
+        request = request_html(
+            "change the background", "FLUX.2-klein 4B",
+            [
+                Image.new("RGB", (32, 32), "red"),
+                Image.new("RGB", (32, 32), "blue"),
+            ],
+            "Background Only",
+        )
+        response = assistant_html(["results/example image.png"], "123")
+
+        self.assertIn("data:image/jpeg;base64,", request)
+        self.assertIn(">Reference<", request)
+        self.assertIn("Image 1", request)
+        self.assertIn("Image 2", request)
+        self.assertEqual(request.count("data:image/jpeg;base64,"), 2)
+        self.assertIn("Background Only", request)
+        self.assertIn('<img src="/gradio_api/file=', response)
+        self.assertIn("Seed 123", response)
+
+    def test_flux_reference_conditioning_appends_every_image(self):
+        class FakeVaeEncode:
+            def encode(self, _vae, image):
+                return ({"samples": image},)
+
+        class FakeReferenceLatent:
+            def append(self, conditioning, latent):
+                return (conditioning + [latent],)
+
+        nodes = {
+            "VAEEncode": FakeVaeEncode(),
+            "ReferenceLatent": FakeReferenceLatent(),
+        }
+        references = [
+            Image.new("RGB", (640, 480), "red"),
+            Image.new("RGB", (480, 640), "blue"),
+            Image.new("RGB", (512, 512), "green"),
+        ]
+
+        with mock.patch.object(engine_flux_klein_4b, "_pil_to_tensor", side_effect=lambda image: image), \
+             mock.patch.object(engine_flux_klein_4b, "_vae", object()), \
+             mock.patch("builtins.print"):
+            conditioned = engine_flux_klein_4b._add_reference_conditioning(
+                nodes, [], references
+            )
+
+        self.assertEqual(len(conditioned), 3)
+        for latent in conditioned:
+            self.assertLessEqual(latent["samples"].width * latent["samples"].height, 1024**2 // 3)
+
+    def test_flux_reference_limit_is_four(self):
+        images = [Image.new("RGB", (32, 32)) for _ in range(5)]
+        with self.assertRaisesRegex(ValueError, "at most 4"):
+            engine_flux_klein_4b._normalize_references(images)
 
 
 class _Loader:
