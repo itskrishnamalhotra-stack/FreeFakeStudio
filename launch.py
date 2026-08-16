@@ -1030,6 +1030,8 @@ try:
 
     gc.collect()
 
+    run_cmd([sys.executable, str(APP / "fixer.py")], quiet=False)
+
     step("FreeFakeStudio", "Launching")
     launch_report = write_debug_report("launch")
     if launch_report:
