@@ -225,12 +225,15 @@ def fix_opencv_cascade():
                  "--cache-dir", cache_dir, "opencv-python-headless"],
                 check=True, capture_output=True, text=True,
             )
-            # Reload the module so subsequent checks see the new install
-            import importlib
-            if "cv2" in sys.modules:
-                del sys.modules["cv2"]
-            import cv2
-            if not all(hasattr(cv2, name) for name in ("CascadeClassifier", "cvtColor", "ellipse")):
+            # Verify via subprocess — cv2 is a C extension and can't be
+            # reliably reimported in the same process after reinstall
+            verify = subprocess.run(
+                [sys.executable, "-c",
+                 "import cv2; print(all(hasattr(cv2, n) for n in "
+                 "('CascadeClassifier', 'cvtColor', 'ellipse')))"],
+                capture_output=True, text=True,
+            )
+            if "True" not in verify.stdout:
                 log_fix(label, "fail", "reinstalled opencv but cv2 still broken")
                 return
             log_fix(f"{label} [cv2 repair]", "ok", "reinstalled opencv-python-headless")
@@ -240,11 +243,17 @@ def fix_opencv_cascade():
     else:
         log_fix(f"{label} [cv2 module]", "skip", "cv2 functions OK")
 
-    # Step 3: Ensure Haar cascade XML exists
+    # Step 3: Ensure Haar cascade XML exists — use subprocess to get
+    # cascade path from the (possibly freshly installed) cv2
     try:
-        import cv2
-        cascade_dir = getattr(getattr(cv2, "data", None), "haarcascades", "")
-        if not cascade_dir:
+        get_path = subprocess.run(
+            [sys.executable, "-c",
+             "import cv2, os; d = getattr(getattr(cv2, 'data', None), "
+             "'haarcascades', ''); print(d if d else 'NONE')"],
+            capture_output=True, text=True,
+        )
+        cascade_dir = get_path.stdout.strip()
+        if not cascade_dir or cascade_dir == "NONE":
             log_fix(f"{label} [cascade]", "fail", "cv2.data.haarcascades not available")
             return
         cascade_path = os.path.join(cascade_dir, "haarcascade_frontalface_default.xml")
