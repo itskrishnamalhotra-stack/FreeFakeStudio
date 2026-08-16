@@ -74,31 +74,51 @@ def patch_file(filepath, old, new, label=""):
 #  Fix 1 — ONNX Runtime CUDA provider mismatch
 #  Problem: onnxruntime-gpu is built for CUDA 13.x, Colab has 12.x
 #           → libcublasLt.so.13 error, rembg falls back to CPU
-#  Fix:    Install CPU-only onnxruntime which always works.
+#  Fix:    Replace onnxruntime-gpu with CPU-only onnxruntime.
 #          rembg is fast enough on CPU for single-image operations.
+#  Note:   get_available_providers() is unreliable — it lists CUDA
+#          even when the shared library can't load. We check the
+#          installed pip package name instead.
 # ════════════════════════════════════════════════════════════
 def fix_onnxruntime():
     label = "Fix 1: ONNX Runtime"
+    import importlib.metadata
+
+    # Check which package is actually installed
+    has_gpu_pkg = False
+    has_cpu_pkg = False
     try:
-        # Check if CUDA provider actually works
-        import onnxruntime as ort
-        providers = ort.get_available_providers()
-        if "CUDAExecutionProvider" in providers:
-            log_fix(label, "skip", "CUDA provider already works")
-            return
-    except ImportError:
+        importlib.metadata.version("onnxruntime-gpu")
+        has_gpu_pkg = True
+    except importlib.metadata.PackageNotFoundError:
+        pass
+    try:
+        importlib.metadata.version("onnxruntime")
+        has_cpu_pkg = True
+    except importlib.metadata.PackageNotFoundError:
         pass
 
-    # CUDA provider doesn't work — install CPU-only onnxruntime
+    # If CPU-only onnxruntime is installed and onnxruntime-gpu is not, we're good
+    if has_cpu_pkg and not has_gpu_pkg:
+        log_fix(label, "skip", "CPU-only onnxruntime already installed")
+        return
+
+    # onnxruntime-gpu is installed (or nothing is) — replace with CPU-only
     try:
         cache_dir = str(WS / "cache" / "pip")
+        # Uninstall the GPU variant first
+        if has_gpu_pkg:
+            subprocess.run(
+                [sys.executable, "-m", "pip", "uninstall", "-y", "onnxruntime-gpu"],
+                capture_output=True, text=True,
+            )
+        # Install CPU-only onnxruntime
         subprocess.run(
             [sys.executable, "-m", "pip", "install", "-q",
-             "--cache-dir", cache_dir,
-             "onnxruntime", "--force-reinstall"],
+             "--cache-dir", cache_dir, "onnxruntime"],
             check=True, capture_output=True, text=True,
         )
-        log_fix(label, "ok", "installed onnxruntime (CPU) — no more CUDA mismatch")
+        log_fix(label, "ok", "replaced onnxruntime-gpu with CPU-only onnxruntime")
     except subprocess.CalledProcessError as exc:
         log_fix(label, "fail", f"pip install failed: {exc.stderr[-200:]}")
 
@@ -168,23 +188,69 @@ def fix_cuda_warning():
 
 # ════════════════════════════════════════════════════════════
 #  Fix 4 — OpenCV face detector unavailable
-#  Problem: Haar cascade XML missing in Colab's opencv-python-
-#           headless → face masking uses dumb geometric fallback
-#  Fix:    Download the cascade XML to the expected location
+#  Problem: Colab's pre-installed opencv-python conflicts with
+#           opencv-python-headless → broken cv2 module (missing
+#           CascadeClassifier, cvtColor, ellipse). Also the Haar
+#           cascade XML may be missing.
+#  Fix:    1) Repair cv2 by clean-installing opencv-python-headless
+#          2) Download the cascade XML if needed
 # ════════════════════════════════════════════════════════════
 def fix_opencv_cascade():
-    label = "Fix 4: OpenCV face cascade"
+    label = "Fix 4: OpenCV face detector"
+    cv2_needs_repair = False
+
+    # Step 1: Check if cv2 has the required functions
+    try:
+        import cv2
+        required = ("CascadeClassifier", "cvtColor", "ellipse")
+        if not all(hasattr(cv2, name) for name in required):
+            cv2_needs_repair = True
+    except ImportError:
+        cv2_needs_repair = True
+
+    # Step 2: Repair cv2 if broken (conflicting opencv packages)
+    if cv2_needs_repair:
+        try:
+            cache_dir = str(WS / "cache" / "pip")
+            # Remove ALL opencv variants to avoid conflicts
+            subprocess.run(
+                [sys.executable, "-m", "pip", "uninstall", "-y",
+                 "opencv-python", "opencv-python-headless",
+                 "opencv-contrib-python", "opencv-contrib-python-headless"],
+                capture_output=True, text=True,
+            )
+            # Clean install of headless variant
+            subprocess.run(
+                [sys.executable, "-m", "pip", "install", "-q",
+                 "--cache-dir", cache_dir, "opencv-python-headless"],
+                check=True, capture_output=True, text=True,
+            )
+            # Reload the module so subsequent checks see the new install
+            import importlib
+            if "cv2" in sys.modules:
+                del sys.modules["cv2"]
+            import cv2
+            if not all(hasattr(cv2, name) for name in ("CascadeClassifier", "cvtColor", "ellipse")):
+                log_fix(label, "fail", "reinstalled opencv but cv2 still broken")
+                return
+            log_fix(f"{label} [cv2 repair]", "ok", "reinstalled opencv-python-headless")
+        except Exception as exc:
+            log_fix(label, "fail", f"cv2 repair failed: {str(exc)[:120]}")
+            return
+    else:
+        log_fix(f"{label} [cv2 module]", "skip", "cv2 functions OK")
+
+    # Step 3: Ensure Haar cascade XML exists
     try:
         import cv2
         cascade_dir = getattr(getattr(cv2, "data", None), "haarcascades", "")
         if not cascade_dir:
-            log_fix(label, "fail", "cv2.data.haarcascades not available")
+            log_fix(f"{label} [cascade]", "fail", "cv2.data.haarcascades not available")
             return
         cascade_path = os.path.join(cascade_dir, "haarcascade_frontalface_default.xml")
         if os.path.isfile(cascade_path) and os.path.getsize(cascade_path) > 10000:
-            log_fix(label, "skip", "cascade file already exists")
+            log_fix(f"{label} [cascade]", "skip", "cascade file already exists")
             return
-        # Download from OpenCV's GitHub
         url = (
             "https://raw.githubusercontent.com/opencv/opencv/4.x"
             "/data/haarcascades/haarcascade_frontalface_default.xml"
@@ -193,11 +259,11 @@ def fix_opencv_cascade():
         os.makedirs(cascade_dir, exist_ok=True)
         urllib.request.urlretrieve(url, cascade_path)
         if os.path.isfile(cascade_path) and os.path.getsize(cascade_path) > 10000:
-            log_fix(label, "ok", f"downloaded to {cascade_path}")
+            log_fix(f"{label} [cascade]", "ok", f"downloaded to {cascade_path}")
         else:
-            log_fix(label, "fail", "download succeeded but file seems too small")
+            log_fix(f"{label} [cascade]", "fail", "download succeeded but file seems too small")
     except Exception as exc:
-        log_fix(label, "fail", str(exc)[:150])
+        log_fix(f"{label} [cascade]", "fail", str(exc)[:150])
 
 
 # ════════════════════════════════════════════════════════════

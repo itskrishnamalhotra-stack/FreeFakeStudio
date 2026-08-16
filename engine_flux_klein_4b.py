@@ -198,6 +198,28 @@ def generate(prompt, negative, width, height, seed, cfg, denoise, steps=4):
     decoded = n["VAEDecode"].decode(_vae, samples)[0].detach()
     return Image.fromarray(np.array(decoded * 255, dtype=np.uint8)[0])
 
+# ── Generate with References ──────────────────────────────
+@torch.inference_mode()
+def generate_with_references(input_images, prompt, negative, width, height,
+                             seed, cfg, denoise, steps=4):
+    """Text-to-image on a clean canvas, conditioned by reference images.
+    Unlike img2img, this starts from an EmptyLatentImage so no input image's
+    structure is used as a base. The reference images influence style and
+    content through conditioning only. Supports 1-4 reference images.
+    """
+    references = _normalize_references(input_images)
+    n = _get_nodes()
+    pos = n["CLIPTextEncode"].encode(_clip, prompt)[0]
+    neg = n["CLIPTextEncode"].encode(_clip, negative)[0]
+    pos = _add_reference_conditioning(n, pos, references)
+    latent = n["EmptyLatentImage"].generate(width, height, batch_size=1)[0]
+    samples = n["KSampler"].sample(
+        _unet, seed, int(steps), float(cfg),
+        "euler", "simple", pos, neg, latent, denoise=float(denoise)
+    )[0]
+    decoded = n["VAEDecode"].decode(_vae, samples)[0].detach()
+    return Image.fromarray(np.array(decoded * 255, dtype=np.uint8)[0])
+
 # ── Img2Img ────────────────────────────────────────────────
 @torch.inference_mode()
 def img2img(input_image, prompt, negative, seed, cfg, denoise, steps=4, mask=None):

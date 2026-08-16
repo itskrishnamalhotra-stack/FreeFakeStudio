@@ -245,7 +245,8 @@ def _select_mask_for_prompt(prompt, image_pil):
 # ═══════════════════════════════════════════════════════════
 def do_generate(model_name, prompt, negative, aspect_ratio,
                 seed, cfg, denoise, num_images, steps,
-                input_image=None, mask_mode=None, editor_data=None):
+                input_image=None, mask_mode=None, editor_data=None,
+                canvas_index=0):
     """
     Unified generation function. Handles:
     - text→image (no input_image)
@@ -258,11 +259,14 @@ def do_generate(model_name, prompt, negative, aspect_ratio,
     w, h = _parse_aspect(aspect_ratio)
     mode = "generate"
     input_images = _as_image_list(input_image)
-    primary_image = input_images[0] if input_images else None
+    canvas_idx = canvas_index if canvas_index is not None and input_images else None
+    primary_image = input_images[canvas_idx] if canvas_idx is not None else None
 
     # Determine mode
     if input_images:
-        if mask_mode and mask_mode != "None":
+        if canvas_idx is None:
+            mode = "ref_generate"  # references only, no canvas
+        elif mask_mode and mask_mode != "None":
             mode = "inpaint"
         else:
             mode = "img2img"
@@ -311,6 +315,9 @@ def do_generate(model_name, prompt, negative, aspect_ratio,
     # Status: generating
     if mode == "generate":
         yield (_status_html("active", f"Generating with {model_name}"), [], [], str(seed))
+    elif mode == "ref_generate":
+        ref_label = f"{len(input_images)} reference image" + ("s" if len(input_images) != 1 else "")
+        yield (_status_html("active", f"Generating from {ref_label} with {model_name}"), [], [], str(seed))
     elif mode == "img2img":
         ref_label = f"{len(input_images)} reference image" + ("s" if len(input_images) != 1 else "")
         yield (_status_html("active", f"Editing with {ref_label} in {model_name}"), [], [], str(seed))
@@ -330,6 +337,11 @@ def do_generate(model_name, prompt, negative, aspect_ratio,
             if mode == "generate":
                 img = engine.generate(prompt, negative, w, h,
                                       seed + i, cfg, denoise, int(steps))
+            elif mode == "ref_generate":
+                # Reference-only: clean canvas + reference conditioning
+                img = engine.generate_with_references(
+                    input_images, prompt, negative, w, h,
+                    seed + i, cfg, denoise, int(steps))
             elif mode == "img2img":
                 # For FLUX models, use smart mask selection
                 if model_name == "FLUX.2-klein 4B":
@@ -561,11 +573,16 @@ def _primary_image(value):
     return images[0] if images else None
 
 
-def _attachment_status_html(count):
+def _attachment_status_html(count, canvas_index=0):
     if count <= 0:
         return ""
     noun = "image" if count == 1 else "images"
-    references = "Canvas only" if count == 1 else f"Image 1 canvas / {count - 1} additional references"
+    if canvas_index is None:
+        references = f"{count} references (no canvas) / FLUX reference-only"
+    elif count == 1:
+        references = "Canvas only"
+    else:
+        references = f"Image {canvas_index + 1} canvas / {count - 1} additional references"
     return (
         '<div class="ffs-attachment-copy">'
         f'<strong>{count} {noun} attached</strong>'
@@ -586,20 +603,38 @@ def _append_attachment_images(existing, additions):
     return images + additions
 
 
-def _apply_attachment_action(images, index, action):
+def _apply_attachment_action(images, index, action, canvas_index=0):
     images = _as_image_list(images)
     if not images:
-        return []
+        return [], None
     index = max(0, min(int(index or 0), len(images) - 1))
-    if action == "canvas" and index > 0:
-        images.insert(0, images.pop(index))
+    if action == "canvas":
+        # Toggle: click canvas on current canvas → un-canvas; on another → make it canvas
+        if index == canvas_index:
+            canvas_index = None  # un-canvas (all become references)
+        else:
+            canvas_index = index  # make this one the canvas
     elif action == "left" and index > 0:
+        # Adjust canvas_index if the swap affects it
+        if canvas_index == index:
+            canvas_index = index - 1
+        elif canvas_index == index - 1:
+            canvas_index = index
         images[index - 1], images[index] = images[index], images[index - 1]
     elif action == "right" and index < len(images) - 1:
+        if canvas_index == index:
+            canvas_index = index + 1
+        elif canvas_index == index + 1:
+            canvas_index = index
         images[index + 1], images[index] = images[index], images[index + 1]
     elif action == "remove":
+        if canvas_index is not None:
+            if index == canvas_index:
+                canvas_index = None
+            elif index < canvas_index:
+                canvas_index -= 1
         images.pop(index)
-    return images
+    return images, canvas_index
 
 
 def _gallery_item_to_pil(item):
@@ -2779,6 +2814,12 @@ function makeAttachmentAction(label, title, index, action, disabled) {
 
 function prepareAttachmentCards() {
     var items = Array.from(document.querySelectorAll('#ffs-attachment-preview .gallery-item'));
+    /* Detect which image is canvas from the status text */
+    var statusEl = document.querySelector('#ffs-attachment-copy .ffs-attachment-copy span');
+    var statusText = statusEl ? statusEl.textContent : '';
+    var canvasIndex = -1; /* -1 = no canvas */
+    var match = statusText.match(/Image ([0-9]+) canvas/);
+    if (match) canvasIndex = parseInt(match[1], 10) - 1;
     items.forEach(function(item, index) {
         if (item.dataset.ffsAttachmentReady) return;
         item.dataset.ffsAttachmentReady = 'true';
@@ -2791,18 +2832,19 @@ function prepareAttachmentCards() {
             openLightbox(image.currentSrc || image.src, image.alt);
         });
 
+        var isCanvas = index === canvasIndex;
         var role = document.createElement('span');
         role.className = 'ffs-attachment-role';
-        role.textContent = index === 0 ? 'Image 1 / Canvas' : 'Image ' + (index + 1) + ' / Reference';
+        role.textContent = isCanvas ? 'Image ' + (index + 1) + ' / Canvas' : 'Image ' + (index + 1) + ' / Reference';
         item.appendChild(role);
 
         var actions = document.createElement('div');
         actions.className = 'ffs-attachment-actions';
         actions.appendChild(makeAttachmentAction('[]', 'Open full-screen preview', index, 'preview'));
-        actions.appendChild(makeAttachmentAction('C', 'Make this image the canvas', index, 'canvas', index === 0));
+        actions.appendChild(makeAttachmentAction(isCanvas ? 'C✓' : 'C', isCanvas ? 'Remove canvas (toggle)' : 'Make this image the canvas', index, 'canvas'));
         actions.appendChild(makeAttachmentAction('<', 'Move image left', index, 'left', index === 0));
         actions.appendChild(makeAttachmentAction('>', 'Move image right', index, 'right', index === items.length - 1));
-        if (index === 0) actions.appendChild(makeAttachmentAction('M', 'Open canvas mask settings', index, 'mask'));
+        if (isCanvas) actions.appendChild(makeAttachmentAction('M', 'Open canvas mask settings', index, 'mask'));
         actions.appendChild(makeAttachmentAction('x', 'Remove this image', index, 'remove'));
         item.appendChild(actions);
     });
@@ -2927,6 +2969,7 @@ with gr.Blocks(title="FreeFakeStudio") as demo:
     # ── Session State ──────────────────────────────────────
     chat_history = gr.State(_initial_chat_history)  # rendered conversation turns
     attached_image = gr.State(None)       # PIL Image or None
+    canvas_index = gr.State(0)            # which image is the canvas (None = all references)
     last_gen_settings = gr.State(None)    # for Regenerate
     selected_result_idx = gr.State(0)
     latest_result_paths = gr.State([])
@@ -3255,7 +3298,7 @@ with gr.Blocks(title="FreeFakeStudio") as demo:
             show_progress="hidden",
         )
 
-    def _attachment_updates(images, model_name, reset_mask=True):
+    def _attachment_updates(images, model_name, reset_mask=True, canvas_idx=0):
         images = _as_image_list(images)
         defaults = model_manager.get_defaults(model_name)
         if not images:
@@ -3264,10 +3307,12 @@ with gr.Blocks(title="FreeFakeStudio") as demo:
                 "", gr.update(visible=False), "Smart", None, None,
                 gr.update(visible=False, value=defaults.get("denoise", 1.0)),
                 gr.update(visible=False), gr.update(visible=False),
+                0,  # canvas_index reset
             )
+        has_canvas = canvas_idx is not None
         return (
             gr.update(visible=True), gr.update(value=images), images,
-            _attachment_status_html(len(images)), gr.update(visible=True),
+            _attachment_status_html(len(images), canvas_idx), gr.update(visible=has_canvas),
             "Smart" if reset_mask else gr.update(),
             None if reset_mask else gr.update(),
             None if reset_mask else gr.update(),
@@ -3277,6 +3322,7 @@ with gr.Blocks(title="FreeFakeStudio") as demo:
             ),
             gr.update(visible=False) if reset_mask else gr.update(),
             gr.update(visible=False) if reset_mask else gr.update(),
+            canvas_idx if canvas_idx is not None else 0,  # canvas_index state
         )
 
     def handle_upload(file, model_name, existing_images):
@@ -3307,7 +3353,7 @@ with gr.Blocks(title="FreeFakeStudio") as demo:
         outputs=[
             attachment_row, attachment_display, attached_image,
             attachment_summary, edit_panel, mask_mode, mask_editor, mask_preview,
-            gen_denoise, manual_mask_group, auto_mask_group, attach_btn,
+            gen_denoise, manual_mask_group, auto_mask_group, canvas_index, attach_btn,
         ],
     )
 
@@ -3320,31 +3366,31 @@ with gr.Blocks(title="FreeFakeStudio") as demo:
         outputs=[
             attachment_row, attachment_display, attached_image,
             attachment_summary, edit_panel, mask_mode, mask_editor, mask_preview,
-            gen_denoise, manual_mask_group, auto_mask_group,
+            gen_denoise, manual_mask_group, auto_mask_group, canvas_index,
         ],
     )
 
-    def apply_attachment_action(images, index, action, model_name):
+    def apply_attachment_action(images, index, action, model_name, current_canvas_idx):
         images = _as_image_list(images)
         if not images:
             return _attachment_updates([], model_name)
         if action not in ("canvas", "left", "right", "remove"):
-            return _attachment_updates(images, model_name, reset_mask=False)
-        previous_canvas = images[0]
-        updated = _apply_attachment_action(images, index, action)
-        canvas_changed = not updated or updated[0] is not previous_canvas
-        return _attachment_updates(updated, model_name, reset_mask=canvas_changed)
+            return _attachment_updates(images, model_name, reset_mask=False, canvas_idx=current_canvas_idx)
+        prev_canvas = current_canvas_idx
+        updated, new_canvas_idx = _apply_attachment_action(images, index, action, current_canvas_idx)
+        canvas_changed = prev_canvas != new_canvas_idx
+        return _attachment_updates(updated, model_name, reset_mask=canvas_changed, canvas_idx=new_canvas_idx)
 
     attachment_action_btn.click(
         apply_attachment_action,
         inputs=[
             attached_image, attachment_action_index,
-            attachment_action_name, model_selector,
+            attachment_action_name, model_selector, canvas_index,
         ],
         outputs=[
             attachment_row, attachment_display, attached_image,
             attachment_summary, edit_panel, mask_mode, mask_editor, mask_preview,
-            gen_denoise, manual_mask_group, auto_mask_group,
+            gen_denoise, manual_mask_group, auto_mask_group, canvas_index,
         ],
         show_progress="hidden",
     )
@@ -3477,6 +3523,7 @@ with gr.Blocks(title="FreeFakeStudio") as demo:
             _flux_encoder_status_html(),
             gr.update(visible=False),
             gr.update(visible=False),
+            0,  # canvas_index reset
         )
 
     model_selector.change(
@@ -3489,13 +3536,13 @@ with gr.Blocks(title="FreeFakeStudio") as demo:
             attachment_summary, edit_panel, mask_mode, mask_editor, mask_preview,
             add_to_prompt_btn,
             flux_encoder_panel, flux_encoder_choice, flux_encoder_status,
-            manual_mask_group, auto_mask_group,
+            manual_mask_group, auto_mask_group, canvas_index,
         ],
     )
 
     # ── SEND (main generation) ─────────────────────────────
     def on_send(model_name, prompt, image, mask_m, editor_data,
-                aspect, seed, steps, cfg, denoise, n_images, neg, history):
+                aspect, seed, steps, cfg, denoise, n_images, neg, history, canvas_idx):
         """Main generation handler. Yields streaming updates."""
         history = list(history or [])
         if not prompt.strip() and image is None:
@@ -3526,7 +3573,7 @@ with gr.Blocks(title="FreeFakeStudio") as demo:
             model_name, prompt, neg, aspect,
             seed, cfg, denoise, n_images, steps,
             input_image=image, mask_mode=effective_mask,
-            editor_data=editor_data,
+            editor_data=editor_data, canvas_index=canvas_idx,
         ):
             if images:
                 final_history = request_history + [_assistant_html(paths, seed_str)]
@@ -3569,7 +3616,7 @@ with gr.Blocks(title="FreeFakeStudio") as demo:
             model_selector, prompt_input, attached_image,
             mask_mode, mask_editor,
             aspect_ratio, gen_seed, gen_steps, gen_cfg, gen_denoise,
-            num_images, negative_prompt, chat_history,
+            num_images, negative_prompt, chat_history, canvas_index,
         ],
         outputs=[
             status_display, result_gallery, latest_result_paths, result_files,
@@ -3623,7 +3670,7 @@ with gr.Blocks(title="FreeFakeStudio") as demo:
             attachment_row, attachment_display, attached_image,
             attachment_summary, edit_panel, prompt_input,
             mask_mode, mask_editor, mask_preview, gen_denoise,
-            manual_mask_group, auto_mask_group,
+            manual_mask_group, auto_mask_group, canvas_index,
         ],
     )
 
@@ -3636,7 +3683,7 @@ with gr.Blocks(title="FreeFakeStudio") as demo:
     )
 
     # ── Regenerate ─────────────────────────────────────────
-    def on_regenerate(settings, image, history):
+    def on_regenerate(settings, image, history, canvas_idx):
         """Re-run the last generation with a new random seed."""
         history = list(history or [])
         if settings is None:
@@ -3660,6 +3707,7 @@ with gr.Blocks(title="FreeFakeStudio") as demo:
                 if settings.get("mask_mode") not in (None, "None", "Smart")
                 else None
             ),
+            canvas_index=canvas_idx,
         ):
             if images:
                 final_history = request_history + [_assistant_html(paths, seed_str)]
@@ -3686,7 +3734,7 @@ with gr.Blocks(title="FreeFakeStudio") as demo:
 
     regenerate_btn.click(
         on_regenerate,
-        inputs=[last_gen_settings, attached_image, chat_history],
+        inputs=[last_gen_settings, attached_image, chat_history, canvas_index],
         outputs=[
             status_display, result_gallery, latest_result_paths, result_files, seed_display,
             conversation_display, chat_history,
