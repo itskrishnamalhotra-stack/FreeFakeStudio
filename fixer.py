@@ -199,16 +199,22 @@ def fix_opencv_cascade():
     label = "Fix 4: OpenCV face detector"
     cv2_needs_repair = False
 
-    # Step 1: Check if cv2 has the required functions
+    # Step 1: Check if cv2 has the required functions.
+    # OpenCV 5.0 moved CascadeClassifier to cv2.objdetect — the app
+    # expects the 4.x API (cv2.CascadeClassifier), so we pin to 4.x.
     try:
         import cv2
         required = ("CascadeClassifier", "cvtColor", "ellipse")
         if not all(hasattr(cv2, name) for name in required):
             cv2_needs_repair = True
+            reason = f"cv2 {cv2.__version__} missing top-level CascadeClassifier"
+        else:
+            reason = ""
     except ImportError:
         cv2_needs_repair = True
+        reason = "cv2 not importable"
 
-    # Step 2: Repair cv2 if broken (conflicting opencv packages)
+    # Step 2: Repair cv2 if broken (OpenCV 5.x or conflicting packages)
     if cv2_needs_repair:
         try:
             cache_dir = str(WS / "cache" / "pip")
@@ -219,10 +225,10 @@ def fix_opencv_cascade():
                  "opencv-contrib-python", "opencv-contrib-python-headless"],
                 capture_output=True, text=True,
             )
-            # Clean install of headless variant
+            # Pin to 4.x — OpenCV 5.0 broke the top-level API
             subprocess.run(
                 [sys.executable, "-m", "pip", "install", "-q",
-                 "--cache-dir", cache_dir, "opencv-python-headless"],
+                 "--cache-dir", cache_dir, "opencv-python-headless<5"],
                 check=True, capture_output=True, text=True,
             )
             # Verify via subprocess — cv2 is a C extension and can't be
@@ -234,9 +240,9 @@ def fix_opencv_cascade():
                 capture_output=True, text=True,
             )
             if "True" not in verify.stdout:
-                log_fix(label, "fail", "reinstalled opencv but cv2 still broken")
+                log_fix(label, "fail", "reinstalled opencv 4.x but cv2 still broken")
                 return
-            log_fix(f"{label} [cv2 repair]", "ok", "reinstalled opencv-python-headless")
+            log_fix(f"{label} [cv2 repair]", "ok", f"downgraded to 4.x ({reason})")
         except Exception as exc:
             log_fix(label, "fail", f"cv2 repair failed: {str(exc)[:120]}")
             return
