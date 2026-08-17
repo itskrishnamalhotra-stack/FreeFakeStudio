@@ -62,6 +62,7 @@ keys are supported:
 
 ```text
 PUBLIC_ROUTE
+PRELOAD_FLUX
 NGROK_AUTH_TOKEN
 HUGGINGFACE_TOKEN
 GEMINI_API_KEY
@@ -131,6 +132,16 @@ The launcher passes the selected external URL to Gradio as an absolute proxy roo
 so Gradio does not generate blocked internal HTTP URLs for its API, theme, or
 assets.
 
+### Startup Priority
+
+`PRELOAD_FLUX=True` is the recommended Colab setting. It loads only
+`FLUX.2-klein 4B` before the app link is printed, so the main chat, image
+editing, and Avatar Studio do not hit a first-generation model-load delay.
+
+If Colab gives you a low-memory runtime or startup fails before the link appears,
+set `PRELOAD_FLUX=False`, run the cell again, and load FLUX from the UI on first
+generation.
+
 ## Persistent Workspace Layout
 
 The notebook stores project-owned files under the selected Drive workspace:
@@ -176,6 +187,7 @@ First run:
 - validates and persists an optional FLUX custom encoder without loading two encoders;
 - stops a previous PID-verified FreeFakeStudio child before a cell rerun;
 - creates one HTTPS route from `PUBLIC_ROUTE` (`Colab proxy` by default, `ngrok` when selected);
+- optionally preloads only FLUX when `PRELOAD_FLUX=True`;
 - launches Gradio with that route set as its absolute proxy root.
 
 Later runs:

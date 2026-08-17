@@ -4830,8 +4830,15 @@ with gr.Blocks(title="FreeFakeStudio") as demo:
 _ui_trace("interface ready")
 
 
+def _env_flag(name, default=False):
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    return raw.lower() in ("1", "true", "yes", "on")
+
+
 # ═══════════════════════════════════════════════════════════
-#  STARTUP — NO model preload
+#  STARTUP — optional FLUX preload
 # ═══════════════════════════════════════════════════════════
 if DEV_MODE:
     print("\n" + "=" * 50)
@@ -4843,8 +4850,18 @@ if DEV_MODE:
     for name in model_manager.MODEL_NAMES:
         model_manager.set_model_availability(name, True)
 else:
-    # Check which models are installed (but do NOT load any)
     model_manager.check_model_files(os.environ.get("COMFYUI_ROOT", "/content/ComfyUI"))
+    if _env_flag("FFS_PRELOAD_FLUX", False):
+        print("\n⏳ Preloading FLUX.2-klein 4B before opening FreeFakeStudio...")
+        try:
+            model_manager.ensure_model(
+                model_manager.FLUX_MODEL_NAME,
+                status_callback=lambda message: print(message, flush=True),
+            )
+            print("✓ FLUX.2-klein 4B preloaded and ready.")
+        except Exception as exc:
+            _write_runtime_error("startup preload", exc)
+            raise
     status = model_manager.get_model_status()
     print("\n🎭 FreeFakeStudio — Model Status:")
     for name, st in status.items():
@@ -4854,13 +4871,6 @@ else:
 
 # Configure Gradio queue for single GPU concurrency
 demo.queue(default_concurrency_limit=1)
-
-
-def _env_flag(name, default=False):
-    raw = os.environ.get(name)
-    if raw is None:
-        return default
-    return raw.lower() in ("1", "true", "yes", "on")
 
 
 # The Colab launcher supplies an absolute HTTPS root for its selected proxy.

@@ -13,6 +13,9 @@ PUBLIC_ROUTE=Colab proxy
 # Optional ngrok token. Used only when PUBLIC_ROUTE=ngrok or PUBLIC_ROUTE=Auto.
 NGROK_AUTH_TOKEN=
 
+# Startup priority. True loads FLUX before the app link is printed.
+PRELOAD_FLUX=True
+
 # Hugging Face token. Needed only for gated models/repos you have accepted.
 HUGGINGFACE_TOKEN=
 

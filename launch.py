@@ -120,6 +120,19 @@ def normalize_public_route(value):
     return aliases[raw]
 
 
+def normalize_bool(value, default=False):
+    if value is None or value == "":
+        return bool(default)
+    if isinstance(value, bool):
+        return value
+    raw = str(value).strip().lower()
+    if raw in {"1", "true", "yes", "on"}:
+        return True
+    if raw in {"0", "false", "no", "off"}:
+        return False
+    return bool(default)
+
+
 def _private_env(name):
     return os.environ.get(name, "").strip()
 
@@ -128,6 +141,7 @@ def save_private_settings(settings):
     """Atomically persist stable single-user settings outside the Git checkout."""
     values = {
         "public_route": PUBLIC_ROUTE_MODE,
+        "preload_flux": "1" if PRELOAD_FLUX else "0",
         "ngrok_auth_token": NGROK_AUTHTOKEN,
         "flux_encoder_mode": FLUX_ENCODER_MODE,
         "flux_custom_encoder_url": FLUX_CUSTOM_ENCODER_URL,
@@ -161,6 +175,9 @@ def save_private_settings(settings):
 _private_settings = load_private_settings()
 PUBLIC_ROUTE_MODE = normalize_public_route(
     private_value(_private_settings, "FFS_PUBLIC_ROUTE", "public_route", "colab_proxy")
+)
+PRELOAD_FLUX = normalize_bool(
+    private_value(_private_settings, "FFS_PRELOAD_FLUX", "preload_flux", "1"), True
 )
 NGROK_AUTHTOKEN = private_value(
     _private_settings, "FFS_NGROK_AUTHTOKEN", "ngrok_auth_token"
@@ -209,6 +226,7 @@ os.environ["GRADIO_TEMP_DIR"] = str(WS / "gradio_tmp")
 os.environ["GRADIO_SSR_MODE"] = "false"
 os.environ["FREEFAKESTUDIO_SHARE"] = "0"
 os.environ["FFS_DEBUG"] = "1" if DEBUG else "0"
+os.environ["FFS_PRELOAD_FLUX"] = "1" if PRELOAD_FLUX else "0"
 
 
 _steps = []
@@ -379,6 +397,7 @@ def write_debug_report(stage, exc=None):
             "FREEFAKESTUDIO_WORKSPACE": os.environ.get("FREEFAKESTUDIO_WORKSPACE"),
             "FFS_PUBLIC_ROUTE": PUBLIC_ROUTE_MODE,
             "FFS_PUBLIC_ROUTE_EFFECTIVE": "ngrok" if _use_ngrok_route() else "colab_proxy",
+            "FFS_PRELOAD_FLUX": "1" if PRELOAD_FLUX else "0",
             "FFS_FLUX_ENCODER_MODE": os.environ.get("FFS_FLUX_ENCODER_MODE"),
             "FFS_FLUX_CUSTOM_ENCODER_FILE": os.environ.get("FFS_FLUX_CUSTOM_ENCODER_FILE"),
             "FFS_FLUX_CUSTOM_ENCODER_FORMAT": os.environ.get("FFS_FLUX_CUSTOM_ENCODER_FORMAT"),
@@ -502,6 +521,7 @@ def launch_app_process(timeout_seconds=180):
         "FREEFAKESTUDIO_PUBLIC_URL": public_url,
         "GRADIO_ROOT_PATH": public_url,
         "FREEFAKESTUDIO_SHARE": "0",
+        "FFS_PRELOAD_FLUX": "1" if PRELOAD_FLUX else "0",
     }
     cmd = [sys.executable, "-u", str(APP / "app.py")]
     with log_path.open("w", encoding="utf-8") as log:

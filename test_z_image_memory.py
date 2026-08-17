@@ -461,11 +461,15 @@ class AvatarStudioTests(unittest.TestCase):
         self.assertIn('GEMINI_API_KEY = ""', source)
         self.assertIn('TAVILY_API_KEY = ""', source)
         self.assertIn('PUBLIC_ROUTE = "Colab proxy"', source)
+        self.assertIn("PRELOAD_FLUX = True", source)
         self.assertIn('os.environ["FFS_PUBLIC_ROUTE"]', source)
+        self.assertIn('os.environ["FFS_PRELOAD_FLUX"]', source)
+        self.assertIn("key_bool", source)
         self.assertIn("UPLOAD_KEYS_TXT", source)
         self.assertIn("KEYS_TXT_PATH", source)
         self.assertIn("parse_keys_txt", source)
         self.assertIn('"FFS_PUBLIC_ROUTE": "PUBLIC_ROUTE"', source)
+        self.assertIn('"FFS_PRELOAD_FLUX": "PRELOAD_FLUX"', source)
         self.assertIn("freefakestudio_keys.txt", source)
         self.assertIn('"stash", "push", "-u"', source)
         self.assertIn("Colab auto-stash before update", source)
@@ -481,6 +485,7 @@ class AvatarStudioTests(unittest.TestCase):
         for key in (
             "NGROK_AUTH_TOKEN",
             "PUBLIC_ROUTE",
+            "PRELOAD_FLUX",
             "HUGGINGFACE_TOKEN",
             "GEMINI_API_KEY",
             "TAVILY_API_KEY",
@@ -492,6 +497,15 @@ class AvatarStudioTests(unittest.TestCase):
         self.assertIn("FreeFakeStudio.keys.txt", ignore)
         self.assertNotIn("tvly-", template)
         self.assertIsNone(re.search(r"hf_[A-Za-z0-9]{20,}", template))
+
+    def test_app_preloads_only_flux_when_requested(self):
+        source = Path("app.py").read_text(encoding="utf-8")
+
+        self.assertIn('FFS_PRELOAD_FLUX', source)
+        self.assertIn('model_manager.FLUX_MODEL_NAME', source)
+        self.assertIn('Preloading FLUX.2-klein 4B', source)
+        self.assertNotIn('ensure_model("Z-Image Turbo"', source)
+        self.assertNotIn('ensure_model("ERNIE-Image-Turbo"', source)
 
 
 class _Loader:
@@ -806,6 +820,14 @@ class LauncherRepositoryTests(unittest.TestCase):
         self.assertEqual(normalize("Auto"), "auto")
         with self.assertRaisesRegex(RuntimeError, "Unsupported PUBLIC_ROUTE"):
             normalize("random tunnel")
+
+    def test_bool_normalizer_accepts_colab_form_values(self):
+        normalize = self._launch_function("normalize_bool", {})
+
+        self.assertTrue(normalize("True"))
+        self.assertTrue(normalize("1"))
+        self.assertFalse(normalize("False", True))
+        self.assertFalse(normalize("0", True))
 
 
 class FluxEncoderTests(unittest.TestCase):
