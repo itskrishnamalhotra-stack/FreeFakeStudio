@@ -3,6 +3,7 @@ import base64
 import html
 import json
 import os
+import re
 import sys
 import tempfile
 import types
@@ -459,10 +460,32 @@ class AvatarStudioTests(unittest.TestCase):
         self.assertIn('HUGGINGFACE_TOKEN = ""', source)
         self.assertIn('GEMINI_API_KEY = ""', source)
         self.assertIn('TAVILY_API_KEY = ""', source)
+        self.assertIn("UPLOAD_KEYS_TXT", source)
+        self.assertIn("KEYS_TXT_PATH", source)
+        self.assertIn("parse_keys_txt", source)
+        self.assertIn("freefakestudio_keys.txt", source)
         self.assertIn("AVATAR_SEARCH_ROUNDS", source)
         self.assertIn("AVATAR_VISION_MAX_EDGE", source)
         self.assertNotIn("tvly-", source)
-        self.assertNotIn("hf_", source)
+        self.assertIsNone(re.search(r"hf_[A-Za-z0-9]{20,}", source))
+
+    def test_keys_template_is_safe_and_lists_supported_fields(self):
+        template = Path("FreeFakeStudio.keys.example.txt").read_text(encoding="utf-8")
+        ignore = Path(".gitignore").read_text(encoding="utf-8")
+
+        for key in (
+            "NGROK_AUTH_TOKEN",
+            "HUGGINGFACE_TOKEN",
+            "GEMINI_API_KEY",
+            "TAVILY_API_KEY",
+            "FLUX_ENCODER",
+            "AVATAR_SEARCH_ROUNDS",
+            "AVATAR_VISION_MAX_EDGE",
+        ):
+            self.assertIn(key, template)
+        self.assertIn("FreeFakeStudio.keys.txt", ignore)
+        self.assertNotIn("tvly-", template)
+        self.assertIsNone(re.search(r"hf_[A-Za-z0-9]{20,}", template))
 
 
 class _Loader:

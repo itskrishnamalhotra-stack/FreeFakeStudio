@@ -63,3 +63,6 @@ FreeFakeStudio-main source code/
 # Scratch notebooks used as design/reference material; keep keys out of commits
 image_search_and_reference_finder.ipynb
 imagetexttotext.ipynb
+
+# Filled local/Colab key bundle; commit only FreeFakeStudio.keys.example.txt
+FreeFakeStudio.keys.txt

@@ -40,6 +40,45 @@ The older FLUX.2-klein 9B and Qwen-Image-Edit engine files may remain in the rep
 
 Later runs reuse the Drive workspace and should skip existing downloads.
 
+### One-Time Keys File
+
+To avoid pasting API keys into the Colab form every run:
+
+1. Open `FreeFakeStudio.keys.example.txt`.
+2. Fill your real values and save it locally as `FreeFakeStudio.keys.txt`.
+3. In Colab, set `UPLOAD_KEYS_TXT=True` once and run the cell.
+4. Upload your filled txt file when Colab asks.
+5. The cell saves it privately to:
+
+   ```text
+   WORKSPACE_DIR/config/freefakestudio_keys.txt
+   ```
+
+6. On later runs, keep `UPLOAD_KEYS_TXT=False`; the cell auto-loads the saved
+   Drive copy. The direct token fields can stay blank.
+
+The parser accepts `KEY=VALUE` or `KEY: VALUE` lines and ignores comments. These
+keys are supported:
+
+```text
+NGROK_AUTH_TOKEN
+HUGGINGFACE_TOKEN
+GEMINI_API_KEY
+TAVILY_API_KEY
+GEMINI_MODEL
+FLUX_ENCODER
+FLUX_CUSTOM_ENCODER_URL
+AVATAR_REFERENCE_DOMAINS
+AVATAR_REFERENCE_TIME_RANGE
+AVATAR_SEARCH_ROUNDS
+AVATAR_GALLERY_RETRIES
+AVATAR_MAX_CANDIDATE_DOWNLOADS
+AVATAR_VISION_MAX_EDGE
+AVATAR_VISION_MAX_TOKENS
+```
+
+`FreeFakeStudio.keys.txt` is ignored by Git. Commit only the example template.
+
 ### Optional FLUX Encoder
 
 The single Colab cell includes three FLUX-only fields:
@@ -230,11 +269,12 @@ Avatar Studio is a persistent, Flux-only identity workflow stored under
    prompts. Selecting an image exposes a manual failed-generation regeneration
    control. Gallery images and chat images are stored separately.
 
-Auto Gallery reads `GEMINI_API_KEY` and `TAVILY_API_KEY` from the single Colab
-cell form, Colab Secrets (the key icon in Colab's left sidebar), or saved private
-Drive settings. The committed notebook keeps those fields blank. Do not place API
-keys in committed notebooks or source files. Local development uses mock search,
-generation, and validation and never loads an AI model.
+Auto Gallery reads `GEMINI_API_KEY` and `TAVILY_API_KEY` from the uploaded keys
+txt, the single Colab cell form, Colab Secrets (the key icon in Colab's left
+sidebar), or saved private Drive settings. The committed notebook keeps those
+fields blank. Do not place API keys in committed notebooks or source files. Local
+development uses mock search, generation, and validation and never loads an AI
+model.
 
 The Colab form also exposes the practical knobs from the reference-finder and
 SmolVLM notebooks:

@@ -1,0 +1,36 @@
+# FreeFakeStudio private keys template
+#
+# Copy or rename this file to FreeFakeStudio.keys.txt, fill your values, then
+# upload it in the Colab cell with UPLOAD_KEYS_TXT=True.
+#
+# Lines beginning with #, //, or ; are ignored.
+# KEY=VALUE and KEY: VALUE both work.
+
+# Public HTTPS route. Recommended for Colab because it avoids Gradio proxy issues.
+NGROK_AUTH_TOKEN=
+
+# Hugging Face token. Needed only for gated models/repos you have accepted.
+HUGGINGFACE_TOKEN=
+
+# Avatar Studio Auto Gallery APIs.
+GEMINI_API_KEY=
+TAVILY_API_KEY=
+
+# Optional Gemini model override. Leave blank to auto-pick a compatible Flash model.
+GEMINI_MODEL=
+
+# Optional FLUX.2 Klein encoder settings.
+# FLUX_ENCODER can be Official or Custom.
+FLUX_ENCODER=Official
+FLUX_CUSTOM_ENCODER_URL=https://huggingface.co/ponpoke/flux2-klein-4b-uncensored-text-encoder/resolve/main/flux2-klein-4b-uncensored-q4_k_m.gguf
+
+# Optional Avatar Gallery search controls.
+AVATAR_REFERENCE_DOMAINS=instagram.com
+AVATAR_REFERENCE_TIME_RANGE=month
+AVATAR_SEARCH_ROUNDS=3
+AVATAR_GALLERY_RETRIES=2
+AVATAR_MAX_CANDIDATE_DOWNLOADS=60
+
+# Optional SmolVLM image-to-text controls.
+AVATAR_VISION_MAX_EDGE=768
+AVATAR_VISION_MAX_TOKENS=900
