@@ -45,6 +45,23 @@ REPAIR = os.environ.get("FFS_REPAIR", "") == "1"
 UPDATE_APP = os.environ.get("FFS_UPDATE", "") == "1"
 COMFY_TAG = os.environ.get("FFS_COMFY_TAG", "v0.28.0")
 DEBUG = os.environ.get("FFS_DEBUG", "1").lower() not in ("0", "false", "no", "off")
+
+
+def load_colab_secret(name):
+    if os.environ.get(name, "").strip():
+        return
+    try:
+        from google.colab import userdata
+
+        value = (userdata.get(name) or "").strip()
+    except Exception:
+        value = ""
+    if value:
+        os.environ[name] = value
+
+
+for _secret_name in ("GEMINI_API_KEY", "TAVILY_API_KEY"):
+    load_colab_secret(_secret_name)
 FLUX_CUSTOM_MAX_BYTES = 3 * 1024**3
 FLUX_CUSTOM_MIN_BYTES = 500 * 1024**2
 FLUX_ENCODER_CONFIG = WS / "config" / "flux_encoder.json"
@@ -85,13 +102,28 @@ def private_value(settings, env_name, key, default=""):
     return str(settings.get(key, default) or default).strip()
 
 
+def _private_env(name):
+    return os.environ.get(name, "").strip()
+
+
 def save_private_settings(settings):
     """Atomically persist stable single-user settings outside the Git checkout."""
     values = {
         "ngrok_auth_token": NGROK_AUTHTOKEN,
         "flux_encoder_mode": FLUX_ENCODER_MODE,
         "flux_custom_encoder_url": FLUX_CUSTOM_ENCODER_URL,
-        "huggingface_token": os.environ.get("HF_TOKEN", "").strip(),
+        "huggingface_token": _private_env("HF_TOKEN"),
+        "gemini_api_key": _private_env("GEMINI_API_KEY"),
+        "tavily_api_key": _private_env("TAVILY_API_KEY"),
+        "gemini_model": _private_env("FFS_GEMINI_MODEL"),
+        "avatar_reference_domains": _private_env("FFS_AVATAR_REFERENCE_DOMAINS"),
+        "avatar_reference_time_range": _private_env("FFS_AVATAR_REFERENCE_TIME_RANGE"),
+        "avatar_search_rounds": _private_env("FFS_AVATAR_SEARCH_ROUNDS"),
+        "avatar_gallery_retries": _private_env("FFS_AVATAR_GALLERY_RETRIES"),
+        "avatar_max_candidate_downloads": _private_env("FFS_AVATAR_MAX_CANDIDATE_DOWNLOADS"),
+        "avatar_vision_model": _private_env("FFS_AVATAR_VISION_MODEL"),
+        "avatar_vision_max_edge": _private_env("FFS_AVATAR_VISION_MAX_EDGE"),
+        "avatar_vision_max_tokens": _private_env("FFS_AVATAR_VISION_MAX_TOKENS"),
     }
     merged = {**settings, **{key: value for key, value in values.items() if value}}
     partial = PRIVATE_SETTINGS_FILE.with_suffix(".json.part")
@@ -120,6 +152,22 @@ FLUX_CUSTOM_ENCODER_URL = private_value(
 _hf_token = private_value(_private_settings, "HF_TOKEN", "huggingface_token")
 if _hf_token:
     os.environ["HF_TOKEN"] = _hf_token
+for _env_name, _private_key in (
+    ("GEMINI_API_KEY", "gemini_api_key"),
+    ("TAVILY_API_KEY", "tavily_api_key"),
+    ("FFS_GEMINI_MODEL", "gemini_model"),
+    ("FFS_AVATAR_REFERENCE_DOMAINS", "avatar_reference_domains"),
+    ("FFS_AVATAR_REFERENCE_TIME_RANGE", "avatar_reference_time_range"),
+    ("FFS_AVATAR_SEARCH_ROUNDS", "avatar_search_rounds"),
+    ("FFS_AVATAR_GALLERY_RETRIES", "avatar_gallery_retries"),
+    ("FFS_AVATAR_MAX_CANDIDATE_DOWNLOADS", "avatar_max_candidate_downloads"),
+    ("FFS_AVATAR_VISION_MODEL", "avatar_vision_model"),
+    ("FFS_AVATAR_VISION_MAX_EDGE", "avatar_vision_max_edge"),
+    ("FFS_AVATAR_VISION_MAX_TOKENS", "avatar_vision_max_tokens"),
+):
+    _value = private_value(_private_settings, _env_name, _private_key)
+    if _value:
+        os.environ[_env_name] = _value
 save_private_settings(_private_settings)
 
 os.environ["HF_HOME"] = str(CACHE / "huggingface")
@@ -304,6 +352,17 @@ def write_debug_report(stage, exc=None):
             "FFS_FLUX_CUSTOM_ENCODER_FORMAT": os.environ.get("FFS_FLUX_CUSTOM_ENCODER_FORMAT"),
             "FFS_FLUX_CUSTOM_ENCODER_SIZE": os.environ.get("FFS_FLUX_CUSTOM_ENCODER_SIZE"),
             "FFS_FLUX_CUSTOM_ENCODER_SOURCE": os.environ.get("FFS_FLUX_CUSTOM_ENCODER_SOURCE"),
+            "FFS_GEMINI_MODEL": os.environ.get("FFS_GEMINI_MODEL"),
+            "FFS_AVATAR_REFERENCE_DOMAINS": os.environ.get("FFS_AVATAR_REFERENCE_DOMAINS"),
+            "FFS_AVATAR_REFERENCE_TIME_RANGE": os.environ.get("FFS_AVATAR_REFERENCE_TIME_RANGE"),
+            "FFS_AVATAR_SEARCH_ROUNDS": os.environ.get("FFS_AVATAR_SEARCH_ROUNDS"),
+            "FFS_AVATAR_GALLERY_RETRIES": os.environ.get("FFS_AVATAR_GALLERY_RETRIES"),
+            "FFS_AVATAR_MAX_CANDIDATE_DOWNLOADS": os.environ.get("FFS_AVATAR_MAX_CANDIDATE_DOWNLOADS"),
+            "FFS_AVATAR_VISION_MODEL": os.environ.get("FFS_AVATAR_VISION_MODEL"),
+            "FFS_AVATAR_VISION_MAX_EDGE": os.environ.get("FFS_AVATAR_VISION_MAX_EDGE"),
+            "FFS_AVATAR_VISION_MAX_TOKENS": os.environ.get("FFS_AVATAR_VISION_MAX_TOKENS"),
+            "GEMINI_API_KEY_present": bool(os.environ.get("GEMINI_API_KEY")),
+            "TAVILY_API_KEY_present": bool(os.environ.get("TAVILY_API_KEY")),
         },
         "packages": {
             name: package_version(name)
@@ -312,6 +371,9 @@ def write_debug_report(stage, exc=None):
                 "torch",
                 "torchsde",
                 "transformers",
+                "accelerate",
+                "bitsandbytes",
+                "sentencepiece",
                 "safetensors",
                 "gradio",
                 "huggingface_hub",
@@ -948,12 +1010,19 @@ try:
         "gradio": "gradio",
         "rembg": "rembg",
         "cv2": "opencv-python-headless",
+        "accelerate": "accelerate",
+        "bitsandbytes": "bitsandbytes",
+        "sentencepiece": "sentencepiece",
     }
     if NGROK_AUTHTOKEN:
         required["pyngrok"] = "pyngrok"
     missing = [pkg for module, pkg in required.items() if not package_ok(module)]
     if missing:
         pip_install(*missing)
+    try:
+        from transformers import AutoModelForImageTextToText, BitsAndBytesConfig  # noqa: F401
+    except Exception:
+        pip_install("transformers>=5.13,<6", "accelerate", "bitsandbytes", "sentencepiece")
     if not package_ok("onnxruntime"):
         pip_install("onnxruntime-gpu")
     pip_install("Pillow<12")

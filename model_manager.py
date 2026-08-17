@@ -462,6 +462,9 @@ class MockEngine:
     def generate(self, prompt, negative, width, height, seed, cfg, denoise, steps=8):
         return self._make_placeholder(width, height)
 
+    def generate_with_references(self, references, prompt, negative, width, height, seed, cfg, denoise, steps=4):
+        return self._make_placeholder(width, height)
+
     def img2img(self, input_image, prompt, negative, seed, cfg, denoise, steps=4, mask=None):
         images = input_image if isinstance(input_image, (list, tuple)) else [input_image]
         primary = next((image for image in images if image is not None), None)

@@ -53,3 +53,13 @@ user_path_config-deprecated.txt
 /.coverage*
 /auth.json
 .DS_Store
+
+# Local/Colab runtime outputs
+results/
+
+# User reference-only source checkout, not part of this app version
+FreeFakeStudio-main source code/
+
+# Scratch notebooks used as design/reference material; keep keys out of commits
+image_search_and_reference_finder.ipynb
+imagetexttotext.ipynb

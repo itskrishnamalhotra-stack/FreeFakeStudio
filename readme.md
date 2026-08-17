@@ -67,7 +67,8 @@ When FLUX is selected, open Settings, choose `Official` or `Custom`, and press
 with the selected encoder. Z-Image and ERNIE are unaffected.
 
 For the most reliable route, paste your ngrok auth token into the notebook's
-`NGROK_AUTH_TOKEN` field. The launcher will print:
+`NGROK_AUTH_TOKEN` field. Leave token fields blank to reuse saved private Drive
+settings or Colab Secrets. The launcher will print:
 
 ```text
 OPEN FREEFAKESTUDIO (ngrok):
@@ -211,6 +212,45 @@ The Gradio app uses a conversational image workflow:
 - use `Add to Prompt` to continue editing a generated image;
 - use `Regenerate` to rerun the previous request with a fresh seed;
 - use `New` to clear the current conversation workspace.
+
+## Avatar Studio
+
+Avatar Studio is a persistent, Flux-only identity workflow stored under
+`results/avatars/` in Google Drive:
+
+1. Create or select a named avatar.
+2. Generate or upload a face reference, then confirm it. SmolVLM records the
+   visible identity details before the Body step unlocks.
+3. Generate or upload a full-body reference, then confirm it. The Console and
+   Gallery steps unlock after both references are saved.
+4. Use the Console for a saved conversation. Face and body occupy two of Flux's
+   four reference slots, leaving two optional user reference slots.
+5. Use Auto Gallery to discover references, write prompts, generate with Flux,
+   validate identity/anatomy with SmolVLM, and automatically repair failed
+   prompts. Selecting an image exposes a manual failed-generation regeneration
+   control. Gallery images and chat images are stored separately.
+
+Auto Gallery reads `GEMINI_API_KEY` and `TAVILY_API_KEY` from the single Colab
+cell form, Colab Secrets (the key icon in Colab's left sidebar), or saved private
+Drive settings. The committed notebook keeps those fields blank. Do not place API
+keys in committed notebooks or source files. Local development uses mock search,
+generation, and validation and never loads an AI model.
+
+The Colab form also exposes the practical knobs from the reference-finder and
+SmolVLM notebooks:
+
+- `GEMINI_MODEL`: optional override; blank auto-picks an available Gemini Flash model.
+- `AVATAR_REFERENCE_DOMAINS`: comma-separated Tavily domain filter, defaulting to `instagram.com`.
+- `AVATAR_REFERENCE_TIME_RANGE`: optional recency filter such as `month`.
+- `AVATAR_SEARCH_ROUNDS`: 1-5 Tavily/Gemini planning rounds; more rounds cost more but improve fill rate.
+- `AVATAR_GALLERY_RETRIES`: 0-3 prompt repair attempts after a failed validation.
+- `AVATAR_MAX_CANDIDATE_DOWNLOADS`: candidate download cap per search round.
+- `AVATAR_VISION_MAX_EDGE` and `AVATAR_VISION_MAX_TOKENS`: SmolVLM memory/detail controls.
+
+Free T4 loading stays lazy on purpose. Opening the app does not preload Flux,
+Z-Image, ERNIE, or SmolVLM. The first Avatar Studio generation or analysis pays
+the model-load cost; later operations reuse the loaded Flux and SmolVLM models.
+This avoids making every launch consume the peak RAM required by both models.
 
 Local execution defaults to development mode. It builds the UI and uses mock engines only. It does not download or load real AI models.
 

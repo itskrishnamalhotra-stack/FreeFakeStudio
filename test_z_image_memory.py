@@ -1,6 +1,7 @@
 import ast
 import base64
 import html
+import json
 import os
 import sys
 import tempfile
@@ -17,6 +18,8 @@ import engine_flux_klein_4b
 import engine_z_image
 import gguf_nodes
 import model_manager
+import avatar_gallery
+import avatar_studio
 
 
 def _source_function(source_path, name, namespace):
@@ -148,7 +151,7 @@ class StudioUiRegressionTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "at most 4"):
             engine_flux_klein_4b._normalize_references(images)
 
-    def test_attachment_queue_appends_and_reorders_generation_inputs(self):
+    def test_attachment_queue_appends_and_tracks_canvas_state(self):
         namespace = {"MAX_FLUX_REFERENCES": 4}
         namespace["_as_image_list"] = _source_function("app.py", "_as_image_list", namespace)
         append_images = _source_function("app.py", "_append_attachment_images", namespace)
@@ -157,10 +160,11 @@ class StudioUiRegressionTests(unittest.TestCase):
 
         queue = append_images([images[0]], images[1:])
         self.assertEqual(queue, images)
-        self.assertEqual(apply_action(queue, 2, "canvas"), [images[2], images[0], images[1]])
-        self.assertEqual(apply_action(queue, 1, "left"), [images[1], images[0], images[2]])
-        self.assertEqual(apply_action(queue, 1, "right"), [images[0], images[2], images[1]])
-        self.assertEqual(apply_action(queue, 1, "remove"), [images[0], images[2]])
+        self.assertEqual(apply_action(queue, 2, "canvas"), (images, 2))
+        self.assertEqual(apply_action(queue, 2, "canvas", 2), (images, None))
+        self.assertEqual(apply_action(queue, 1, "left"), ([images[1], images[0], images[2]], 1))
+        self.assertEqual(apply_action(queue, 1, "right"), ([images[0], images[2], images[1]], 0))
+        self.assertEqual(apply_action(queue, 1, "remove"), ([images[0], images[2]], 0))
         with self.assertRaisesRegex(ValueError, "up to 4"):
             append_images(queue, [images[0], images[1]])
 
@@ -188,6 +192,277 @@ class StudioUiRegressionTests(unittest.TestCase):
             turns = ["<div>You</div>", "<div>FreeFakeStudio</div>"]
             save_history(turns)
             self.assertEqual(load_history(), turns)
+
+
+class AvatarStudioTests(unittest.TestCase):
+    def test_avatar_create_lock_and_restore_specs(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            avatar = avatar_studio.create_avatar(temp_dir, "Maya Test")
+            self.assertEqual(avatar["current_step"], "face")
+            self.assertFalse(avatar["face_locked"])
+
+            face = avatar_studio.make_dev_reference("face", "dark hair")
+            avatar, face_specs = avatar_studio.lock_reference(
+                temp_dir, avatar["id"], "face", face, dev_mode=True
+            )
+            self.assertTrue(avatar["face_locked"])
+            self.assertEqual(avatar["current_step"], "body")
+            self.assertTrue(os.path.exists(avatar["face_image"]))
+            self.assertEqual(face_specs["analyzer"], "mock-smolvlm-dev")
+
+            body = avatar_studio.make_dev_reference("body", "full body")
+            avatar, body_specs = avatar_studio.lock_reference(
+                temp_dir, avatar["id"], "body", body, dev_mode=True
+            )
+            self.assertTrue(avatar["body_locked"])
+            self.assertEqual(avatar["current_step"], "console")
+            self.assertTrue(os.path.exists(avatar["body_image"]))
+            self.assertIn("body_build", avatar_studio.summarize_specs(body_specs))
+
+            restored = avatar_studio.selected_or_first(temp_dir)
+            self.assertEqual(restored["id"], avatar["id"])
+
+    def test_avatar_prompt_uses_locked_specs_and_caps_extra_references(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            avatar = avatar_studio.create_avatar(temp_dir, "Reference Slots")
+            avatar, _ = avatar_studio.lock_reference(
+                temp_dir, avatar["id"], "face", avatar_studio.make_dev_reference("face"), dev_mode=True
+            )
+            avatar, _ = avatar_studio.lock_reference(
+                temp_dir, avatar["id"], "body", avatar_studio.make_dev_reference("body"), dev_mode=True
+            )
+            extras = [
+                avatar_studio.make_dev_reference("body", "extra 1"),
+                avatar_studio.make_dev_reference("body", "extra 2"),
+                avatar_studio.make_dev_reference("body", "extra 3"),
+            ]
+
+            references = avatar_studio.reference_images(temp_dir, avatar, extras)
+            self.assertEqual(len(references), 4)
+
+            prompt = avatar_studio.build_generation_prompt(
+                avatar, "standing in a studio campaign", "Outfit Focus"
+            )
+            self.assertIn("Use extra references for outfit", prompt)
+            self.assertIn("standing in a studio campaign", prompt)
+
+    def test_avatar_non_dev_uses_vision_analyzer(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            avatar = avatar_studio.create_avatar(temp_dir, "Vision Path")
+            fake_vision = types.ModuleType("avatar_vision")
+            calls = []
+
+            def fake_analyze(kind, image, questions):
+                calls.append((kind, image.size, len(questions)))
+                return {
+                    "kind": kind,
+                    "analyzer": "fake-smolvlm",
+                    "image_size": list(image.size),
+                    "answers": [
+                        {
+                            "key": questions[0][0],
+                            "question": questions[0][1],
+                            "answer": "yes",
+                            "confidence": 0.9,
+                            "strictness": questions[0][2],
+                        }
+                    ],
+                }
+
+            fake_vision.analyze_reference_image = fake_analyze
+            with mock.patch.dict(sys.modules, {"avatar_vision": fake_vision}):
+                avatar, specs = avatar_studio.lock_reference(
+                    temp_dir,
+                    avatar["id"],
+                    "face",
+                    avatar_studio.make_dev_reference("face"),
+                    dev_mode=False,
+                )
+
+            self.assertEqual(specs["analyzer"], "fake-smolvlm")
+            self.assertEqual(calls[0][0], "face")
+            self.assertTrue(avatar["face_locked"])
+
+    def test_avatar_strict_analyzer_errors_are_not_silently_mocked(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            avatar = avatar_studio.create_avatar(temp_dir, "Strict Vision")
+            fake_vision = types.ModuleType("avatar_vision")
+            fake_vision.analyze_reference_image = mock.Mock(side_effect=RuntimeError("boom"))
+
+            with mock.patch.dict(sys.modules, {"avatar_vision": fake_vision}):
+                with self.assertRaises(RuntimeError):
+                    avatar_studio.lock_reference(
+                        temp_dir,
+                        avatar["id"],
+                        "face",
+                        avatar_studio.make_dev_reference("face"),
+                        dev_mode=False,
+                    )
+
+    def test_mock_engine_supports_reference_generation(self):
+        engine = model_manager.MockEngine(model_manager.FLUX_MODEL_NAME)
+        image = engine.generate_with_references([], "prompt", "", 320, 240, 1, 1.0, 1.0, 4)
+        self.assertEqual(image.size, (320, 240))
+
+    def test_avatar_gallery_manifest_persists_validation_and_count(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            avatar = avatar_studio.create_avatar(temp_dir, "Gallery State")
+            image = avatar_studio.make_dev_reference("body", "gallery result")
+            item_id = "gallery-test"
+            image_path = avatar_studio.save_gallery_image(
+                temp_dir, avatar["id"], item_id, image, attempt=1
+            )
+            avatar_studio.record_gallery_item(
+                temp_dir,
+                avatar["id"],
+                {
+                    "id": item_id,
+                    "status": "generating",
+                    "prompt": "studio portrait",
+                    "generated_path": image_path,
+                },
+            )
+            avatar_studio.update_gallery_item(
+                temp_dir,
+                avatar["id"],
+                item_id,
+                status="passed",
+                attempt=1,
+                validation={"pass": True, "score": 94},
+            )
+
+            items = avatar_studio.load_gallery_items(temp_dir, avatar["id"])
+            restored = avatar_studio.load_avatar(temp_dir, avatar["id"])
+            self.assertEqual(items[0]["status"], "passed")
+            self.assertEqual(items[0]["validation"]["score"], 94)
+            self.assertEqual(restored["gallery_count"], 1)
+
+    def test_dev_gallery_validation_never_loads_vision_model(self):
+        image = avatar_studio.make_dev_reference("body")
+        validation = avatar_studio.validate_generated_image(
+            image,
+            {"face_specs": None, "body_specs": None},
+            "test prompt",
+            dev_mode=True,
+        )
+        self.assertTrue(validation["pass"])
+        self.assertEqual(validation["validator"], "mock-smolvlm-dev")
+
+    def test_tavily_candidate_parser_deduplicates_urls(self):
+        payload = {
+            "images": [{"url": "https://example.com/a.jpg", "description": "top"}],
+            "results": [
+                {
+                    "url": "https://example.com/page",
+                    "title": "Page",
+                    "images": [
+                        "https://example.com/a.jpg",
+                        {"url": "https://example.com/b.jpg", "description": "second"},
+                    ],
+                }
+            ],
+        }
+        candidates = avatar_gallery._candidate_images(payload)
+        self.assertEqual([item["image_url"] for item in candidates], [
+            "https://example.com/a.jpg",
+            "https://example.com/b.jpg",
+        ])
+        self.assertEqual(candidates[1]["source_url"], "https://example.com/page")
+
+    def test_tavily_search_uses_form_configured_constraints(self):
+        captured = {}
+
+        def fake_post(url, headers, json, timeout):
+            captured.update({"url": url, "headers": headers, "json": json, "timeout": timeout})
+            return types.SimpleNamespace(ok=True, json=lambda: {"results": [], "images": []})
+
+        env = {
+            "TAVILY_API_KEY": "tvly-test",
+            "FFS_AVATAR_REFERENCE_DOMAINS": "instagram.com, vogue.com",
+            "FFS_AVATAR_REFERENCE_TIME_RANGE": "month",
+            "FFS_AVATAR_SAFE_SEARCH": "0",
+        }
+        with mock.patch.dict(os.environ, env, clear=False), \
+             mock.patch.object(avatar_gallery.requests, "post", side_effect=fake_post):
+            avatar_gallery._tavily_search("fashion reference", max_results=99)
+
+        self.assertEqual(captured["url"], "https://api.tavily.com/search")
+        self.assertEqual(captured["json"]["max_results"], 20)
+        self.assertEqual(captured["json"]["auto_parameters"], False)
+        self.assertEqual(captured["json"]["time_range"], "month")
+        self.assertEqual(captured["json"]["include_domains"], ["instagram.com", "vogue.com"])
+        self.assertEqual(captured["json"]["safe_search"], False)
+
+    def test_gemini_request_sends_api_key_header(self):
+        captured = {}
+
+        def fake_post(url, params, headers, json, timeout):
+            captured.update({"url": url, "params": params, "headers": headers, "json": json})
+            return types.SimpleNamespace(
+                ok=True,
+                json=lambda: {
+                    "candidates": [
+                        {"content": {"parts": [{"text": '{"ok": true}'}]}}
+                    ]
+                },
+            )
+
+        schema = {"type": "object", "properties": {"ok": {"type": "boolean"}}, "required": ["ok"]}
+        with mock.patch.dict(os.environ, {"GEMINI_API_KEY": "gemini-test"}, clear=False), \
+             mock.patch.object(avatar_gallery, "_gemini_model", return_value="gemini-test-model"), \
+             mock.patch.object(avatar_gallery.requests, "post", side_effect=fake_post):
+            result = avatar_gallery.gemini_json("return json", schema)
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(captured["params"]["key"], "gemini-test")
+        self.assertEqual(captured["headers"]["x-goog-api-key"], "gemini-test")
+
+    def test_gallery_search_retries_variations_until_quantity_is_met(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            round_one = [{"image_url": "https://example.com/one.jpg"}]
+            round_two = [
+                {"image_url": "https://example.com/two.jpg"},
+                {"image_url": "https://example.com/three.jpg"},
+            ]
+
+            def fake_download(candidate, output_dir):
+                return {
+                    **candidate,
+                    "path": str(Path(output_dir) / "reference.jpg"),
+                    "validation_bytes": b"jpeg-bytes",
+                }
+
+            approved = [
+                {**item, "path": str(Path(temp_dir) / f"{index}.jpg"), "validation_bytes": b"jpeg"}
+                for index, item in enumerate(round_two)
+            ]
+            with mock.patch.object(avatar_gallery, "configuration_status", return_value={"ready": True}), \
+                    mock.patch.object(avatar_gallery, "_search_query", side_effect=["query one", "query two"]), \
+                    mock.patch.object(avatar_gallery, "_tavily_search", side_effect=[{}, {}]) as search, \
+                    mock.patch.object(avatar_gallery, "_candidate_images", side_effect=[round_one, round_two]), \
+                    mock.patch.object(avatar_gallery, "_download_candidate", side_effect=fake_download), \
+                    mock.patch.object(avatar_gallery, "_validate_references", side_effect=[[], approved]):
+                selected, report = avatar_gallery.discover_references("theme", 2, temp_dir)
+
+            self.assertEqual(search.call_count, 2)
+            self.assertEqual(len(selected), 2)
+            self.assertEqual(report["selected"], 2)
+            saved_report = json.loads(next(Path(temp_dir).glob("search_*.json")).read_text(encoding="utf-8"))
+            self.assertNotIn("validation_bytes", saved_report["references"][0])
+            self.assertIn("settings", saved_report)
+
+    def test_colab_notebook_keeps_tokens_blank_and_exposes_avatar_controls(self):
+        notebook = json.loads(Path("FreeFakeStudio.ipynb").read_text(encoding="utf-8"))
+        source = "\n".join("".join(cell.get("source", [])) for cell in notebook["cells"])
+
+        self.assertIn('NGROK_AUTH_TOKEN = ""', source)
+        self.assertIn('HUGGINGFACE_TOKEN = ""', source)
+        self.assertIn('GEMINI_API_KEY = ""', source)
+        self.assertIn('TAVILY_API_KEY = ""', source)
+        self.assertIn("AVATAR_SEARCH_ROUNDS", source)
+        self.assertIn("AVATAR_VISION_MAX_EDGE", source)
+        self.assertNotIn("tvly-", source)
+        self.assertNotIn("hf_", source)
 
 
 class _Loader:

@@ -35,6 +35,8 @@ import gradio as gr
 
 # ── Save directory ─────────────────────────────────────────
 import workspace as ws
+import avatar_gallery
+import avatar_studio
 SAVE_DIR = ws.get_save_dir()
 CHAT_HISTORY_PATH = os.path.join(SAVE_DIR, "_sessions", "current_chat.json")
 
@@ -577,6 +579,7 @@ def _attachment_status_html(count, canvas_index=0):
     if count <= 0:
         return ""
     noun = "image" if count == 1 else "images"
+    canvas_data = -1 if canvas_index is None else int(canvas_index)
     if canvas_index is None:
         references = f"{count} references (no canvas) / FLUX reference-only"
     elif count == 1:
@@ -584,7 +587,7 @@ def _attachment_status_html(count, canvas_index=0):
     else:
         references = f"Image {canvas_index + 1} canvas / {count - 1} additional references"
     return (
-        '<div class="ffs-attachment-copy">'
+        f'<div class="ffs-attachment-copy" data-canvas-index="{canvas_data}" data-image-count="{count}">'
         f'<strong>{count} {noun} attached</strong>'
         f'<span>{references} / FLUX edit</span>'
         '<small>Refer to them as image 1, image 2, and so on in your prompt.</small>'
@@ -608,6 +611,8 @@ def _apply_attachment_action(images, index, action, canvas_index=0):
     if not images:
         return [], None
     index = max(0, min(int(index or 0), len(images) - 1))
+    if canvas_index is not None:
+        canvas_index = max(0, min(int(canvas_index), len(images) - 1))
     if action == "canvas":
         # Toggle: click canvas on current canvas → un-canvas; on another → make it canvas
         if index == canvas_index:
@@ -634,6 +639,8 @@ def _apply_attachment_action(images, index, action, canvas_index=0):
             elif index < canvas_index:
                 canvas_index -= 1
         images.pop(index)
+    if not images:
+        canvas_index = None
     return images, canvas_index
 
 
@@ -1076,6 +1083,8 @@ CSS += """
     --ffs-success: #147d72;
     --ffs-danger: #c93c35;
     --ffs-max-width: 1040px;
+    --ffs-header-h: 84px;
+    --ffs-page-top: 116px;
     --ffs-shadow: 0 1px 2px rgba(19, 24, 31, 0.06);
     --ffs-shadow-lg: 0 18px 50px rgba(25, 30, 38, 0.14), 0 2px 8px rgba(25, 30, 38, 0.08);
 }
@@ -1138,6 +1147,7 @@ body { background: var(--ffs-bg) !important; }
     backdrop-filter: blur(18px) saturate(140%);
     box-shadow: 0 1px 0 rgba(255,255,255,0.35);
     flex-wrap: nowrap !important;
+    overflow: visible !important;
 }
 #ffs-brand { flex: 1 1 auto !important; min-width: 230px !important; padding: 0 !important; }
 #ffs-brand .html-container { padding: 0 !important; }
@@ -1167,7 +1177,7 @@ body { background: var(--ffs-bg) !important; }
 #ffs-workspace {
     width: min(var(--ffs-max-width), calc(100% - 32px)) !important;
     margin: 0 auto !important;
-    padding: 104px 0 34px !important;
+    padding: var(--ffs-page-top) 0 34px !important;
     min-height: calc(100vh - 160px);
 }
 #ffs-conversation { padding: 0 !important; }
@@ -1443,14 +1453,21 @@ body { background: var(--ffs-bg) !important; }
 #ffs-generate:hover { filter: brightness(.96); transform: none !important; }
 
 @media (max-width: 720px) {
+    :root { --ffs-header-h: 118px; --ffs-page-top: 140px; }
     .gradio-container { padding-bottom: 170px !important; }
-    #ffs-app-header { min-height: 64px; padding: 8px 12px !important; gap: 8px !important; }
+    #ffs-app-header {
+        min-height: var(--ffs-header-h);
+        padding: 8px 12px !important;
+        gap: 8px !important;
+        align-content: center !important;
+        flex-wrap: wrap !important;
+    }
     #ffs-brand { min-width: 46px !important; flex: 0 0 46px !important; }
     .ffs-wordmark, .ffs-brand-sub { display: none; }
-    #ffs-model-select { min-width: 150px !important; }
+    #ffs-model-select { min-width: 150px !important; flex: 1 1 calc(100% - 166px) !important; }
     #ffs-model-state { display: none !important; }
     #ffs-new-session { min-width: 58px !important; }
-    #ffs-workspace { width: calc(100% - 20px) !important; padding-top: 18px !important; }
+    #ffs-workspace { width: calc(100% - 20px) !important; padding-top: var(--ffs-page-top) !important; }
     .ffs-empty { min-height: 42vh; padding: 40px 12px !important; }
     .ffs-empty-title {
         width: 100%;
@@ -1496,7 +1513,7 @@ body { background: var(--ffs-bg) !important; }
         width: min(var(--ffs-max-width), calc(100% - 322px)) !important;
         margin-left: max(300px, calc((100% - var(--ffs-max-width) + 280px) / 2)) !important;
         margin-right: 22px !important;
-        padding-top: 104px !important;
+        padding-top: var(--ffs-page-top) !important;
     }
     #ffs-settings-panel {
         position: fixed !important;
@@ -1997,7 +2014,7 @@ body { background: var(--ffs-bg) !important; }
 }
 
 @media (max-width: 420px) {
-    #ffs-model-select { min-width: 144px !important; }
+    #ffs-model-select { min-width: 118px !important; flex: 1 1 calc(100% - 150px) !important; }
     #ffs-new-session { min-width: 54px !important; padding-left: 10px !important; padding-right: 10px !important; }
     .ffs-empty-title { font-size: 23px !important; }
     #ffs-starter-prompts button { min-height: 42px !important; }
@@ -2154,7 +2171,7 @@ html[data-ffs-theme="dark"] .gradio-container { background: var(--ffs-bg) !impor
 @media (max-width: 420px) {
     #ffs-app-header { gap: 6px !important; padding-left: 8px !important; padding-right: 8px !important; }
     #ffs-brand { min-width: 42px !important; flex-basis: 42px !important; }
-    #ffs-model-select { min-width: 130px !important; }
+    #ffs-model-select { min-width: 118px !important; flex: 1 1 calc(100% - 150px) !important; }
     #ffs-theme-toggle { width: 36px !important; min-width: 36px !important; }
     #ffs-new-session { min-width: 48px !important; padding-left: 8px !important; padding-right: 8px !important; }
 }
@@ -2553,7 +2570,7 @@ html[data-ffs-settings="open"] #ffs-settings-backdrop {
         bottom: 12px !important;
         width: min(340px, calc(100% - 24px)) !important;
     }
-    #ffs-workspace { padding-top: 84px !important; }
+    #ffs-workspace { padding-top: var(--ffs-page-top) !important; }
     #ffs-settings-backdrop { top: 65px; }
 }
 
@@ -2572,10 +2589,231 @@ html[data-ffs-settings="open"] #ffs-settings-backdrop {
 }
 
 @media (max-width: 420px) {
-    #ffs-model-select { min-width: 120px !important; }
+    :root { --ffs-header-h: 128px; --ffs-page-top: 150px; }
+    #ffs-app-header { gap: 4px !important; }
+    #ffs-workspace-tabs {
+        width: 218px !important;
+        min-width: 0 !important;
+        flex: 0 1 218px !important;
+    }
+    #ffs-model-select { min-width: 118px !important; flex: 1 1 calc(100% - 150px) !important; }
     #ffs-settings-toggle,
     #ffs-theme-toggle { width: 34px !important; min-width: 34px !important; }
     #ffs-new-session { min-width: 44px !important; }
+}
+
+/* Avatar Studio */
+#ffs-workspace-tabs {
+    min-height: 38px !important;
+    border: 1px solid var(--ffs-border) !important;
+    border-radius: 8px !important;
+    padding: 3px !important;
+    background: var(--ffs-panel) !important;
+}
+#ffs-workspace-tabs .wrap {
+    display: grid !important;
+    grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+    gap: 3px !important;
+}
+#ffs-workspace-tabs label {
+    margin: 0 !important;
+    border-radius: 6px !important;
+    min-height: 30px !important;
+    justify-content: center !important;
+    font-size: 12px !important;
+}
+#ffs-avatar-studio {
+    max-width: 1240px !important;
+    width: min(100%, 1240px) !important;
+    margin: 0 auto !important;
+    padding: var(--ffs-page-top) 16px 36px !important;
+    min-height: calc(100vh - var(--ffs-header-h));
+}
+#ffs-avatar-layout { align-items: flex-start !important; gap: 14px !important; }
+#ffs-avatar-sidebar {
+    position: sticky !important;
+    top: calc(var(--ffs-header-h) + 14px) !important;
+    border: 1px solid var(--ffs-border) !important;
+    background: var(--ffs-panel) !important;
+    border-radius: 8px !important;
+    padding: 12px !important;
+    box-shadow: var(--ffs-elevated) !important;
+}
+.ffs-avatar-panel-title strong,
+.ffs-avatar-panel-title span { display: block; }
+.ffs-avatar-panel-title strong { color: var(--ffs-text); font-size: 16px; }
+.ffs-avatar-panel-title span { color: var(--ffs-muted); font-size: 12px; margin-top: 3px; }
+.ffs-avatar-status,
+.ffs-avatar-empty {
+    border: 1px solid var(--ffs-border) !important;
+    background: color-mix(in srgb, var(--ffs-panel) 78%, var(--ffs-bg)) !important;
+    border-radius: 8px !important;
+    padding: 10px !important;
+    margin-top: 8px !important;
+}
+.ffs-avatar-status strong,
+.ffs-avatar-status span,
+.ffs-avatar-status small,
+.ffs-avatar-empty strong,
+.ffs-avatar-empty span { display: block; }
+.ffs-avatar-status strong { color: var(--ffs-text); font-size: 14px; }
+.ffs-avatar-status span { color: var(--ffs-coral); font-size: 12px; margin-top: 4px; }
+.ffs-avatar-status small,
+.ffs-avatar-empty span { color: var(--ffs-muted); font-size: 11px; margin-top: 4px; }
+#ffs-avatar-main { gap: 12px !important; min-width: 0 !important; }
+.ffs-avatar-step {
+    border: 1px solid var(--ffs-border) !important;
+    background: var(--ffs-panel) !important;
+    border-radius: 8px !important;
+    padding: 20px !important;
+    box-shadow: var(--ffs-elevated) !important;
+    min-width: 0 !important;
+}
+.ffs-avatar-step-title {
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+    align-items: baseline;
+    margin-bottom: 10px;
+}
+.ffs-avatar-step-title strong { color: var(--ffs-text); font-size: 18px; }
+.ffs-avatar-step-title span { color: var(--ffs-muted); font-size: 12px; text-align: right; max-width: 470px; }
+.ffs-avatar-reference-row { align-items: stretch !important; gap: 14px !important; }
+.ffs-avatar-reference-row > * { min-width: 0 !important; }
+.ffs-avatar-reference-row textarea { min-height: 118px !important; }
+.ffs-avatar-action-row { gap: 8px !important; }
+.ffs-avatar-action-row button { min-height: 42px !important; }
+.ffs-avatar-control-row,
+.ffs-avatar-extra-row,
+.ffs-avatar-gallery-controls { gap: 10px !important; align-items: end !important; }
+#ffs-avatar-sidebar fieldset { margin-top: 8px !important; }
+#ffs-avatar-sidebar fieldset .wrap { gap: 3px !important; }
+#ffs-avatar-sidebar fieldset label {
+    border-radius: 6px !important;
+    min-height: 34px !important;
+    justify-content: center !important;
+}
+.ffs-avatar-specs {
+    display: grid;
+    gap: 7px;
+    margin-top: 10px;
+}
+.ffs-avatar-specs > strong {
+    color: var(--ffs-text);
+    font-size: 13px;
+}
+.ffs-avatar-spec-row {
+    display: grid;
+    grid-template-columns: minmax(120px, 1fr) minmax(120px, 1fr) 92px;
+    gap: 8px;
+    align-items: center;
+    border-bottom: 1px solid var(--ffs-border);
+    padding: 7px 0;
+}
+.ffs-avatar-spec-row span { color: var(--ffs-muted); font-size: 11px; }
+.ffs-avatar-spec-row strong { color: var(--ffs-text); font-size: 12px; font-weight: 650; }
+.ffs-avatar-spec-row em { color: var(--ffs-muted); font-size: 10px; font-style: normal; text-align: right; }
+.ffs-avatar-chat-log { display: grid; gap: 10px; margin-top: 12px; }
+.ffs-avatar-chat-turn {
+    border: 1px solid var(--ffs-border);
+    border-radius: 8px;
+    padding: 10px;
+    background: color-mix(in srgb, var(--ffs-panel) 80%, var(--ffs-bg));
+}
+.ffs-avatar-chat-turn strong,
+.ffs-avatar-chat-turn span { display: block; }
+.ffs-avatar-chat-turn strong { color: var(--ffs-coral); font-size: 12px; margin-bottom: 5px; }
+.ffs-avatar-chat-turn span { color: var(--ffs-text); font-size: 13px; line-height: 1.45; }
+.ffs-avatar-chat-turn.user {
+    width: min(88%, 720px);
+    margin-left: auto;
+    background: color-mix(in srgb, var(--ffs-coral) 9%, var(--ffs-panel));
+    border-color: color-mix(in srgb, var(--ffs-coral) 34%, var(--ffs-border));
+}
+.ffs-avatar-chat-turn.assistant { width: min(94%, 820px); }
+.ffs-avatar-chat-turn .ffs-chat-image { margin-top: 9px; }
+.ffs-avatar-chat-empty,
+.ffs-avatar-gallery-empty {
+    color: var(--ffs-muted);
+    border: 1px dashed var(--ffs-border);
+    border-radius: 8px;
+    padding: 18px;
+    text-align: center;
+}
+.ffs-avatar-gallery-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(128px, 1fr));
+    gap: 8px;
+    margin-top: 12px;
+}
+.ffs-avatar-gallery-tile {
+    display: block;
+    aspect-ratio: 1 / 1;
+    border-radius: 8px;
+    overflow: hidden;
+    border: 1px solid var(--ffs-border);
+    background: var(--ffs-bg);
+}
+.ffs-avatar-gallery-tile img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    display: block;
+}
+#ffs-avatar-gallery {
+    border: 0 !important;
+    background: transparent !important;
+    margin-top: 12px !important;
+}
+#ffs-avatar-gallery .grid-wrap { gap: 8px !important; }
+#ffs-avatar-gallery .gallery-item {
+    aspect-ratio: 3 / 4 !important;
+    border-radius: 8px !important;
+    border: 1px solid var(--ffs-border) !important;
+    overflow: hidden !important;
+    background: var(--ffs-bg) !important;
+}
+#ffs-avatar-gallery .gallery-item img { width: 100% !important; height: 100% !important; object-fit: cover !important; }
+.ffs-avatar-gallery-selection {
+    border: 1px solid var(--ffs-border);
+    border-radius: 8px;
+    background: color-mix(in srgb, var(--ffs-panel) 82%, var(--ffs-bg));
+    padding: 12px;
+    margin: 10px 0;
+}
+.ffs-avatar-gallery-selection strong,
+.ffs-avatar-gallery-selection span,
+.ffs-avatar-gallery-selection p,
+.ffs-avatar-gallery-selection small { display: block; }
+.ffs-avatar-gallery-selection strong { color: var(--ffs-text); font-size: 13px; }
+.ffs-avatar-gallery-selection span { color: var(--ffs-coral); font-size: 11px; margin-top: 3px; }
+.ffs-avatar-gallery-selection p { color: var(--ffs-text); font-size: 12px; line-height: 1.45; margin: 8px 0; }
+.ffs-avatar-gallery-selection small { color: var(--ffs-muted); font-size: 11px; }
+@media (max-width: 820px) {
+    #ffs-avatar-layout { flex-direction: column !important; }
+    #ffs-avatar-sidebar { position: static !important; width: 100% !important; }
+    #ffs-avatar-studio { padding-left: 10px !important; padding-right: 10px !important; }
+    .ffs-avatar-step { padding: 14px !important; }
+    .ffs-avatar-reference-row,
+    .ffs-avatar-control-row,
+    .ffs-avatar-extra-row,
+    .ffs-avatar-gallery-controls { flex-direction: column !important; align-items: stretch !important; }
+    .ffs-avatar-reference-row > *,
+    .ffs-avatar-control-row > *,
+    .ffs-avatar-extra-row > *,
+    .ffs-avatar-gallery-controls > * { width: 100% !important; min-width: 0 !important; }
+    .ffs-avatar-step-title { display: block; }
+    .ffs-avatar-step-title span { display: block; text-align: left; margin-top: 3px; }
+    .ffs-avatar-spec-row { grid-template-columns: 1fr; gap: 3px; }
+    .ffs-avatar-spec-row em { text-align: left; }
+    #ffs-avatar-gallery .grid-wrap { grid-template-columns: repeat(2, minmax(0, 1fr)) !important; }
+    .ffs-avatar-chat-turn.user,
+    .ffs-avatar-chat-turn.assistant { width: 100%; }
+}
+@media (max-width: 440px) {
+    .ffs-avatar-action-row { flex-direction: column !important; }
+    .ffs-avatar-action-row > * { width: 100% !important; }
+    #ffs-avatar-gallery .grid-wrap { grid-template-columns: 1fr !important; }
 }
 """
 
@@ -2814,25 +3052,24 @@ function makeAttachmentAction(label, title, index, action, disabled) {
 
 function prepareAttachmentCards() {
     var items = Array.from(document.querySelectorAll('#ffs-attachment-preview .gallery-item'));
-    /* Detect which image is canvas from the status text */
-    var statusEl = document.querySelector('#ffs-attachment-copy .ffs-attachment-copy span');
-    var statusText = statusEl ? statusEl.textContent : '';
+    /* Read the backend canvas state rendered into the attachment summary. */
+    var statusEl = document.querySelector('#ffs-attachment-copy .ffs-attachment-copy');
     var canvasIndex = -1; /* -1 = no canvas */
-    var match = statusText.match(/Image ([0-9]+) canvas/);
-    if (match) canvasIndex = parseInt(match[1], 10) - 1;
+    if (statusEl && statusEl.dataset.canvasIndex !== undefined) {
+        canvasIndex = parseInt(statusEl.dataset.canvasIndex, 10);
+        if (Number.isNaN(canvasIndex)) canvasIndex = -1;
+    }
     items.forEach(function(item, index) {
-        if (item.dataset.ffsAttachmentReady) return;
-        item.dataset.ffsAttachmentReady = 'true';
         var image = item.querySelector('img');
         if (!image) return;
-        image.setAttribute('title', 'Open image ' + (index + 1) + ' full screen');
-        image.addEventListener('click', function(event) {
-            event.preventDefault();
-            event.stopPropagation();
-            openLightbox(image.currentSrc || image.src, image.alt);
-        });
-
         var isCanvas = index === canvasIndex;
+        var renderKey = [index, items.length, canvasIndex].join(':');
+        if (item.dataset.ffsAttachmentKey === renderKey) return;
+        item.dataset.ffsAttachmentKey = renderKey;
+        item.querySelectorAll('.ffs-attachment-role, .ffs-attachment-actions').forEach(function(node) {
+            node.remove();
+        });
+        image.setAttribute('title', 'Open image ' + (index + 1) + ' full screen');
         var role = document.createElement('span');
         role.className = 'ffs-attachment-role';
         role.textContent = isCanvas ? 'Image ' + (index + 1) + ' / Canvas' : 'Image ' + (index + 1) + ' / Reference';
@@ -2842,6 +3079,9 @@ function prepareAttachmentCards() {
         actions.className = 'ffs-attachment-actions';
         actions.appendChild(makeAttachmentAction('[]', 'Open full-screen preview', index, 'preview'));
         actions.appendChild(makeAttachmentAction(isCanvas ? 'C✓' : 'C', isCanvas ? 'Remove canvas (toggle)' : 'Make this image the canvas', index, 'canvas'));
+        actions.lastElementChild.textContent = isCanvas ? 'C*' : 'C';
+        actions.lastElementChild.title = isCanvas ? 'Remove canvas and use all images as references' : 'Make this image the canvas';
+        actions.lastElementChild.setAttribute('aria-label', actions.lastElementChild.title);
         actions.appendChild(makeAttachmentAction('<', 'Move image left', index, 'left', index === 0));
         actions.appendChild(makeAttachmentAction('>', 'Move image right', index, 'right', index === items.length - 1));
         if (isCanvas) actions.appendChild(makeAttachmentAction('M', 'Open canvas mask settings', index, 'mask'));
@@ -2851,14 +3091,14 @@ function prepareAttachmentCards() {
 }
 
 function prepareImagePreviews() {
-    document.querySelectorAll('.ffs-chat-image img, .ffs-request-attachment img').forEach(function(image) {
+    document.querySelectorAll('.ffs-chat-image img, .ffs-request-attachment img, .ffs-avatar-gallery-tile img').forEach(function(image) {
         image.setAttribute('title', 'Open full-screen preview');
     });
     if (document.documentElement.dataset.ffsPreviewDelegated) return;
     document.documentElement.dataset.ffsPreviewDelegated = 'true';
     document.addEventListener('click', function(event) {
         var image = event.target.closest(
-            '#ffs-attachment-preview .gallery-item img, .ffs-chat-image img, .ffs-request-attachment img'
+            '#ffs-attachment-preview .gallery-item img, .ffs-chat-image img, .ffs-request-attachment img, .ffs-avatar-gallery-tile img'
         );
         if (!image) return;
         event.preventDefault();
@@ -2962,7 +3202,171 @@ def _ui_trace(message):
         print(f"[ui] {message}", flush=True)
 
 
+def _avatar_first_id():
+    selected = avatar_studio.selected_or_first(SAVE_DIR)
+    return selected["id"] if selected else None
+
+
+def _avatar_choices_update(value=None):
+    choices = avatar_studio.avatar_choices(SAVE_DIR)
+    selected = value or (choices[0][1] if choices else None)
+    return gr.update(choices=choices, value=selected)
+
+
+def _avatar_image_value(avatar, key):
+    path = avatar.get(key) if avatar else None
+    return path if path and os.path.exists(path) else None
+
+
+def _avatar_chat_html(avatar):
+    if not avatar:
+        return '<div class="ffs-avatar-chat-empty">Create or select an avatar first.</div>'
+    turns = []
+    for item in avatar.get("chat_history", [])[-40:]:
+        role = html.escape(item.get("role", "assistant"))
+        content = html.escape(item.get("content", ""))
+        image_path = item.get("image_path")
+        image_html = ""
+        if image_path and os.path.exists(image_path):
+            src = quote(os.path.abspath(image_path).replace("\\", "/"))
+            image_html = f'<a class="ffs-chat-image" href="{src}" target="_blank"><img src="{src}" alt="Avatar result"></a>'
+        turns.append(
+            f'<div class="ffs-avatar-chat-turn {role}">'
+            f'<strong>{"You" if role == "user" else "Avatar Studio"}</strong>'
+            f'<span>{content}</span>{image_html}</div>'
+        )
+    return '<div class="ffs-avatar-chat-log">' + "".join(turns) + '</div>' if turns else (
+        '<div class="ffs-avatar-chat-empty">The avatar console is ready after face and body are locked.</div>'
+    )
+
+
+def _avatar_gallery_html(avatar):
+    if not avatar:
+        return '<div class="ffs-avatar-gallery-empty">No avatar selected.</div>'
+    gallery_dir = avatar_studio.avatar_path(SAVE_DIR, avatar["id"]) / "gallery" / "images"
+    paths = sorted(gallery_dir.glob("*.png"))
+    if not paths:
+        return '<div class="ffs-avatar-gallery-empty">Gallery images generated here will be saved separately from chat.</div>'
+    tiles = []
+    for path in paths[-80:]:
+        src = quote(os.path.abspath(path).replace("\\", "/"))
+        tiles.append(f'<a class="ffs-avatar-gallery-tile" href="{src}" target="_blank"><img src="{src}" alt="Gallery image"></a>')
+    return '<div class="ffs-avatar-gallery-grid">' + "".join(tiles) + '</div>'
+
+
+def _avatar_available_steps(avatar):
+    steps = ["Face"]
+    if avatar and avatar.get("face_locked"):
+        steps.append("Body")
+    if avatar and avatar.get("face_locked") and avatar.get("body_locked"):
+        steps.extend(["Console", "Gallery"])
+    return steps
+
+
+def _avatar_step_state(avatar, requested=None):
+    available = _avatar_available_steps(avatar)
+    current = str(requested or (avatar or {}).get("current_step", "face")).title()
+    if current not in available:
+        current = available[-1]
+    return current, gr.update(value=current, choices=available, interactive=True)
+
+
+def _avatar_step_visibility(step):
+    current = (step or "Face").lower()
+    return tuple(gr.update(visible=current == name) for name in ("face", "body", "console", "gallery"))
+
+
+def _avatar_gallery_value(avatar):
+    if not avatar:
+        return []
+    values = []
+    recorded = set()
+    managed_prefixes = set()
+    for item in avatar_studio.load_gallery_items(SAVE_DIR, avatar["id"]):
+        if item.get("id"):
+            managed_prefixes.add(f'gallery_{item["id"]}_a')
+        path = item.get("generated_path")
+        if path and os.path.exists(path):
+            recorded.add(os.path.abspath(path))
+            status = item.get("status", "saved").replace("_", " ").title()
+            score = (item.get("validation") or {}).get("score")
+            caption = f"{status} / Score {score}" if score is not None else status
+            values.append((path, caption))
+    gallery_dir = avatar_studio.avatar_path(SAVE_DIR, avatar["id"]) / "gallery" / "images"
+    for path in sorted(gallery_dir.glob("*.png")):
+        managed_attempt = any(path.name.startswith(prefix) for prefix in managed_prefixes)
+        if os.path.abspath(path) not in recorded and not managed_attempt:
+            values.append((str(path), "Saved gallery image"))
+    return values[-100:]
+
+
+def _avatar_gallery_details(avatar, index=None):
+    if not avatar:
+        return '<div class="ffs-avatar-gallery-empty">Create or select an avatar first.</div>'
+    item = avatar_studio.gallery_item_by_index(SAVE_DIR, avatar["id"], index)
+    if not item:
+        status = avatar_gallery.configuration_status() if not DEV_MODE else {"ready": True, "message": "Local preview uses mock search and validation."}
+        return (
+            '<div class="ffs-avatar-gallery-empty">'
+            f'<strong>{html.escape(status["message"])}</strong>'
+            '<span>Select a generated image to inspect or regenerate it.</span>'
+            '</div>'
+        )
+    validation = item.get("validation") or {}
+    reasons = validation.get("reasons") or [validation.get("reason")] if validation else []
+    reasons = [str(reason) for reason in reasons if reason]
+    return (
+        '<div class="ffs-avatar-gallery-selection">'
+        f'<strong>{html.escape(item.get("status", "saved").replace("_", " ").title())}</strong>'
+        f'<span>Attempt {int(item.get("attempt", 1))} / Score {html.escape(str(validation.get("score", "not checked")))}</span>'
+        f'<p>{html.escape(item.get("prompt", ""))}</p>'
+        f'<small>{html.escape("; ".join(reasons) or "No validation problems recorded.")}</small>'
+        '</div>'
+    )
+
+
+def _avatar_ui_payload(avatar_id=None, step=None):
+    avatar = avatar_studio.selected_or_first(SAVE_DIR, avatar_id)
+    if not avatar:
+        empty_specs = avatar_studio.specs_html(None, "Face Specs")
+        empty_body = avatar_studio.specs_html(None, "Body Specs")
+        current_step, step_update = _avatar_step_state(None, "Face")
+        return (
+            None,
+            _avatar_choices_update(None),
+            avatar_studio.status_html(None),
+            step_update,
+            None,
+            None,
+            empty_specs,
+            empty_body,
+            _avatar_chat_html(None),
+            [],
+            _avatar_gallery_details(None),
+            *_avatar_step_visibility(current_step),
+        )
+    current_step, step_update = _avatar_step_state(avatar, step)
+    return (
+        avatar["id"],
+        _avatar_choices_update(avatar["id"]),
+        avatar_studio.status_html(avatar),
+        step_update,
+        _avatar_image_value(avatar, "face_image"),
+        _avatar_image_value(avatar, "body_image"),
+        avatar_studio.specs_html(avatar.get("face_specs"), "Face Specs"),
+        avatar_studio.specs_html(avatar.get("body_specs"), "Body Specs"),
+        _avatar_chat_html(avatar),
+        _avatar_gallery_value(avatar),
+        _avatar_gallery_details(avatar),
+        *_avatar_step_visibility(current_step),
+    )
+
+
 _initial_chat_history = _load_chat_history()
+_initial_avatar = avatar_studio.selected_or_first(SAVE_DIR)
+_initial_avatar_step = str((_initial_avatar or {}).get("current_step", "face")).title()
+if _initial_avatar_step not in _avatar_available_steps(_initial_avatar):
+    _initial_avatar_step = _avatar_available_steps(_initial_avatar)[-1]
 _ui_trace("building interface")
 with gr.Blocks(title="FreeFakeStudio") as demo:
 
@@ -2973,6 +3377,7 @@ with gr.Blocks(title="FreeFakeStudio") as demo:
     last_gen_settings = gr.State(None)    # for Regenerate
     selected_result_idx = gr.State(0)
     latest_result_paths = gr.State([])
+    selected_avatar_id = gr.State(_avatar_first_id())
 
     # ═══════════════════════════════════════════════════════
     # HEADER
@@ -3001,6 +3406,15 @@ with gr.Blocks(title="FreeFakeStudio") as demo:
             scale=0,
             min_width=92,
             elem_id="ffs-model-state",
+        )
+        workspace_tab = gr.Radio(
+            choices=["Create", "Avatar Studio"],
+            value="Create",
+            show_label=False,
+            container=False,
+            scale=0,
+            min_width=230,
+            elem_id="ffs-workspace-tabs",
         )
         settings_btn = gr.Button(
             "⚙",
@@ -3130,7 +3544,7 @@ with gr.Blocks(title="FreeFakeStudio") as demo:
                         variant="secondary",
                     )
 
-    with gr.Column(elem_classes="ffs-chat-area", elem_id="ffs-workspace"):
+    with gr.Column(elem_classes="ffs-chat-area", elem_id="ffs-workspace") as create_workspace:
 
         gr.HTML(
             '<div class="ffs-canvas-heading"><span>Create</span><i></i></div>',
@@ -3202,7 +3616,7 @@ with gr.Blocks(title="FreeFakeStudio") as demo:
     # ═══════════════════════════════════════════════════════
     # COMPOSER (bottom bar)
     # ═══════════════════════════════════════════════════════
-    with gr.Row(elem_id="ffs-composer-dock"):
+    with gr.Row(elem_id="ffs-composer-dock") as composer_dock:
         with gr.Column(elem_id="ffs-composer-inner"):
             with gr.Row(visible=False, elem_id="ffs-attachment-row") as attachment_row:
                 with gr.Column(elem_id="ffs-attachment-manager"):
@@ -3280,11 +3694,629 @@ with gr.Blocks(title="FreeFakeStudio") as demo:
                     elem_id="ffs-generate",
                 )
 
+    with gr.Column(visible=False, elem_classes="ffs-avatar-studio", elem_id="ffs-avatar-studio") as avatar_workspace:
+        with gr.Row(elem_id="ffs-avatar-layout"):
+            with gr.Column(scale=0, min_width=260, elem_id="ffs-avatar-sidebar"):
+                gr.HTML(
+                    '<div class="ffs-avatar-panel-title"><strong>Avatar Studio</strong>'
+                    '<span>Persistent face/body identity workspace</span></div>'
+                )
+                avatar_name_input = gr.Textbox(label="New Avatar", placeholder="Avatar name", lines=1)
+                create_avatar_btn = gr.Button("Create Avatar", variant="primary")
+                avatar_selector = gr.Dropdown(
+                    choices=avatar_studio.avatar_choices(SAVE_DIR),
+                    value=_avatar_first_id(),
+                    label="Saved Avatars",
+                )
+                refresh_avatar_btn = gr.Button("Refresh", size="sm", variant="secondary")
+                avatar_status = gr.HTML(avatar_studio.status_html(avatar_studio.selected_or_first(SAVE_DIR)))
+                avatar_step = gr.Radio(
+                    choices=_avatar_available_steps(_initial_avatar),
+                    value=_initial_avatar_step,
+                    label="Step",
+                    interactive=True,
+                )
+
+            with gr.Column(scale=5, elem_id="ffs-avatar-main"):
+                with gr.Group(
+                    visible=_initial_avatar_step == "Face",
+                    elem_classes="ffs-avatar-step",
+                ) as avatar_face_step:
+                    gr.HTML(
+                        '<div class="ffs-avatar-step-title"><strong>1. Face Reference</strong>'
+                        '<span>Generate or upload a clean headshot, then lock it.</span></div>'
+                    )
+                    with gr.Row(elem_classes="ffs-avatar-reference-row"):
+                        face_details = gr.Textbox(
+                            label="Face details",
+                            placeholder="Example: dark hair, soft makeup, oval face, clear headshot",
+                            lines=3,
+                            scale=2,
+                        )
+                        face_image = gr.Image(label="Face candidate", type="pil", sources=["upload"], height=300, scale=1)
+                    with gr.Row(elem_classes="ffs-avatar-action-row"):
+                        generate_face_btn = gr.Button("Generate Face Draft", variant="secondary")
+                        lock_face_btn = gr.Button("Confirm Face", variant="primary")
+                    face_specs = gr.HTML(avatar_studio.specs_html(None, "Face Specs"))
+
+                with gr.Group(
+                    visible=_initial_avatar_step == "Body",
+                    elem_classes="ffs-avatar-step",
+                ) as avatar_body_step:
+                    gr.HTML(
+                        '<div class="ffs-avatar-step-title"><strong>2. Body Reference</strong>'
+                        '<span>Generate or upload a clean full-body reference, then lock it.</span></div>'
+                    )
+                    with gr.Row(elem_classes="ffs-avatar-reference-row"):
+                        body_details = gr.Textbox(
+                            label="Body details",
+                            placeholder="Example: full body, neutral fitted outfit, clear proportions",
+                            lines=3,
+                            scale=2,
+                        )
+                        body_image = gr.Image(label="Body candidate", type="pil", sources=["upload"], height=340, scale=1)
+                    with gr.Row(elem_classes="ffs-avatar-action-row"):
+                        generate_body_btn = gr.Button("Generate Body Draft", variant="secondary")
+                        lock_body_btn = gr.Button("Confirm Body", variant="primary")
+                    body_specs = gr.HTML(avatar_studio.specs_html(None, "Body Specs"))
+
+                with gr.Group(
+                    visible=_initial_avatar_step == "Console",
+                    elem_classes="ffs-avatar-step",
+                ) as avatar_console_step:
+                    gr.HTML(
+                        '<div class="ffs-avatar-step-title"><strong>3. Avatar Console</strong>'
+                        '<span>Face and body stay attached; add up to two extra references.</span></div>'
+                    )
+                    with gr.Row(elem_classes="ffs-avatar-control-row"):
+                        avatar_mode = gr.Dropdown(
+                            choices=["Identity Strict", "Outfit Focus", "Pose Focus", "Scene Focus", "Group Image"],
+                            value="Identity Strict",
+                            label="Mode",
+                        )
+                        avatar_aspect = gr.Dropdown(ASPECTS, value="1024x1024 (1:1)", label="Aspect")
+                        avatar_steps = gr.Slider(1, 8, value=4, step=1, label="Steps")
+                    with gr.Row(elem_classes="ffs-avatar-extra-row"):
+                        avatar_extra_1 = gr.Image(label="Extra reference 1", type="pil", sources=["upload"], height=180)
+                        avatar_extra_2 = gr.Image(label="Extra reference 2", type="pil", sources=["upload"], height=180)
+                    avatar_prompt = gr.Textbox(label="Prompt", placeholder="Describe the scene, outfit, pose, or action.", lines=3)
+                    avatar_generate_btn = gr.Button("Generate Avatar Image", variant="primary")
+                    avatar_console_status = gr.HTML("")
+                    avatar_chat_display = gr.HTML(_avatar_chat_html(avatar_studio.selected_or_first(SAVE_DIR)))
+
+                with gr.Group(
+                    visible=_initial_avatar_step == "Gallery",
+                    elem_classes="ffs-avatar-step",
+                ) as avatar_gallery_step:
+                    gr.HTML(
+                        '<div class="ffs-avatar-step-title"><strong>4. Auto Gallery</strong>'
+                        '<span>Find references, generate, validate, repair, and save a persistent gallery.</span></div>'
+                    )
+                    with gr.Row(elem_classes="ffs-avatar-gallery-controls"):
+                        gallery_quantity = gr.Slider(1, 20, value=6, step=1, label="Quantity")
+                        gallery_aspect = gr.Dropdown(ASPECTS, value="864x1152 (3:4)", label="Aspect")
+                        gallery_theme = gr.Textbox(label="Gallery theme", placeholder="Example: editorial street fashion, clean daylight")
+                    gallery_plan_btn = gr.Button("Generate Gallery", variant="primary")
+                    gallery_status = gr.HTML("")
+                    avatar_gallery_display = gr.Gallery(
+                        value=_avatar_gallery_value(_initial_avatar),
+                        show_label=False,
+                        columns=4,
+                        height="auto",
+                        object_fit="cover",
+                        preview=False,
+                        allow_preview=True,
+                        buttons=["download", "fullscreen"],
+                        elem_id="ffs-avatar-gallery",
+                    )
+                    selected_avatar_gallery_index = gr.State(None)
+                    avatar_gallery_details = gr.HTML(_avatar_gallery_details(_initial_avatar))
+                    regenerate_gallery_btn = gr.Button(
+                        "Mark Selected Failed and Regenerate",
+                        variant="secondary",
+                    )
     # ═══════════════════════════════════════════════════════
     # EVENT HANDLERS
     # ═══════════════════════════════════════════════════════
 
     # ── Attachment handling ─────────────────────────────────
+    def switch_workspace_tab(tab_name):
+        avatar_open = tab_name == "Avatar Studio"
+        return (
+            gr.update(visible=not avatar_open),
+            gr.update(visible=not avatar_open),
+            gr.update(visible=not avatar_open),
+            gr.update(visible=avatar_open),
+        )
+
+    workspace_tab.change(
+        switch_workspace_tab,
+        inputs=[workspace_tab],
+        outputs=[settings_panel, create_workspace, composer_dock, avatar_workspace],
+        show_progress="hidden",
+    )
+
+    def change_avatar_step(avatar_id, step):
+        avatar = avatar_studio.selected_or_first(SAVE_DIR, avatar_id)
+        current, step_update = _avatar_step_state(avatar, step)
+        if avatar and current.lower() != avatar.get("current_step"):
+            avatar["current_step"] = current.lower()
+            avatar = avatar_studio.save_avatar(SAVE_DIR, avatar)
+        return step_update, *_avatar_step_visibility(current), avatar_studio.status_html(avatar)
+
+    avatar_step.change(
+        change_avatar_step,
+        inputs=[selected_avatar_id, avatar_step],
+        outputs=[
+            avatar_step,
+            avatar_face_step,
+            avatar_body_step,
+            avatar_console_step,
+            avatar_gallery_step,
+            avatar_status,
+        ],
+        show_progress="hidden",
+    )
+
+    def create_avatar_handler(name):
+        avatar = avatar_studio.create_avatar(SAVE_DIR, name)
+        payload = _avatar_ui_payload(avatar["id"], "Face")
+        return (*payload, gr.update(value=""))
+
+    create_avatar_btn.click(
+        create_avatar_handler,
+        inputs=[avatar_name_input],
+        outputs=[
+            selected_avatar_id, avatar_selector, avatar_status, avatar_step,
+            face_image, body_image, face_specs, body_specs,
+            avatar_chat_display, avatar_gallery_display, avatar_gallery_details,
+            avatar_face_step, avatar_body_step, avatar_console_step, avatar_gallery_step,
+            avatar_name_input,
+        ],
+        show_progress="minimal",
+    )
+
+    def refresh_avatar_handler(avatar_id):
+        return _avatar_ui_payload(avatar_id)
+
+    refresh_avatar_btn.click(
+        refresh_avatar_handler,
+        inputs=[selected_avatar_id],
+        outputs=[
+            selected_avatar_id, avatar_selector, avatar_status, avatar_step,
+            face_image, body_image, face_specs, body_specs,
+            avatar_chat_display, avatar_gallery_display, avatar_gallery_details,
+            avatar_face_step, avatar_body_step, avatar_console_step, avatar_gallery_step,
+        ],
+        show_progress="hidden",
+    )
+
+    avatar_selector.change(
+        refresh_avatar_handler,
+        inputs=[avatar_selector],
+        outputs=[
+            selected_avatar_id, avatar_selector, avatar_status, avatar_step,
+            face_image, body_image, face_specs, body_specs,
+            avatar_chat_display, avatar_gallery_display, avatar_gallery_details,
+            avatar_face_step, avatar_body_step, avatar_console_step, avatar_gallery_step,
+        ],
+        show_progress="hidden",
+    )
+
+    def make_avatar_reference(kind, details):
+        if DEV_MODE:
+            return avatar_studio.make_dev_reference(kind, details)
+        prompt = (
+            "Clean adult face identity reference headshot, face only, no hands, simple background. "
+            if kind == "face"
+            else "Clean adult full-body identity reference, head to toe visible, simple background. "
+        ) + (details or "")
+        aspect = "1024x1024 (1:1)" if kind == "face" else "864x1152 (3:4)"
+        final_image = None
+        for _, images, _, _ in do_generate(
+            model_manager.FLUX_MODEL_NAME, prompt, DEFAULT_NEG, aspect,
+            0, 1.0, 1.0, 1, 4,
+        ):
+            if images:
+                final_image = images[0]
+        return final_image or avatar_studio.make_dev_reference(kind, details)
+
+    generate_face_btn.click(
+        lambda details: make_avatar_reference("face", details),
+        inputs=[face_details],
+        outputs=[face_image],
+        show_progress="minimal",
+    )
+    generate_body_btn.click(
+        lambda details: make_avatar_reference("body", details),
+        inputs=[body_details],
+        outputs=[body_image],
+        show_progress="minimal",
+    )
+
+    def lock_avatar_reference(avatar_id, kind, image):
+        if not avatar_id:
+            raise gr.Error("Create or select an avatar first.")
+        avatar_studio.lock_reference(SAVE_DIR, avatar_id, kind, image, dev_mode=DEV_MODE)
+        step = "Body" if kind == "face" else "Console"
+        return _avatar_ui_payload(avatar_id, step)
+
+    lock_face_btn.click(
+        lambda avatar_id, image: lock_avatar_reference(avatar_id, "face", image),
+        inputs=[selected_avatar_id, face_image],
+        outputs=[
+            selected_avatar_id, avatar_selector, avatar_status, avatar_step,
+            face_image, body_image, face_specs, body_specs,
+            avatar_chat_display, avatar_gallery_display, avatar_gallery_details,
+            avatar_face_step, avatar_body_step, avatar_console_step, avatar_gallery_step,
+        ],
+        show_progress="minimal",
+    )
+    lock_body_btn.click(
+        lambda avatar_id, image: lock_avatar_reference(avatar_id, "body", image),
+        inputs=[selected_avatar_id, body_image],
+        outputs=[
+            selected_avatar_id, avatar_selector, avatar_status, avatar_step,
+            face_image, body_image, face_specs, body_specs,
+            avatar_chat_display, avatar_gallery_display, avatar_gallery_details,
+            avatar_face_step, avatar_body_step, avatar_console_step, avatar_gallery_step,
+        ],
+        show_progress="minimal",
+    )
+
+    def avatar_console_generate(avatar_id, mode, prompt, aspect, steps, extra_1, extra_2):
+        if not avatar_id:
+            raise gr.Error("Create or select an avatar first.")
+        avatar = avatar_studio.load_avatar(SAVE_DIR, avatar_id)
+        if not avatar.get("face_locked") or not avatar.get("body_locked"):
+            raise gr.Error("Lock the face and body references before using the console.")
+        if not (prompt or "").strip():
+            raise gr.Error("Describe what you want the avatar to do or wear.")
+
+        avatar = avatar_studio.append_avatar_chat(SAVE_DIR, avatar_id, "user", prompt)
+        references = avatar_studio.reference_images(SAVE_DIR, avatar, [extra_1, extra_2])
+        built_prompt = avatar_studio.build_generation_prompt(avatar, prompt, mode)
+        yield (
+            _status_html("active", "Preparing avatar references"),
+            _avatar_chat_html(avatar),
+            _avatar_gallery_value(avatar),
+            avatar_id,
+            gr.update(),
+        )
+
+        final_image = None
+        final_seed = "0"
+        for status_html, images, _, seed_str in do_generate(
+            model_manager.FLUX_MODEL_NAME, built_prompt, DEFAULT_NEG, aspect,
+            0, 1.0, 1.0, 1, int(steps),
+            input_image=references, canvas_index=None,
+        ):
+            final_seed = seed_str
+            if images:
+                final_image = images[0]
+            current_avatar = avatar_studio.load_avatar(SAVE_DIR, avatar_id)
+            yield (
+                status_html,
+                _avatar_chat_html(current_avatar),
+                _avatar_gallery_value(current_avatar),
+                avatar_id,
+                gr.update(),
+            )
+
+        if final_image is not None:
+            image_path = avatar_studio.save_chat_image(SAVE_DIR, avatar_id, final_image)
+            avatar = avatar_studio.append_avatar_chat(
+                SAVE_DIR,
+                avatar_id,
+                "assistant",
+                f"Generated with {mode}. Seed {final_seed}.",
+                image_path=image_path,
+                metadata={"mode": mode, "prompt": built_prompt, "seed": final_seed},
+            )
+            yield (
+                _status_html("done", "Avatar image saved"),
+                _avatar_chat_html(avatar),
+                _avatar_gallery_value(avatar),
+                avatar_id,
+                gr.update(value=""),
+            )
+
+    avatar_generate_btn.click(
+        avatar_console_generate,
+        inputs=[selected_avatar_id, avatar_mode, avatar_prompt, avatar_aspect, avatar_steps, avatar_extra_1, avatar_extra_2],
+        outputs=[avatar_console_status, avatar_chat_display, avatar_gallery_display, selected_avatar_id, avatar_prompt],
+        show_progress="hidden",
+    )
+
+    def _dev_gallery_references(avatar_id, quantity, theme):
+        references = []
+        for index in range(int(quantity)):
+            image = avatar_studio.make_dev_reference("body", f"{theme or 'gallery'} #{index + 1}")
+            path = avatar_studio.save_gallery_reference(SAVE_DIR, avatar_id, image, f"dev-{index + 1}")
+            references.append(
+                {
+                    "path": path,
+                    "image_url": "dev://mock-reference",
+                    "source_url": "dev://local-preview",
+                    "title": f"Mock gallery reference {index + 1}",
+                    "description": theme or "editorial avatar gallery",
+                    "validation": {"accept": True, "score": 100, "reason": "local mock"},
+                }
+            )
+        return references, {"query": "local mock", "selected": len(references), "approved": len(references)}
+
+    def _gallery_prompt(avatar, theme, reference):
+        if DEV_MODE:
+            return avatar_studio.build_generation_prompt(
+                avatar,
+                f"{theme or 'editorial gallery'}; use the extra reference for outfit, pose, and composition",
+                "Outfit Focus",
+            )
+        return avatar_gallery.create_generation_prompt(
+            avatar.get("name", "Avatar"),
+            theme,
+            reference,
+            avatar_studio.summarize_specs(avatar.get("face_specs"), limit=10),
+            avatar_studio.summarize_specs(avatar.get("body_specs"), limit=10),
+        )
+
+    def _run_gallery_generation(avatar, reference, prompt, aspect, item_id, attempt):
+        reference_path = reference.get("path")
+        if not reference_path or not os.path.exists(reference_path):
+            raise RuntimeError("The selected gallery reference image is missing.")
+        with Image.open(reference_path) as reference_image:
+            references = avatar_studio.reference_images(SAVE_DIR, avatar, [reference_image.convert("RGB")])
+        final_image = None
+        final_seed = "0"
+        for _, images, _, seed_str in do_generate(
+            model_manager.FLUX_MODEL_NAME,
+            prompt,
+            DEFAULT_NEG,
+            aspect,
+            0,
+            1.0,
+            1.0,
+            1,
+            4,
+            input_image=references,
+            canvas_index=None,
+        ):
+            final_seed = seed_str
+            if images:
+                final_image = images[0]
+        if final_image is None:
+            raise RuntimeError("FLUX did not return a gallery image. Check the newest runtime debug log.")
+        path = avatar_studio.save_gallery_image(SAVE_DIR, avatar["id"], item_id, final_image, attempt)
+        validation = avatar_studio.validate_generated_image(final_image, avatar, prompt, dev_mode=DEV_MODE)
+        return path, validation, final_seed
+
+    def create_avatar_gallery(avatar_id, quantity, aspect, theme):
+        if not avatar_id:
+            raise gr.Error("Create or select an avatar first.")
+        avatar = avatar_studio.load_avatar(SAVE_DIR, avatar_id)
+        if not avatar.get("face_locked") or not avatar.get("body_locked"):
+            raise gr.Error("Lock the face and body before generating the gallery.")
+        count = int(quantity or 1)
+        avatar["current_step"] = "gallery"
+        avatar_studio.save_avatar(SAVE_DIR, avatar)
+        yield (
+            _status_html("active", "Finding and checking gallery references"),
+            _avatar_gallery_value(avatar),
+            avatar_studio.status_html(avatar),
+            _avatar_gallery_details(avatar),
+            None,
+        )
+
+        reference_dir = avatar_studio.avatar_path(SAVE_DIR, avatar_id) / "gallery" / "references"
+        if DEV_MODE:
+            references, report = _dev_gallery_references(avatar_id, count, theme)
+        else:
+            references, report = avatar_gallery.discover_references(theme, count, reference_dir)
+        if not references:
+            raise gr.Error("No usable gallery references were approved. Try a broader theme.")
+
+        max_repairs = max(0, min(3, int(os.environ.get("FFS_AVATAR_GALLERY_RETRIES", "2"))))
+        completed = 0
+        for index, reference in enumerate(references, 1):
+            item_id = uuid.uuid4().hex[:12]
+            prompt = _gallery_prompt(avatar, theme, reference)
+            item = avatar_studio.record_gallery_item(
+                SAVE_DIR,
+                avatar_id,
+                {
+                    "id": item_id,
+                    "status": "generating",
+                    "theme": theme or "",
+                    "aspect": aspect,
+                    "reference_path": reference.get("path"),
+                    "reference_url": reference.get("image_url"),
+                    "reference_source": reference.get("source_url"),
+                    "reference_validation": reference.get("validation"),
+                    "prompt": prompt,
+                    "attempt": 0,
+                },
+            )
+            yield (
+                _status_html("active", f"Generating gallery image {index} of {len(references)}"),
+                _avatar_gallery_value(avatar_studio.load_avatar(SAVE_DIR, avatar_id)),
+                avatar_studio.status_html(avatar_studio.load_avatar(SAVE_DIR, avatar_id)),
+                _avatar_gallery_details(avatar),
+                None,
+            )
+
+            last_validation = {"pass": False, "score": 0, "reasons": ["generation did not complete"]}
+            generated_path = None
+            final_seed = "0"
+            try:
+                for repair_index in range(max_repairs + 1):
+                    attempt = repair_index + 1
+                    generated_path, last_validation, final_seed = _run_gallery_generation(
+                        avatar, reference, prompt, aspect, item_id, attempt
+                    )
+                    if last_validation.get("pass"):
+                        break
+                    if repair_index < max_repairs:
+                        prompt = (
+                            prompt + " Fix identity and anatomy while preserving the requested scene."
+                            if DEV_MODE
+                            else avatar_gallery.repair_generation_prompt(prompt, last_validation)
+                        )
+            except Exception as exc:
+                debug_path = _write_runtime_error("avatar gallery generation", exc)
+                avatar_studio.update_gallery_item(
+                    SAVE_DIR,
+                    avatar_id,
+                    item["id"],
+                    status="failed",
+                    prompt=prompt,
+                    attempt=int(item.get("attempt", 0)) + 1,
+                    generated_path=generated_path,
+                    validation={
+                        "pass": False,
+                        "score": 0,
+                        "reasons": [str(exc)],
+                        "debug_path": debug_path,
+                    },
+                    seed=final_seed,
+                )
+                raise gr.Error(
+                    f"Gallery image {index} failed. Check results/_debug for the full traceback."
+                ) from exc
+
+            status = "passed" if last_validation.get("pass") else "needs_review"
+            avatar_studio.update_gallery_item(
+                SAVE_DIR,
+                avatar_id,
+                item["id"],
+                status=status,
+                prompt=prompt,
+                attempt=attempt,
+                generated_path=generated_path,
+                validation=last_validation,
+                seed=final_seed,
+            )
+            completed += 1
+            current_avatar = avatar_studio.load_avatar(SAVE_DIR, avatar_id)
+            yield (
+                _status_html("active", f"Validated {completed} of {len(references)} gallery images"),
+                _avatar_gallery_value(current_avatar),
+                avatar_studio.status_html(current_avatar),
+                _avatar_gallery_details(current_avatar, completed - 1),
+                completed - 1,
+            )
+
+        current_avatar = avatar_studio.load_avatar(SAVE_DIR, avatar_id)
+        shortfall = count - len(references)
+        detail = f"Saved {completed} validated gallery image(s)."
+        if shortfall > 0:
+            detail += f" The search approved {shortfall} fewer reference(s) than requested; run again to add more."
+        yield (
+            _status_html("done", detail),
+            _avatar_gallery_value(current_avatar),
+            avatar_studio.status_html(current_avatar),
+            _avatar_gallery_details(current_avatar, completed - 1),
+            completed - 1,
+        )
+
+    gallery_plan_btn.click(
+        create_avatar_gallery,
+        inputs=[selected_avatar_id, gallery_quantity, gallery_aspect, gallery_theme],
+        outputs=[
+            gallery_status,
+            avatar_gallery_display,
+            avatar_status,
+            avatar_gallery_details,
+            selected_avatar_gallery_index,
+        ],
+        show_progress="hidden",
+    )
+
+    def select_avatar_gallery_item(avatar_id, evt: gr.SelectData):
+        avatar = avatar_studio.selected_or_first(SAVE_DIR, avatar_id)
+        index = int(evt.index) if evt.index is not None else None
+        return index, _avatar_gallery_details(avatar, index)
+
+    avatar_gallery_display.select(
+        select_avatar_gallery_item,
+        inputs=[selected_avatar_id],
+        outputs=[selected_avatar_gallery_index, avatar_gallery_details],
+        show_progress="hidden",
+    )
+
+    def regenerate_avatar_gallery_item(avatar_id, selected_index):
+        if not avatar_id or selected_index is None:
+            raise gr.Error("Select a gallery image first.")
+        avatar = avatar_studio.load_avatar(SAVE_DIR, avatar_id)
+        item = avatar_studio.gallery_item_by_index(SAVE_DIR, avatar_id, selected_index)
+        if not item:
+            raise gr.Error("That gallery item is no longer available. Refresh Avatar Studio.")
+        reference = {
+            "path": item.get("reference_path"),
+            "image_url": item.get("reference_url"),
+            "source_url": item.get("reference_source"),
+        }
+        previous_validation = item.get("validation") or {
+            "reasons": ["The user marked this generation as failed."],
+            "repair_instruction": "Correct the visible identity, anatomy, outfit, or composition problem.",
+        }
+        prompt = item.get("prompt", "")
+        prompt = (
+            prompt + " Correct the failed identity, anatomy, outfit, or composition details."
+            if DEV_MODE
+            else avatar_gallery.repair_generation_prompt(prompt, previous_validation)
+        )
+        attempt = int(item.get("attempt", 1)) + 1
+        avatar_studio.update_gallery_item(
+            SAVE_DIR, avatar_id, item["id"], status="regenerating", prompt=prompt, attempt=attempt
+        )
+        yield (
+            _status_html("active", "Regenerating the selected gallery image"),
+            _avatar_gallery_value(avatar),
+            _avatar_gallery_details(avatar, selected_index),
+        )
+        try:
+            path, validation, seed = _run_gallery_generation(
+                avatar, reference, prompt, item.get("aspect") or "864x1152 (3:4)", item["id"], attempt
+            )
+        except Exception as exc:
+            debug_path = _write_runtime_error("avatar gallery regeneration", exc)
+            avatar_studio.update_gallery_item(
+                SAVE_DIR,
+                avatar_id,
+                item["id"],
+                status="failed",
+                validation={
+                    "pass": False,
+                    "score": 0,
+                    "reasons": [str(exc)],
+                    "debug_path": debug_path,
+                },
+            )
+            raise gr.Error("Regeneration failed. Check results/_debug for the full traceback.") from exc
+        status = "passed" if validation.get("pass") else "needs_review"
+        avatar_studio.update_gallery_item(
+            SAVE_DIR,
+            avatar_id,
+            item["id"],
+            status=status,
+            generated_path=path,
+            validation=validation,
+            seed=seed,
+        )
+        avatar = avatar_studio.load_avatar(SAVE_DIR, avatar_id)
+        yield (
+            _status_html("done", "Selected gallery image regenerated and checked."),
+            _avatar_gallery_value(avatar),
+            _avatar_gallery_details(avatar, selected_index),
+        )
+
+    regenerate_gallery_btn.click(
+        regenerate_avatar_gallery_item,
+        inputs=[selected_avatar_id, selected_avatar_gallery_index],
+        outputs=[gallery_status, avatar_gallery_display, avatar_gallery_details],
+        show_progress="hidden",
+    )
+
     starter_examples = {
         starter_portrait: "A cinematic portrait with soft window light, natural skin texture, 85mm photography",
         starter_product: "A premium product campaign photograph, precise studio lighting, bold art direction",
@@ -3322,7 +4354,7 @@ with gr.Blocks(title="FreeFakeStudio") as demo:
             ),
             gr.update(visible=False) if reset_mask else gr.update(),
             gr.update(visible=False) if reset_mask else gr.update(),
-            canvas_idx if canvas_idx is not None else 0,  # canvas_index state
+            canvas_idx,  # canvas_index state; None means all images are references
         )
 
     def handle_upload(file, model_name, existing_images):
@@ -3635,6 +4667,7 @@ with gr.Blocks(title="FreeFakeStudio") as demo:
             mask_mode, mask_editor,
             aspect_ratio, gen_seed, gen_steps, gen_cfg, gen_denoise,
             num_images, negative_prompt, chat_history,
+            canvas_index,
         ],
         outputs=[
             status_display, result_gallery, latest_result_paths, result_files,
