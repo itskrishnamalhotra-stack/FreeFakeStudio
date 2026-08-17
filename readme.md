@@ -61,6 +61,7 @@ The parser accepts `KEY=VALUE` or `KEY: VALUE` lines and ignores comments. These
 keys are supported:
 
 ```text
+PUBLIC_ROUTE
 NGROK_AUTH_TOKEN
 HUGGINGFACE_TOKEN
 GEMINI_API_KEY
@@ -105,18 +106,30 @@ When FLUX is selected, open Settings, choose `Official` or `Custom`, and press
 `Apply encoder`. Applying a change unloads FLUX; the next generation reloads it
 with the selected encoder. Z-Image and ERNIE are unaffected.
 
-For the most reliable route, paste your ngrok auth token into the notebook's
-`NGROK_AUTH_TOKEN` field. Leave token fields blank to reuse saved private Drive
-settings or Colab Secrets. The launcher will print:
+### Public Route
+
+Use `PUBLIC_ROUTE=Colab proxy` for the most stable Colab run. This route keeps
+Gradio's queue stream on Colab's signed-in HTTPS proxy and avoids the ngrok
+`/gradio_api/queue/data` reconnect loop.
+
+Use `PUBLIC_ROUTE=ngrok` only when you need an external public link, and set
+`NGROK_AUTH_TOKEN` in the notebook or keys file. The launcher will print:
 
 ```text
 OPEN FREEFAKESTUDIO (ngrok):
 https://...
 ```
 
-Leave `NGROK_AUTH_TOKEN` blank to use Colab's signed-in HTTPS proxy. The launcher
-passes the selected external URL to Gradio as an absolute proxy root so Gradio
-does not generate blocked internal HTTP URLs for its API, theme, or assets.
+`PUBLIC_ROUTE=Auto` preserves the older behavior: use ngrok when a token is
+available, otherwise use Colab proxy. If the browser says the server connection
+was lost and keeps reconnecting on an ngrok URL, switch back to
+`PUBLIC_ROUTE=Colab proxy`, run the cell once with `UPDATE_APP=True`, then run
+again normally.
+
+Leave token fields blank to reuse saved private Drive settings or Colab Secrets.
+The launcher passes the selected external URL to Gradio as an absolute proxy root
+so Gradio does not generate blocked internal HTTP URLs for its API, theme, or
+assets.
 
 ## Persistent Workspace Layout
 
@@ -162,7 +175,7 @@ First run:
 - downloads only missing or repair-requested model files;
 - validates and persists an optional FLUX custom encoder without loading two encoders;
 - stops a previous PID-verified FreeFakeStudio child before a cell rerun;
-- creates one HTTPS route (ngrok when configured, otherwise Colab proxy);
+- creates one HTTPS route from `PUBLIC_ROUTE` (`Colab proxy` by default, `ngrok` when selected);
 - launches Gradio with that route set as its absolute proxy root.
 
 Later runs:

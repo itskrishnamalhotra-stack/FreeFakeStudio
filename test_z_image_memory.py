@@ -460,9 +460,12 @@ class AvatarStudioTests(unittest.TestCase):
         self.assertIn('HUGGINGFACE_TOKEN = ""', source)
         self.assertIn('GEMINI_API_KEY = ""', source)
         self.assertIn('TAVILY_API_KEY = ""', source)
+        self.assertIn('PUBLIC_ROUTE = "Colab proxy"', source)
+        self.assertIn('os.environ["FFS_PUBLIC_ROUTE"]', source)
         self.assertIn("UPLOAD_KEYS_TXT", source)
         self.assertIn("KEYS_TXT_PATH", source)
         self.assertIn("parse_keys_txt", source)
+        self.assertIn('"FFS_PUBLIC_ROUTE": "PUBLIC_ROUTE"', source)
         self.assertIn("freefakestudio_keys.txt", source)
         self.assertIn('"stash", "push", "-u"', source)
         self.assertIn("Colab auto-stash before update", source)
@@ -477,6 +480,7 @@ class AvatarStudioTests(unittest.TestCase):
 
         for key in (
             "NGROK_AUTH_TOKEN",
+            "PUBLIC_ROUTE",
             "HUGGINGFACE_TOKEN",
             "GEMINI_API_KEY",
             "TAVILY_API_KEY",
@@ -793,6 +797,15 @@ class LauncherRepositoryTests(unittest.TestCase):
             self.assertFalse(target.is_symlink())
             self.assertEqual(target.read_bytes(), b"real-model-data")
             self.assertFalse(cached.is_symlink())
+
+    def test_public_route_defaults_to_colab_proxy(self):
+        normalize = self._launch_function("normalize_public_route", {})
+
+        self.assertEqual(normalize("Colab proxy"), "colab_proxy")
+        self.assertEqual(normalize("ngrok"), "ngrok")
+        self.assertEqual(normalize("Auto"), "auto")
+        with self.assertRaisesRegex(RuntimeError, "Unsupported PUBLIC_ROUTE"):
+            normalize("random tunnel")
 
 
 class FluxEncoderTests(unittest.TestCase):

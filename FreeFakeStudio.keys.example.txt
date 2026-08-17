@@ -6,7 +6,11 @@
 # Lines beginning with #, //, or ; are ignored.
 # KEY=VALUE and KEY: VALUE both work.
 
-# Public HTTPS route. Recommended for Colab because it avoids Gradio proxy issues.
+# Public HTTPS route.
+# Colab proxy is recommended because ngrok can break Gradio queue streaming.
+PUBLIC_ROUTE=Colab proxy
+
+# Optional ngrok token. Used only when PUBLIC_ROUTE=ngrok or PUBLIC_ROUTE=Auto.
 NGROK_AUTH_TOKEN=
 
 # Hugging Face token. Needed only for gated models/repos you have accepted.

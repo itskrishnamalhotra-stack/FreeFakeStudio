@@ -102,6 +102,24 @@ def private_value(settings, env_name, key, default=""):
     return str(settings.get(key, default) or default).strip()
 
 
+def normalize_public_route(value):
+    raw = str(value or "colab_proxy").strip().lower().replace("-", "_").replace(" ", "_")
+    aliases = {
+        "colab": "colab_proxy",
+        "proxy": "colab_proxy",
+        "colabproxy": "colab_proxy",
+        "colab_proxy": "colab_proxy",
+        "ngrok": "ngrok",
+        "ngrok_tunnel": "ngrok",
+        "auto": "auto",
+    }
+    if raw not in aliases:
+        raise RuntimeError(
+            f"Unsupported PUBLIC_ROUTE value {value!r}. Use Colab proxy, ngrok, or Auto."
+        )
+    return aliases[raw]
+
+
 def _private_env(name):
     return os.environ.get(name, "").strip()
 
@@ -109,6 +127,7 @@ def _private_env(name):
 def save_private_settings(settings):
     """Atomically persist stable single-user settings outside the Git checkout."""
     values = {
+        "public_route": PUBLIC_ROUTE_MODE,
         "ngrok_auth_token": NGROK_AUTHTOKEN,
         "flux_encoder_mode": FLUX_ENCODER_MODE,
         "flux_custom_encoder_url": FLUX_CUSTOM_ENCODER_URL,
@@ -140,6 +159,9 @@ def save_private_settings(settings):
 
 
 _private_settings = load_private_settings()
+PUBLIC_ROUTE_MODE = normalize_public_route(
+    private_value(_private_settings, "FFS_PUBLIC_ROUTE", "public_route", "colab_proxy")
+)
 NGROK_AUTHTOKEN = private_value(
     _private_settings, "FFS_NGROK_AUTHTOKEN", "ngrok_auth_token"
 )
@@ -169,6 +191,14 @@ for _env_name, _private_key in (
     if _value:
         os.environ[_env_name] = _value
 save_private_settings(_private_settings)
+
+
+def _use_ngrok_route():
+    if PUBLIC_ROUTE_MODE == "ngrok":
+        return True
+    if PUBLIC_ROUTE_MODE == "colab_proxy":
+        return False
+    return bool(NGROK_AUTHTOKEN)
 
 os.environ["HF_HOME"] = str(CACHE / "huggingface")
 os.environ["HUGGINGFACE_HUB_CACHE"] = str(CACHE / "huggingface")
@@ -347,6 +377,8 @@ def write_debug_report(stage, exc=None):
             "PIP_CACHE_DIR": os.environ.get("PIP_CACHE_DIR"),
             "COMFYUI_ROOT": os.environ.get("COMFYUI_ROOT"),
             "FREEFAKESTUDIO_WORKSPACE": os.environ.get("FREEFAKESTUDIO_WORKSPACE"),
+            "FFS_PUBLIC_ROUTE": PUBLIC_ROUTE_MODE,
+            "FFS_PUBLIC_ROUTE_EFFECTIVE": "ngrok" if _use_ngrok_route() else "colab_proxy",
             "FFS_FLUX_ENCODER_MODE": os.environ.get("FFS_FLUX_ENCODER_MODE"),
             "FFS_FLUX_CUSTOM_ENCODER_FILE": os.environ.get("FFS_FLUX_CUSTOM_ENCODER_FILE"),
             "FFS_FLUX_CUSTOM_ENCODER_FORMAT": os.environ.get("FFS_FLUX_CUSTOM_ENCODER_FORMAT"),
@@ -421,7 +453,12 @@ def launch_app_process(timeout_seconds=180):
     public_label = None
     tunnel = None
 
-    if NGROK_AUTHTOKEN:
+    if _use_ngrok_route():
+        if not NGROK_AUTHTOKEN:
+            raise RuntimeError(
+                "PUBLIC_ROUTE is set to ngrok, but NGROK_AUTH_TOKEN is blank. "
+                "Set PUBLIC_ROUTE to Colab proxy or add your ngrok token."
+            )
         try:
             from pyngrok import ngrok
 
@@ -446,8 +483,8 @@ def launch_app_process(timeout_seconds=180):
                 raise RuntimeError(f"Colab returned a non-HTTPS proxy URL: {public_url}")
         except Exception as exc:
             raise RuntimeError(
-                "Could not create the Colab HTTPS proxy URL. Add an ngrok token in "
-                f"NGROK_AUTH_TOKEN and run again. Details: {exc}"
+                "Could not create the Colab HTTPS proxy URL. Set PUBLIC_ROUTE=ngrok "
+                f"and add NGROK_AUTH_TOKEN if you need an ngrok tunnel. Details: {exc}"
             ) from exc
 
     # Gradio otherwise discovers Colab's internal HTTP host and emits mixed-content
@@ -1014,7 +1051,7 @@ try:
         "bitsandbytes": "bitsandbytes",
         "sentencepiece": "sentencepiece",
     }
-    if NGROK_AUTHTOKEN:
+    if _use_ngrok_route():
         required["pyngrok"] = "pyngrok"
     missing = [pkg for module, pkg in required.items() if not package_ok(module)]
     if missing:
