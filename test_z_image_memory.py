@@ -464,6 +464,8 @@ class AvatarStudioTests(unittest.TestCase):
         self.assertIn("KEYS_TXT_PATH", source)
         self.assertIn("parse_keys_txt", source)
         self.assertIn("freefakestudio_keys.txt", source)
+        self.assertIn('"stash", "push", "-u"', source)
+        self.assertIn("Colab auto-stash before update", source)
         self.assertIn("AVATAR_SEARCH_ROUNDS", source)
         self.assertIn("AVATAR_VISION_MAX_EDGE", source)
         self.assertNotIn("tvly-", source)

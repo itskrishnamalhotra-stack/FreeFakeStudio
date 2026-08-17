@@ -173,7 +173,7 @@ Later runs:
 - skip existing downloads;
 - launch the UI.
 
-`UPDATE_APP=True` fast-forwards the Drive app copy and refreshes managed backend repositories. It does not hard reset or delete your modified app folder. The required ComfyUI compatibility tag is enforced automatically even when this option is off.
+`UPDATE_APP=True` fast-forwards the Drive app copy and refreshes managed backend repositories. If the Drive app checkout has local edits, the notebook saves them first with `git stash push -u` and then pulls, so the update is not blocked by files such as `model_manager.py`. It does not hard reset or delete your modified app folder. The required ComfyUI compatibility tag is enforced automatically even when this option is off.
 
 `REPAIR_INSTALL=True` rechecks/redownloads suspicious or missing install files.
 
