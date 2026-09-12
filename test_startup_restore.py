@@ -250,6 +250,35 @@ class StartupRestoreTests(unittest.TestCase):
             self.assertEqual(mode, "linked")
             symlink.assert_called_once_with(str(source.resolve()), str(destination))
 
+    def test_required_model_is_mirrored_when_drive_listing_omits_it(self):
+        with tempfile.TemporaryDirectory() as root:
+            root = Path(root)
+            drive = (root / "drive_models").resolve()
+            local = root / "runtime" / "models"
+            required = drive / "text_encoders" / "required.bin"
+            required.parent.mkdir(parents=True)
+            required.write_bytes(b"required")
+
+            links = []
+
+            def fake_symlink(source, destination):
+                links.append((source, destination))
+                Path(destination).write_bytes(Path(source).read_bytes())
+
+            with mock.patch("startup_restore.os.walk", return_value=[]), \
+                    mock.patch("startup_restore.os.symlink", side_effect=fake_symlink):
+                report = startup_restore.mirror_model_tree(
+                    drive,
+                    local,
+                    copy_to_ssd=False,
+                    required_sources=[required],
+                )
+
+            destination = local / "text_encoders" / "required.bin"
+            self.assertTrue(destination.is_file())
+            self.assertEqual(len(links), 1)
+            self.assertEqual(report[0]["source"], str(required))
+
     def test_readiness_file_is_atomic_and_parseable(self):
         with tempfile.TemporaryDirectory() as root:
             path = Path(root) / "ready.json"

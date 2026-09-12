@@ -431,20 +431,21 @@ def gpu_summary():
     return name, int(memory_mib)
 
 
-def required_model_targets():
+def required_model_targets(comfyui_root=None):
+    root = Path(comfyui_root) if comfyui_root is not None else COMFYUI
     targets = [
-        COMFYUI / "models" / "diffusion_models" / "z_image_turbo-Q3_K_M.gguf",
-        COMFYUI / "models" / "text_encoders" / "qwen_3_4b_fp4_mixed.safetensors",
-        COMFYUI / "models" / "vae" / "ae.safetensors",
-        COMFYUI / "models" / "diffusion_models" / "flux-2-klein-4b.safetensors",
-        COMFYUI / "models" / "text_encoders" / "qwen_3_4b_fp4_flux2.safetensors",
-        COMFYUI / "models" / "vae" / "flux2-vae.safetensors",
-        COMFYUI / "models" / "diffusion_models" / "ernie-image-turbo-Q6_K.gguf",
-        COMFYUI / "models" / "text_encoders" / "ministral-3-3b.safetensors",
+        root / "models" / "diffusion_models" / "z_image_turbo-Q3_K_M.gguf",
+        root / "models" / "text_encoders" / "qwen_3_4b_fp4_mixed.safetensors",
+        root / "models" / "vae" / "ae.safetensors",
+        root / "models" / "diffusion_models" / "flux-2-klein-4b.safetensors",
+        root / "models" / "text_encoders" / "qwen_3_4b_fp4_flux2.safetensors",
+        root / "models" / "vae" / "flux2-vae.safetensors",
+        root / "models" / "diffusion_models" / "ernie-image-turbo-Q6_K.gguf",
+        root / "models" / "text_encoders" / "ministral-3-3b.safetensors",
     ]
     manifest = load_flux_encoder_manifest()
     if manifest:
-        targets.append(COMFYUI / "models" / "text_encoders" / manifest["local_name"])
+        targets.append(root / "models" / "text_encoders" / manifest["local_name"])
     return targets
 
 
@@ -988,6 +989,7 @@ def prepare_local_runtime(fingerprint):
             )
         )
     )
+    print("[restore] Restoring prepared application source...", flush=True)
     app_state, app_manifest = startup_restore.ensure_source_bundle(
         "app-source",
         DRIVE_APP,
@@ -1005,6 +1007,8 @@ def prepare_local_runtime(fingerprint):
         },
         exclude_prefixes={"results", "diagnostics"},
     )
+    print(f"[restore] Application source {app_state}.", flush=True)
+    print("[restore] Restoring prepared ComfyUI source...", flush=True)
     comfy_state, comfy_manifest = startup_restore.ensure_source_bundle(
         "comfyui-source",
         DRIVE_COMFYUI,
@@ -1016,12 +1020,18 @@ def prepare_local_runtime(fingerprint):
         exclude_names={".git", "__pycache__", ".pytest_cache"},
         exclude_prefixes={"models", "input", "output", "temp"},
     )
+    print(f"[restore] ComfyUI source {comfy_state}.", flush=True)
+    print("[restore] Mapping model files and staging active FLUX files to SSD...", flush=True)
     model_report = startup_restore.mirror_model_tree(
         DRIVE_COMFYUI / "models",
         LOCAL_RUNTIME / "ComfyUI" / "models",
         staged_sources=_flux_drive_targets(),
         copy_to_ssd=STAGE_FLUX_TO_SSD,
+        required_sources=[
+            path for path in required_model_targets(DRIVE_COMFYUI) if path.is_file()
+        ],
     )
+    print("[restore] Required model mappings verified.", flush=True)
     APP = LOCAL_RUNTIME / "app"
     COMFYUI = LOCAL_RUNTIME / "ComfyUI"
     ensure_symlink(Path("/content/ComfyUI"), COMFYUI)
@@ -1148,6 +1158,18 @@ def verify_z_image_checkpoint():
             "no quantization scale tensors were found."
         )
     return f"Headers OK / diffusion=GGUF Q3_K_M / FP4 encoder={len(text_keys)} tensors"
+
+
+def verify_flux_checkpoint():
+    paths = (
+        COMFYUI / "models" / "diffusion_models" / "flux-2-klein-4b.safetensors",
+        COMFYUI / "models" / "text_encoders" / "qwen_3_4b_fp4_flux2.safetensors",
+        COMFYUI / "models" / "vae" / "flux2-vae.safetensors",
+    )
+    invalid = [str(path) for path in paths if not file_ok(path)]
+    if invalid:
+        raise RuntimeError("FLUX runtime checkpoint is missing or incomplete: " + ", ".join(invalid))
+    return "FLUX headers OK"
 
 
 def ensure_numpy():
@@ -1638,8 +1660,16 @@ try:
         runtime_fingerprint, _ = reconcile_runtime_fingerprint(runtime_fingerprint)
         runtime_probe = verify_comfy_runtime()
     verify_engine_nodes()
-    checkpoint_probe = verify_z_image_checkpoint()
-    done("Local runtime", f"{runtime_probe} / {checkpoint_probe}")
+    checkpoint_probes = [verify_flux_checkpoint()]
+    try:
+        checkpoint_probes.append(verify_z_image_checkpoint())
+    except Exception as exc:
+        print(
+            "[startup warning] Z-Image validation failed; FLUX startup will continue. "
+            f"Z-Image will remain unavailable until repaired: {exc}",
+            flush=True,
+        )
+    done("Local runtime", f"{runtime_probe} / {' / '.join(checkpoint_probes)}")
     os.environ["FFS_RUNTIME_FINGERPRINT_ID"] = runtime_fingerprint["id"]
 
     comfy_report = write_debug_report("comfy_runtime")

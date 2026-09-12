@@ -437,27 +437,60 @@ def stage_file(source, destination, copy_to_ssd=True, reserve_bytes=4 * 1024**3)
     return "copied" if copied else "linked"
 
 
-def mirror_model_tree(drive_models, local_models, staged_sources=(), copy_to_ssd=True):
+def mirror_model_tree(
+    drive_models,
+    local_models,
+    staged_sources=(),
+    copy_to_ssd=True,
+    required_sources=(),
+):
     drive_models = Path(drive_models).resolve()
     local_models = Path(local_models)
     staged = {Path(path).resolve() for path in staged_sources}
     report = []
+    report_by_source = {}
+
+    def mirror(source):
+        source = Path(source)
+        relative = source.relative_to(drive_models)
+        destination = local_models / relative
+        mode = stage_file(source, destination, copy_to_ssd and source.resolve() in staged)
+        item = {
+            "source": str(source),
+            "destination": str(destination),
+            "size": source.stat().st_size,
+            "mode": mode,
+        }
+        previous = report_by_source.get(str(source))
+        if previous is None:
+            report.append(item)
+        else:
+            previous.update(item)
+            item = previous
+        report_by_source[str(source)] = item
+        return item
+
     for root, dir_names, file_names in os.walk(drive_models):
         root_path = Path(root)
         relative_root = root_path.relative_to(drive_models)
         (local_models / relative_root).mkdir(parents=True, exist_ok=True)
         dir_names[:] = [name for name in dir_names if name not in {".git", "__pycache__"}]
         for name in file_names:
-            source = root_path / name
-            destination = local_models / relative_root / name
-            mode = stage_file(source, destination, copy_to_ssd and source.resolve() in staged)
-            report.append(
-                {
-                    "source": str(source),
-                    "destination": str(destination),
-                    "size": source.stat().st_size,
-                    "mode": mode,
-                }
+            mirror(root_path / name)
+
+    # Drive/FUSE directory listings can occasionally omit an entry even when a
+    # direct lookup succeeds. Revisit every required checkpoint explicitly.
+    for source in map(Path, required_sources):
+        if not source.is_file():
+            raise RuntimeError(f"Required persistent model file is unavailable: {source}")
+        relative = source.relative_to(drive_models)
+        destination = local_models / relative
+        expected_size = source.stat().st_size
+        if not destination.is_file() or destination.stat().st_size != expected_size:
+            mirror(source)
+        if not destination.is_file() or destination.stat().st_size != expected_size:
+            raise RuntimeError(
+                f"Required model mapping is incomplete: {source} -> {destination}"
             )
     return report
 
