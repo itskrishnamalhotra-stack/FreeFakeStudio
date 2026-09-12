@@ -4840,6 +4840,24 @@ def _env_flag(name, default=False):
 # ═══════════════════════════════════════════════════════════
 #  STARTUP — optional FLUX preload
 # ═══════════════════════════════════════════════════════════
+_ready_state_path = os.environ.get("FFS_READY_STATE_PATH", "").strip()
+
+
+def _record_startup_ready(**values):
+    if not _ready_state_path:
+        return
+    import startup_restore
+
+    startup_restore.write_readiness(
+        _ready_state_path,
+        fingerprint=os.environ.get("FFS_RUNTIME_FINGERPRINT_ID", "unknown"),
+        **values,
+    )
+
+
+_record_startup_ready(
+    ready=False, phase="starting", model=None, warmup="pending", vision="pending"
+)
 if DEV_MODE:
     print("\n" + "=" * 50)
     print("  FreeFakeStudio — Local Development Mode")
@@ -4849,9 +4867,25 @@ if DEV_MODE:
     # Mark all models as available in dev mode
     for name in model_manager.MODEL_NAMES:
         model_manager.set_model_availability(name, True)
+    _record_startup_ready(
+        ready=True,
+        phase="development",
+        model="mock",
+        warmup="disabled",
+        vision="disabled",
+    )
 else:
     model_manager.check_model_files(os.environ.get("COMFYUI_ROOT", "/content/ComfyUI"))
-    if _env_flag("FFS_PRELOAD_FLUX", False):
+    preload_flux = _env_flag("FFS_PRELOAD_FLUX", False)
+    preload_avatar_vision = _env_flag("FFS_PRELOAD_AVATAR_VISION", True)
+    warmup_enabled = _env_flag("FFS_WARMUP_ENABLED", True)
+    expose_after_warmup = _env_flag("FFS_EXPOSE_AFTER_WARMUP", True)
+    if expose_after_warmup and not preload_flux:
+        raise RuntimeError(
+            "EXPOSE_AFTER_WARMUP requires PRELOAD_FLUX=True. Enable FLUX preload or "
+            "disable the strict ready gate in the Colab startup settings."
+        )
+    if preload_flux:
         print("\n⏳ Preloading FLUX.2-klein 4B before opening FreeFakeStudio...")
         try:
             model_manager.ensure_model(
@@ -4859,9 +4893,68 @@ else:
                 status_callback=lambda message: print(message, flush=True),
             )
             print("✓ FLUX.2-klein 4B preloaded and ready.")
+            warmup_state = "disabled"
+            if warmup_enabled:
+                warmup_size = int(os.environ.get("FFS_WARMUP_SIZE", "256"))
+                print(
+                    f"⏳ Running internal FLUX warmup ({warmup_size}x{warmup_size}, 1 step)...",
+                    flush=True,
+                )
+                engine = model_manager.ensure_model(model_manager.FLUX_MODEL_NAME)
+                warmup_report = engine.warmup(warmup_size)
+                warmup_state = "complete"
+                print(
+                    "✓ FLUX warmup complete; discarded calibration output. "
+                    f"Pipeline={warmup_report['pipeline']}",
+                    flush=True,
+                )
+            vision_state = "disabled"
+            if preload_avatar_vision:
+                import avatar_vision
+
+                if warmup_enabled:
+                    print("⏳ Preloading and warming Avatar Studio SmolVLM...", flush=True)
+                    vision_report = avatar_vision.warmup(128)
+                    vision_state = "complete"
+                    print(
+                        "✓ Avatar Studio SmolVLM warmup complete; "
+                        f"model={vision_report['model']}",
+                        flush=True,
+                    )
+                else:
+                    vision_report = avatar_vision.preload()
+                    vision_state = "loaded"
+                    print(
+                        f"✓ Avatar Studio analyzer loaded; model={vision_report['model']}",
+                        flush=True,
+                    )
+            _record_startup_ready(
+                ready=True,
+                phase="model-ready",
+                model=model_manager.FLUX_MODEL_NAME,
+                warmup=warmup_state,
+                warmup_size=warmup_size if warmup_enabled else None,
+                vision=vision_state,
+            )
         except Exception as exc:
+            _record_startup_ready(
+                ready=False,
+                phase="startup-failed",
+                model=model_manager.FLUX_MODEL_NAME,
+                warmup="failed",
+                vision="failed",
+                error=str(exc),
+            )
             _write_runtime_error("startup preload", exc)
             raise
+    else:
+        _record_startup_ready(
+            ready=True,
+            phase="lazy-model",
+            model=None,
+            warmup="disabled",
+            vision="disabled",
+        )
     status = model_manager.get_model_status()
     print("\n🎭 FreeFakeStudio — Model Status:")
     for name, st in status.items():

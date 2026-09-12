@@ -15,6 +15,17 @@ NGROK_AUTH_TOKEN=
 
 # Startup priority. True loads FLUX before the app link is printed.
 PRELOAD_FLUX=True
+PRELOAD_AVATAR_VISION=True
+
+# Prepared-runtime restore and ready-gate controls.
+FAST_RESTORE=True
+STAGE_FLUX_TO_SSD=True
+WARMUP_ENABLED=True
+WARMUP_SIZE=256
+EXPOSE_AFTER_WARMUP=True
+FORCE_REBUILD_BUNDLES=False
+FORCE_CACHE_REFRESH=False
+STARTUP_VERBOSE=True
 
 # Hugging Face token. Needed only for gated models/repos you have accepted.
 HUGGINGFACE_TOKEN=

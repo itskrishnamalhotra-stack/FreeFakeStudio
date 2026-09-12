@@ -21,6 +21,7 @@ import time
 import traceback
 from pathlib import Path
 from urllib.parse import unquote, urlparse
+from urllib.request import Request, urlopen
 
 from IPython.display import HTML, clear_output, display
 
@@ -45,6 +46,7 @@ REPAIR = os.environ.get("FFS_REPAIR", "") == "1"
 UPDATE_APP = os.environ.get("FFS_UPDATE", "") == "1"
 COMFY_TAG = os.environ.get("FFS_COMFY_TAG", "v0.28.0")
 DEBUG = os.environ.get("FFS_DEBUG", "1").lower() not in ("0", "false", "no", "off")
+SERVER_PORT = int(os.environ.get("FREEFAKESTUDIO_PORT", "7860"))
 
 
 def load_colab_secret(name):
@@ -68,20 +70,37 @@ FLUX_ENCODER_CONFIG = WS / "config" / "flux_encoder.json"
 PRIVATE_SETTINGS_FILE = WS / "config" / "private_settings.json"
 APP_PID_FILE = WS / "config" / "app.pid"
 
-COMFYUI = WS / "ComfyUI"
+DRIVE_COMFYUI = WS / "ComfyUI"
+DRIVE_APP = WS / "app"
+COMFYUI = DRIVE_COMFYUI
 CACHE = WS / "cache"
-APP = WS / "app"
+APP = DRIVE_APP
 RESULTS = WS / "results"
 DIAGNOSTICS = WS / "diagnostics"
+MANIFESTS = WS / "manifests"
+BUNDLES = WS / "bundles"
+LOCAL_RUNTIME = Path(os.environ.get("FFS_LOCAL_RUNTIME", "/content/freefakestudio_runtime")).resolve()
+LOCAL_CACHE = LOCAL_RUNTIME / "cache"
+PYTHON_OVERLAY = LOCAL_RUNTIME / "python_packages"
+READY_STATE_FILE = LOCAL_RUNTIME / "state" / "ready.json"
 
 for directory in [
     CACHE / "huggingface",
     CACHE / "pip",
     RESULTS,
     DIAGNOSTICS,
+    MANIFESTS,
+    BUNDLES / "source",
+    BUNDLES / "environment",
+    BUNDLES / "caches",
+    BUNDLES / "wheelhouse",
     FLUX_ENCODER_CONFIG.parent,
 ]:
     directory.mkdir(parents=True, exist_ok=True)
+
+if str(DRIVE_APP) not in sys.path:
+    sys.path.insert(0, str(DRIVE_APP))
+import startup_restore
 
 
 def load_private_settings():
@@ -142,6 +161,15 @@ def save_private_settings(settings):
     values = {
         "public_route": PUBLIC_ROUTE_MODE,
         "preload_flux": "1" if PRELOAD_FLUX else "0",
+        "preload_avatar_vision": "1" if PRELOAD_AVATAR_VISION else "0",
+        "fast_restore": "1" if FAST_RESTORE else "0",
+        "force_rebuild_bundles": "1" if FORCE_REBUILD_BUNDLES else "0",
+        "force_cache_refresh": "1" if FORCE_CACHE_REFRESH else "0",
+        "stage_flux_to_ssd": "1" if STAGE_FLUX_TO_SSD else "0",
+        "warmup_enabled": "1" if WARMUP_ENABLED else "0",
+        "warmup_size": str(WARMUP_SIZE),
+        "expose_after_warmup": "1" if EXPOSE_AFTER_WARMUP else "0",
+        "startup_verbose": "1" if STARTUP_VERBOSE else "0",
         "ngrok_auth_token": NGROK_AUTHTOKEN,
         "flux_encoder_mode": FLUX_ENCODER_MODE,
         "flux_custom_encoder_url": FLUX_CUSTOM_ENCODER_URL,
@@ -178,6 +206,43 @@ PUBLIC_ROUTE_MODE = normalize_public_route(
 )
 PRELOAD_FLUX = normalize_bool(
     private_value(_private_settings, "FFS_PRELOAD_FLUX", "preload_flux", "1"), True
+)
+PRELOAD_AVATAR_VISION = normalize_bool(
+    private_value(
+        _private_settings,
+        "FFS_PRELOAD_AVATAR_VISION",
+        "preload_avatar_vision",
+        "1",
+    ),
+    True,
+)
+FAST_RESTORE = normalize_bool(
+    private_value(_private_settings, "FFS_FAST_RESTORE", "fast_restore", "1"), True
+)
+FORCE_REBUILD_BUNDLES = normalize_bool(
+    private_value(
+        _private_settings, "FFS_FORCE_REBUILD_BUNDLES", "force_rebuild_bundles", "0"
+    )
+)
+FORCE_CACHE_REFRESH = normalize_bool(
+    private_value(_private_settings, "FFS_FORCE_CACHE_REFRESH", "force_cache_refresh", "0")
+)
+STAGE_FLUX_TO_SSD = normalize_bool(
+    private_value(_private_settings, "FFS_STAGE_FLUX_TO_SSD", "stage_flux_to_ssd", "1"), True
+)
+WARMUP_ENABLED = normalize_bool(
+    private_value(_private_settings, "FFS_WARMUP_ENABLED", "warmup_enabled", "1"), True
+)
+try:
+    WARMUP_SIZE = int(private_value(_private_settings, "FFS_WARMUP_SIZE", "warmup_size", "256"))
+except ValueError:
+    WARMUP_SIZE = 256
+WARMUP_SIZE = min(512, max(128, (WARMUP_SIZE // 64) * 64))
+EXPOSE_AFTER_WARMUP = normalize_bool(
+    private_value(_private_settings, "FFS_EXPOSE_AFTER_WARMUP", "expose_after_warmup", "1"), True
+)
+STARTUP_VERBOSE = normalize_bool(
+    private_value(_private_settings, "FFS_STARTUP_VERBOSE", "startup_verbose", "1"), True
 )
 NGROK_AUTHTOKEN = private_value(
     _private_settings, "FFS_NGROK_AUTHTOKEN", "ngrok_auth_token"
@@ -217,8 +282,8 @@ def _use_ngrok_route():
         return False
     return bool(NGROK_AUTHTOKEN)
 
-os.environ["HF_HOME"] = str(CACHE / "huggingface")
-os.environ["HUGGINGFACE_HUB_CACHE"] = str(CACHE / "huggingface")
+os.environ.update(startup_restore.cache_environment(LOCAL_CACHE))
+os.environ["HUGGINGFACE_HUB_CACHE"] = os.environ["HF_HUB_CACHE"]
 os.environ["PIP_CACHE_DIR"] = str(CACHE / "pip")
 os.environ["COMFYUI_ROOT"] = str(COMFYUI)
 os.environ["FREEFAKESTUDIO_WORKSPACE"] = str(WS)
@@ -227,6 +292,16 @@ os.environ["GRADIO_SSR_MODE"] = "false"
 os.environ["FREEFAKESTUDIO_SHARE"] = "0"
 os.environ["FFS_DEBUG"] = "1" if DEBUG else "0"
 os.environ["FFS_PRELOAD_FLUX"] = "1" if PRELOAD_FLUX else "0"
+os.environ["FFS_PRELOAD_AVATAR_VISION"] = "1" if PRELOAD_AVATAR_VISION else "0"
+os.environ["FFS_FAST_RESTORE"] = "1" if FAST_RESTORE else "0"
+os.environ["FFS_FORCE_REBUILD_BUNDLES"] = "1" if FORCE_REBUILD_BUNDLES else "0"
+os.environ["FFS_FORCE_CACHE_REFRESH"] = "1" if FORCE_CACHE_REFRESH else "0"
+os.environ["FFS_STAGE_FLUX_TO_SSD"] = "1" if STAGE_FLUX_TO_SSD else "0"
+os.environ["FFS_WARMUP_ENABLED"] = "1" if WARMUP_ENABLED else "0"
+os.environ["FFS_WARMUP_SIZE"] = str(WARMUP_SIZE)
+os.environ["FFS_EXPOSE_AFTER_WARMUP"] = "1" if EXPOSE_AFTER_WARMUP else "0"
+os.environ["FFS_STARTUP_VERBOSE"] = "1" if STARTUP_VERBOSE else "0"
+os.environ["FFS_READY_STATE_PATH"] = str(READY_STATE_FILE)
 
 
 _steps = []
@@ -385,12 +460,20 @@ def write_debug_report(stage, exc=None):
         "workspace": str(WS),
         "app": str(APP),
         "comfyui": str(COMFYUI),
+        "drive_app": str(DRIVE_APP),
+        "drive_comfyui": str(DRIVE_COMFYUI),
+        "local_runtime": str(LOCAL_RUNTIME),
+        "manifests": str(MANIFESTS),
+        "bundles": str(BUNDLES),
         "comfyui_required_tag": COMFY_TAG,
-        "comfyui_revision": git_revision(COMFYUI),
+        "comfyui_revision": git_revision(DRIVE_COMFYUI),
         "cache": str(CACHE),
         "results": str(RESULTS),
         "env": {
             "HF_HOME": os.environ.get("HF_HOME"),
+            "HF_HUB_CACHE": os.environ.get("HF_HUB_CACHE"),
+            "HF_XET_CACHE": os.environ.get("HF_XET_CACHE"),
+            "HF_ASSETS_CACHE": os.environ.get("HF_ASSETS_CACHE"),
             "HUGGINGFACE_HUB_CACHE": os.environ.get("HUGGINGFACE_HUB_CACHE"),
             "PIP_CACHE_DIR": os.environ.get("PIP_CACHE_DIR"),
             "COMFYUI_ROOT": os.environ.get("COMFYUI_ROOT"),
@@ -398,6 +481,19 @@ def write_debug_report(stage, exc=None):
             "FFS_PUBLIC_ROUTE": PUBLIC_ROUTE_MODE,
             "FFS_PUBLIC_ROUTE_EFFECTIVE": "ngrok" if _use_ngrok_route() else "colab_proxy",
             "FFS_PRELOAD_FLUX": "1" if PRELOAD_FLUX else "0",
+            "FFS_PRELOAD_AVATAR_VISION": "1" if PRELOAD_AVATAR_VISION else "0",
+            "FFS_FAST_RESTORE": "1" if FAST_RESTORE else "0",
+            "FFS_FORCE_REBUILD_BUNDLES": "1" if FORCE_REBUILD_BUNDLES else "0",
+            "FFS_FORCE_CACHE_REFRESH": "1" if FORCE_CACHE_REFRESH else "0",
+            "FFS_STAGE_FLUX_TO_SSD": "1" if STAGE_FLUX_TO_SSD else "0",
+            "FFS_WARMUP_ENABLED": "1" if WARMUP_ENABLED else "0",
+            "FFS_WARMUP_SIZE": str(WARMUP_SIZE),
+            "FFS_EXPOSE_AFTER_WARMUP": "1" if EXPOSE_AFTER_WARMUP else "0",
+            "FFS_RUNTIME_FINGERPRINT_ID": os.environ.get("FFS_RUNTIME_FINGERPRINT_ID"),
+            "TORCHINDUCTOR_CACHE_DIR": os.environ.get("TORCHINDUCTOR_CACHE_DIR"),
+            "TRITON_CACHE_DIR": os.environ.get("TRITON_CACHE_DIR"),
+            "TORCH_EXTENSIONS_DIR": os.environ.get("TORCH_EXTENSIONS_DIR"),
+            "CUDA_CACHE_PATH": os.environ.get("CUDA_CACHE_PATH"),
             "FFS_FLUX_ENCODER_MODE": os.environ.get("FFS_FLUX_ENCODER_MODE"),
             "FFS_FLUX_CUSTOM_ENCODER_FILE": os.environ.get("FFS_FLUX_CUSTOM_ENCODER_FILE"),
             "FFS_FLUX_CUSTOM_ENCODER_FORMAT": os.environ.get("FFS_FLUX_CUSTOM_ENCODER_FORMAT"),
@@ -463,7 +559,39 @@ def write_debug_report(stage, exc=None):
     return path
 
 
-def launch_app_process(timeout_seconds=180):
+def verify_ready_gate(process, timeout_seconds=45):
+    deadline = time.time() + timeout_seconds
+    last_error = "waiting for app health check"
+    while time.time() < deadline:
+        if process.poll() is not None:
+            raise RuntimeError("FreeFakeStudio exited before its readiness check completed.")
+        readiness = startup_restore.readiness_payload(READY_STATE_FILE)
+        state_ok = bool(readiness.get("ready"))
+        if EXPOSE_AFTER_WARMUP:
+            state_ok = state_ok and readiness.get("model") == "FLUX.2-klein 4B"
+            if WARMUP_ENABLED:
+                state_ok = state_ok and readiness.get("warmup") == "complete"
+            if PRELOAD_AVATAR_VISION:
+                state_ok = state_ok and readiness.get("vision") in {"loaded", "complete"}
+        if state_ok:
+            try:
+                request = Request(
+                    f"http://127.0.0.1:{SERVER_PORT}/",
+                    headers={"User-Agent": "FFS-health/1"},
+                )
+                with urlopen(request, timeout=5) as response:
+                    if 200 <= response.status < 400:
+                        return readiness
+                    last_error = f"local HTTP status {response.status}"
+            except Exception as exc:
+                last_error = str(exc)
+        else:
+            last_error = f"readiness state is {readiness or 'not written yet'}"
+        time.sleep(0.5)
+    raise RuntimeError(f"FreeFakeStudio readiness gate timed out: {last_error}")
+
+
+def launch_app_process(timeout_seconds=1800, fingerprint=None):
     terminate_previous_app_process()
     log_path = DIAGNOSTICS / "app_launch_latest.log"
     history = []
@@ -471,6 +599,8 @@ def launch_app_process(timeout_seconds=180):
     public_url = None
     public_label = None
     tunnel = None
+    READY_STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+    READY_STATE_FILE.unlink(missing_ok=True)
 
     if _use_ngrok_route():
         if not NGROK_AUTHTOKEN:
@@ -482,7 +612,7 @@ def launch_app_process(timeout_seconds=180):
             from pyngrok import ngrok
 
             ngrok.set_auth_token(NGROK_AUTHTOKEN)
-            tunnel = ngrok.connect(7860, proto="http")
+            tunnel = ngrok.connect(SERVER_PORT, proto="http")
             public_url = tunnel.public_url.rstrip("/")
             public_label = "ngrok"
             if not public_url.startswith("https://"):
@@ -496,7 +626,7 @@ def launch_app_process(timeout_seconds=180):
         try:
             from google.colab.output import eval_js
 
-            public_url = str(eval_js("google.colab.kernel.proxyPort(7860)")).rstrip("/")
+            public_url = str(eval_js(f"google.colab.kernel.proxyPort({SERVER_PORT})")).rstrip("/")
             public_label = "Colab proxy"
             if not public_url.startswith("https://"):
                 raise RuntimeError(f"Colab returned a non-HTTPS proxy URL: {public_url}")
@@ -511,7 +641,11 @@ def launch_app_process(timeout_seconds=180):
     # selected external HTTPS origin.
     env = {
         **os.environ,
-        "PYTHONPATH": str(APP),
+        "PYTHONPATH": os.pathsep.join(
+            item
+            for item in (str(APP), str(PYTHON_OVERLAY), os.environ.get("PYTHONPATH", ""))
+            if item
+        ),
         "PYTHONUNBUFFERED": "1",
         "MALLOC_ARENA_MAX": "2",
         "PYTORCH_CUDA_ALLOC_CONF": os.environ.get(
@@ -522,6 +656,12 @@ def launch_app_process(timeout_seconds=180):
         "GRADIO_ROOT_PATH": public_url,
         "FREEFAKESTUDIO_SHARE": "0",
         "FFS_PRELOAD_FLUX": "1" if PRELOAD_FLUX else "0",
+        "FFS_PRELOAD_AVATAR_VISION": "1" if PRELOAD_AVATAR_VISION else "0",
+        "FFS_WARMUP_ENABLED": "1" if WARMUP_ENABLED else "0",
+        "FFS_WARMUP_SIZE": str(WARMUP_SIZE),
+        "FFS_EXPOSE_AFTER_WARMUP": "1" if EXPOSE_AFTER_WARMUP else "0",
+        "FFS_READY_STATE_PATH": str(READY_STATE_FILE),
+        "FFS_RUNTIME_FINGERPRINT_ID": (fingerprint or {}).get("id", "unknown"),
     }
     cmd = [sys.executable, "-u", str(APP / "app.py")]
     with log_path.open("w", encoding="utf-8") as log:
@@ -539,6 +679,7 @@ def launch_app_process(timeout_seconds=180):
         )
         APP_PID_FILE.write_text(str(proc.pid), encoding="ascii")
         started = time.time()
+        next_heartbeat = started + 30
         local_started = False
         output_queue = queue.Queue()
         assert proc.stdout is not None
@@ -559,15 +700,36 @@ def launch_app_process(timeout_seconds=180):
                 match = url_pattern.search(line)
                 if "Running on local URL:" in line:
                     local_started = True
+                    print("\nChecking model readiness and local app health...", flush=True)
+                    readiness = verify_ready_gate(proc)
+                    startup_restore.atomic_write_json(MANIFESTS / "last-ready.json", readiness)
+                    if fingerprint is not None:
+                        print("Saving warmed runtime caches to Drive...", flush=True)
+                        persist_runtime_caches(fingerprint)
                     print("\n" + "=" * 72)
                     print(f"OPEN FREEFAKESTUDIO ({public_label}):")
                     print(public_url)
                     print("=" * 72 + "\n")
+                    print(
+                        f"Ready: model={readiness.get('model')} "
+                        f"warmup={readiness.get('warmup')} health=OK",
+                        flush=True,
+                    )
                 if match:
                     gradio_share_url = match.group(1) or match.group(0)
                     print(f"\nUnexpected Gradio share URL: {gradio_share_url}\n")
             except queue.Empty:
                 line = None
+
+            now = time.time()
+            if not local_started and now >= next_heartbeat:
+                elapsed = int(now - started)
+                last_stage = history[-1] if history else "waiting for app output"
+                message = f"[startup] {elapsed}s elapsed; {last_stage[:180]}"
+                print(message, flush=True)
+                log.write(message + "\n")
+                log.flush()
+                next_heartbeat = now + 30
 
             if proc.poll() is not None:
                 while not output_queue.empty():
@@ -607,8 +769,8 @@ def terminate_previous_app_process():
     except (OSError, ValueError):
         APP_PID_FILE.unlink(missing_ok=True)
         return
-    expected = str(APP / "app.py")
-    if expected not in command_line:
+    expected_paths = (str(APP / "app.py"), str(DRIVE_APP / "app.py"))
+    if not any(expected in command_line for expected in expected_paths):
         APP_PID_FILE.unlink(missing_ok=True)
         return
     print(f"Stopping previous FreeFakeStudio process ({pid})...", flush=True)
@@ -628,14 +790,259 @@ def terminate_previous_app_process():
 
 def pip_install(*packages, force=False):
     cmd = [sys.executable, "-m", "pip", "install", "-q", "--cache-dir", str(CACHE / "pip")]
+    wheelhouse = BUNDLES / "wheelhouse"
+    removed = startup_restore.validate_wheelhouse(wheelhouse)
+    if removed:
+        print(f"[restore] Removed {len(removed)} corrupt cached wheel(s).", flush=True)
+    if any(wheelhouse.glob("*.whl")):
+        cmd.extend(["--find-links", str(wheelhouse)])
     if force:
         cmd.append("--force-reinstall")
     cmd.extend(packages)
     run_cmd(cmd, quiet=True)
 
 
+def cache_wheels(*packages):
+    """Best-effort offline fallback; failure never blocks a working install."""
+    wheelhouse = BUNDLES / "wheelhouse"
+    wheelhouse.mkdir(parents=True, exist_ok=True)
+    removed = startup_restore.validate_wheelhouse(wheelhouse)
+    if removed:
+        print(f"[restore] Removed {len(removed)} corrupt cached wheel(s).", flush=True)
+    candidates = [item for item in packages if item and not str(item).startswith("-")]
+    if not candidates:
+        return
+    command = [
+        sys.executable,
+        "-m",
+        "pip",
+        "download",
+        "-q",
+        "--only-binary=:all:",
+        "--no-deps",
+        "--dest",
+        str(wheelhouse),
+        *candidates,
+    ]
+    result = subprocess.run(command, text=True, capture_output=True)
+    if result.returncode != 0 and STARTUP_VERBOSE:
+        detail = (result.stderr or result.stdout or "wheel download unavailable")[-500:]
+        print(f"[restore] Wheelhouse refresh skipped: {detail}", flush=True)
+
+
 def package_ok(module_name):
     return importlib.util.find_spec(module_name) is not None
+
+
+ENVIRONMENT_DISTRIBUTIONS = (
+    "accelerate",
+    "bitsandbytes",
+    "comfy-kitchen",
+    "gguf",
+    "gradio",
+    "huggingface-hub",
+    "onnxruntime-gpu",
+    "opencv-python-headless",
+    "pyngrok",
+    "rembg",
+    "safetensors",
+    "sentencepiece",
+    "torchsde",
+    "transformers",
+)
+
+
+def runtime_requirements_digest():
+    paths = [
+        DRIVE_COMFYUI / "requirements.txt",
+        DRIVE_COMFYUI / "custom_nodes" / "ComfyUI-GGUF" / "requirements.txt",
+        DRIVE_APP / "launch.py",
+        DRIVE_APP / "startup_restore.py",
+    ]
+    values = {str(path.relative_to(WS)): startup_restore.file_digest(path) for path in paths}
+    return startup_restore.hash_text(json.dumps(values, sort_keys=True))
+
+
+def restore_prepared_environment(fingerprint):
+    if not FAST_RESTORE:
+        return False
+    restored = startup_restore.restore_environment_bundle(
+        PYTHON_OVERLAY,
+        BUNDLES / "environment" / "python-overlay.tar.gz",
+        MANIFESTS / "python-overlay.json",
+        fingerprint,
+        runtime_requirements_digest(),
+    )
+    if restored:
+        prior = os.environ.get("PYTHONPATH", "")
+        os.environ["PYTHONPATH"] = os.pathsep.join(
+            item for item in (str(PYTHON_OVERLAY), prior) if item
+        )
+    return restored
+
+
+def snapshot_prepared_environment(fingerprint):
+    return startup_restore.snapshot_environment_bundle(
+        ENVIRONMENT_DISTRIBUTIONS,
+        PYTHON_OVERLAY,
+        BUNDLES / "environment" / "python-overlay.tar.gz",
+        MANIFESTS / "python-overlay.json",
+        fingerprint,
+        runtime_requirements_digest(),
+    )
+
+
+def discard_restored_environment():
+    """Stop an invalid overlay from masking packages repaired with pip."""
+    overlay = str(PYTHON_OVERLAY)
+    sys.path[:] = [item for item in sys.path if item != overlay]
+    python_path = os.environ.get("PYTHONPATH", "")
+    os.environ["PYTHONPATH"] = os.pathsep.join(
+        item for item in python_path.split(os.pathsep) if item and item != overlay
+    )
+    if PYTHON_OVERLAY.is_dir():
+        shutil.rmtree(PYTHON_OVERLAY)
+
+
+def restore_runtime_caches(fingerprint):
+    state = startup_restore.restore_cache_bundle(
+        LOCAL_CACHE,
+        BUNDLES / "caches" / "runtime-cache.tar.gz",
+        MANIFESTS / "runtime-cache.json",
+        fingerprint,
+        force_refresh=FORCE_CACHE_REFRESH or not FAST_RESTORE,
+    )
+    for name, value in startup_restore.cache_environment(LOCAL_CACHE).items():
+        os.environ[name] = value
+    return state
+
+
+def persist_runtime_caches(fingerprint):
+    return startup_restore.snapshot_cache_bundle(
+        LOCAL_CACHE,
+        BUNDLES / "caches" / "runtime-cache.tar.gz",
+        MANIFESTS / "runtime-cache.json",
+        fingerprint,
+        force=FORCE_CACHE_REFRESH,
+    )
+
+
+def reconcile_runtime_fingerprint(previous):
+    current = startup_restore.detect_runtime_fingerprint()
+    if startup_restore.fingerprints_match(previous, current):
+        return previous, False
+    step("Runtime fingerprint", "Python/Torch/CUDA changed during package setup")
+    startup_restore.atomic_write_json(MANIFESTS / "current-runtime.json", current)
+    restore_runtime_caches(current)
+    done("Runtime fingerprint", f"Refreshed: {current['id']}")
+    return current, True
+
+
+def _flux_drive_targets():
+    targets = [
+        DRIVE_COMFYUI / "models" / "diffusion_models" / "flux-2-klein-4b.safetensors",
+        DRIVE_COMFYUI / "models" / "vae" / "flux2-vae.safetensors",
+    ]
+    manifest = load_flux_encoder_manifest()
+    if FLUX_ENCODER_MODE == "custom" and manifest:
+        targets.append(
+            DRIVE_COMFYUI / "models" / "text_encoders" / manifest["local_name"]
+        )
+    else:
+        targets.append(
+            DRIVE_COMFYUI
+            / "models"
+            / "text_encoders"
+            / "qwen_3_4b_fp4_flux2.safetensors"
+        )
+    return [path for path in targets if path.is_file()]
+
+
+def prepare_local_runtime(fingerprint):
+    """Restore source archives and activate the fast local Colab filesystem."""
+    global APP, COMFYUI
+    source_bundles = BUNDLES / "source"
+    app_signature = startup_restore.source_signature(
+        DRIVE_APP,
+        [DRIVE_APP / "launch.py", DRIVE_APP / "startup_restore.py"],
+        exclude_names={
+            ".git", "__pycache__", ".pytest_cache", ".ipynb_checkpoints",
+            "FreeFakeStudio.keys.txt",
+        },
+        exclude_prefixes={"results", "diagnostics"},
+    )
+    comfy_signature = startup_restore.hash_text(
+        "|".join(
+            (
+                startup_restore.source_signature(
+                    DRIVE_COMFYUI,
+                    [DRIVE_COMFYUI / "requirements.txt"],
+                    exclude_names={".git", "__pycache__", ".pytest_cache"},
+                    exclude_prefixes={"models", "input", "output", "temp"},
+                ),
+                startup_restore.source_signature(
+                    DRIVE_COMFYUI / "custom_nodes" / "ComfyUI-GGUF",
+                    [DRIVE_COMFYUI / "custom_nodes" / "ComfyUI-GGUF" / "requirements.txt"],
+                    exclude_names={".git", "__pycache__", ".pytest_cache"},
+                ),
+            )
+        )
+    )
+    app_state, app_manifest = startup_restore.ensure_source_bundle(
+        "app-source",
+        DRIVE_APP,
+        LOCAL_RUNTIME / "app",
+        source_bundles,
+        MANIFESTS,
+        app_signature,
+        force=FORCE_REBUILD_BUNDLES or not FAST_RESTORE,
+        exclude_names={
+            ".git",
+            "__pycache__",
+            ".pytest_cache",
+            ".ipynb_checkpoints",
+            "FreeFakeStudio.keys.txt",
+        },
+        exclude_prefixes={"results", "diagnostics"},
+    )
+    comfy_state, comfy_manifest = startup_restore.ensure_source_bundle(
+        "comfyui-source",
+        DRIVE_COMFYUI,
+        LOCAL_RUNTIME / "ComfyUI",
+        source_bundles,
+        MANIFESTS,
+        comfy_signature,
+        force=FORCE_REBUILD_BUNDLES or not FAST_RESTORE,
+        exclude_names={".git", "__pycache__", ".pytest_cache"},
+        exclude_prefixes={"models", "input", "output", "temp"},
+    )
+    model_report = startup_restore.mirror_model_tree(
+        DRIVE_COMFYUI / "models",
+        LOCAL_RUNTIME / "ComfyUI" / "models",
+        staged_sources=_flux_drive_targets(),
+        copy_to_ssd=STAGE_FLUX_TO_SSD,
+    )
+    APP = LOCAL_RUNTIME / "app"
+    COMFYUI = LOCAL_RUNTIME / "ComfyUI"
+    ensure_symlink(Path("/content/ComfyUI"), COMFYUI)
+    os.environ["COMFYUI_ROOT"] = str(COMFYUI)
+    os.environ["FFS_RUNTIME_FINGERPRINT_ID"] = fingerprint["id"]
+    os.environ["FFS_READY_STATE_PATH"] = str(READY_STATE_FILE)
+    python_paths = [str(APP), str(PYTHON_OVERLAY)]
+    previous = os.environ.get("PYTHONPATH", "")
+    if previous:
+        python_paths.append(previous)
+    os.environ["PYTHONPATH"] = os.pathsep.join(python_paths)
+    if str(APP) not in sys.path:
+        sys.path.insert(0, str(APP))
+    report = {
+        "fingerprint": fingerprint,
+        "app": {"state": app_state, "manifest": app_manifest},
+        "comfyui": {"state": comfy_state, "manifest": comfy_manifest},
+        "models": model_report,
+    }
+    startup_restore.atomic_write_json(MANIFESTS / "last-restore.json", report)
+    return report
 
 
 def verify_comfy_runtime():
@@ -661,6 +1068,31 @@ def verify_comfy_runtime():
         detail = (probe.stderr or probe.stdout or "ComfyUI import probe failed")[-3000:]
         raise RuntimeError(f"ComfyUI runtime import check failed:\n{detail}")
     return probe.stdout.strip()
+
+
+def install_comfy_dependencies(comfy_root):
+    comfy_root = Path(comfy_root)
+    requirements = [comfy_root / "requirements.txt"]
+    gguf_requirements = comfy_root / "custom_nodes" / "ComfyUI-GGUF" / "requirements.txt"
+    if gguf_requirements.exists():
+        requirements.append(gguf_requirements)
+    for requirement in requirements:
+        run_cmd(
+            [
+                sys.executable,
+                "-m",
+                "pip",
+                "install",
+                "-q",
+                "--cache-dir",
+                str(CACHE / "pip"),
+                "--find-links",
+                str(BUNDLES / "wheelhouse"),
+                "-r",
+                str(requirement),
+            ],
+            quiet=True,
+        )
 
 
 def verify_engine_nodes():
@@ -774,7 +1206,7 @@ def ensure_repo(path, repo, tag=None, update=False):
                 ["git", "-C", str(path), "fetch", "--depth", "1", "origin", "tag", tag],
                 quiet=True,
             )
-            run_cmd(["git", "-C", str(path), "checkout", "--force", tag], quiet=True)
+            run_cmd(["git", "-C", str(path), "checkout", tag], quiet=True)
             return f"updated to {tag}"
         run_cmd(["git", "-C", str(path), "pull", "--ff-only"], quiet=True)
         return "updated"
@@ -799,10 +1231,10 @@ def ensure_symlink(link, target):
     if link.is_symlink():
         link.unlink()
     elif link.exists():
-        if link.name == "ComfyUI" and str(link).startswith("/content/"):
-            shutil.rmtree(str(link))
-        else:
-            raise RuntimeError(f"Refusing to replace non-symlink path: {link}")
+        raise RuntimeError(
+            f"Refusing to replace a real directory: {link}. "
+            "Use a fresh Colab runtime or move that directory yourself after checking it."
+        )
     os.symlink(str(target), str(link))
 
 
@@ -816,7 +1248,42 @@ def min_bytes(filename):
 
 def file_ok(path):
     path = Path(path)
-    return path.is_file() and path.stat().st_size >= min_bytes(path.name)
+    if not path.is_file() or path.stat().st_size < min_bytes(path.name):
+        return False
+    try:
+        with path.open("rb") as handle:
+            if path.suffix.lower() == ".gguf":
+                return handle.read(4) == b"GGUF"
+            if path.suffix.lower() == ".safetensors":
+                header_length = int.from_bytes(handle.read(8), "little")
+                if header_length <= 2 or header_length > min(128 * 1024**2, path.stat().st_size - 8):
+                    return False
+                header = json.loads(handle.read(header_length).decode("utf-8"))
+                return isinstance(header, dict) and any(key != "__metadata__" for key in header)
+    except (OSError, UnicodeDecodeError, ValueError, json.JSONDecodeError):
+        return False
+    return True
+
+
+def write_model_manifest():
+    rows = []
+    for path in required_model_targets():
+        rows.append(
+            {
+                "path": str(path),
+                "exists": path.is_file(),
+                "size": path.stat().st_size if path.is_file() else 0,
+                "header_valid": file_ok(path),
+            }
+        )
+    payload = {
+        "schema": 1,
+        "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "storage": "individual checkpoint files; staged to SSD without recompression",
+        "models": rows,
+    }
+    startup_restore.atomic_write_json(MANIFESTS / "models.json", payload)
+    return payload
 
 
 def hub_download(repo, filename, dest_dir, dest_name=None, force=False, revision=None):
@@ -962,33 +1429,36 @@ def ensure_custom_flux_encoder():
     global FLUX_ENCODER_MODE
 
     manifest = load_flux_encoder_manifest()
-    if FLUX_CUSTOM_ENCODER_URL:
+    if FLUX_ENCODER_MODE == "custom" and FLUX_CUSTOM_ENCODER_URL:
         repo, revision, filename, suffix = parse_huggingface_file_url(FLUX_CUSTOM_ENCODER_URL)
-        size = huggingface_file_size(repo, revision, filename)
         source = f"https://huggingface.co/{repo}/blob/{revision}/{filename}"
         local_name = f"flux2-klein-custom-encoder{suffix}"
         changed = not manifest or manifest.get("source") != source
-        step("FLUX custom encoder", f"Verified metadata / {size / 1024**3:.2f} GiB")
-        target = hub_download(
-            repo,
-            filename,
-            COMFYUI / "models" / "text_encoders",
-            local_name,
-            force=changed,
-            revision=revision,
-        )
-        details = validate_flux_encoder_file(target)
-        manifest = {
-            "source": source,
-            "repo": repo,
-            "revision": revision,
-            "remote_filename": filename,
-            "local_name": local_name,
-            "size": target.stat().st_size,
-            **details,
-        }
-        FLUX_ENCODER_CONFIG.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
-        done("FLUX custom encoder", f"Ready / {details['format'].upper()}")
+        if not changed and not REPAIR:
+            step("FLUX custom encoder", "Reusing validated Drive file", "ok")
+        else:
+            size = huggingface_file_size(repo, revision, filename)
+            step("FLUX custom encoder", f"Verified metadata / {size / 1024**3:.2f} GiB")
+            target = hub_download(
+                repo,
+                filename,
+                COMFYUI / "models" / "text_encoders",
+                local_name,
+                force=changed,
+                revision=revision,
+            )
+            details = validate_flux_encoder_file(target)
+            manifest = {
+                "source": source,
+                "repo": repo,
+                "revision": revision,
+                "remote_filename": filename,
+                "local_name": local_name,
+                "size": target.stat().st_size,
+                **details,
+            }
+            startup_restore.atomic_write_json(FLUX_ENCODER_CONFIG, manifest)
+            done("FLUX custom encoder", f"Ready / {details['format'].upper()}")
 
     if FLUX_ENCODER_MODE not in {"official", "custom"}:
         raise RuntimeError("FLUX_ENCODER must be Official or Custom.")
@@ -1055,11 +1525,25 @@ def ensure_models():
 
 try:
     step("Workspace", str(WS), "ok")
+    terminate_previous_app_process()
     start_report = write_debug_report("startup")
     if start_report:
         step("Diagnostics", f"Startup report: {start_report.name}", "ok")
 
     ensure_numpy()
+
+    step("Runtime fingerprint", "Detecting Python, CUDA, GPU, and driver")
+    runtime_fingerprint = startup_restore.detect_runtime_fingerprint()
+    startup_restore.atomic_write_json(MANIFESTS / "current-runtime.json", runtime_fingerprint)
+    done("Runtime fingerprint", runtime_fingerprint["id"])
+
+    step("Warm caches", "Checking compatible prepared cache bundle")
+    cache_restore_state = restore_runtime_caches(runtime_fingerprint)
+    done("Warm caches", cache_restore_state)
+
+    step("Prepared environment", "Checking compatible Python overlay")
+    environment_restored = restore_prepared_environment(runtime_fingerprint)
+    done("Prepared environment", "restored" if environment_restored else "rebuild required")
 
     step("Python packages", "Checking")
     required = {
@@ -1082,7 +1566,12 @@ try:
         pip_install("transformers>=5.13,<6", "accelerate", "bitsandbytes", "sentencepiece")
     if not package_ok("onnxruntime"):
         pip_install("onnxruntime-gpu")
-    pip_install("Pillow<12")
+    try:
+        pillow_major = int(importlib.metadata.version("Pillow").split(".", 1)[0])
+    except (importlib.metadata.PackageNotFoundError, ValueError):
+        pillow_major = 0
+    if not pillow_major or pillow_major >= 12:
+        pip_install("Pillow<12")
     done("Python packages", "Ready")
     deps_report = write_debug_report("dependencies")
     if deps_report:
@@ -1096,47 +1585,87 @@ try:
 
     ensure_symlink(Path("/content/ComfyUI"), COMFYUI)
 
-    step("ComfyUI dependencies", "Reconciling this Colab session")
-    run_cmd(
-        [
-            sys.executable,
-            "-m",
-            "pip",
-            "install",
-            "-q",
-            "--cache-dir",
-            str(CACHE / "pip"),
-            "-r",
-            str(COMFYUI / "requirements.txt"),
-        ],
-        quiet=True,
-    )
-    done("ComfyUI dependencies", "Installed / already satisfied")
-
     step("ComfyUI-GGUF", "Checking")
     gguf = COMFYUI / "custom_nodes" / "ComfyUI-GGUF"
     state = ensure_repo(gguf, "https://github.com/city96/ComfyUI-GGUF.git", None, UPDATE_APP)
-    if (gguf / "requirements.txt").exists():
-        run_cmd([sys.executable, "-m", "pip", "install", "-q", "--cache-dir", str(CACHE / "pip"), "-r", str(gguf / "requirements.txt")], quiet=True)
     done("ComfyUI-GGUF", state)
 
-    step("ComfyUI runtime", "Import smoke test")
-    done("ComfyUI runtime", verify_comfy_runtime())
+    if not environment_restored or REPAIR:
+        step("ComfyUI dependencies", "Rebuilding this runtime")
+        install_comfy_dependencies(COMFYUI)
+        done("ComfyUI dependencies", "rebuilt")
+    else:
+        step("ComfyUI dependencies", "Prepared overlay restored; local validation pending", "ok")
 
-    step("Engine nodes", "Constructing Z-Image node set")
-    done("Engine nodes", verify_engine_nodes())
+    runtime_fingerprint, changed_runtime = reconcile_runtime_fingerprint(runtime_fingerprint)
+    if changed_runtime and environment_restored:
+        discard_restored_environment()
+        install_comfy_dependencies(COMFYUI)
+        environment_restored = False
+        runtime_fingerprint, _ = reconcile_runtime_fingerprint(runtime_fingerprint)
+
+    ensure_models()
+    ensure_custom_flux_encoder()
+    write_model_manifest()
+    models_report = write_debug_report("models")
+    if models_report:
+        step("Diagnostics", f"Model report: {models_report.name}", "ok")
+
+    run_cmd([sys.executable, str(DRIVE_APP / "fixer.py")], quiet=False)
+
+    step("Local SSD runtime", "Restoring prepared app and ComfyUI bundles")
+    restore_report = prepare_local_runtime(runtime_fingerprint)
+    copied_models = sum(1 for item in restore_report["models"] if item["mode"] == "copied")
+    linked_models = sum(1 for item in restore_report["models"] if item["mode"] == "linked")
+    done(
+        "Local SSD runtime",
+        f"app={restore_report['app']['state']} / comfy={restore_report['comfyui']['state']} / "
+        f"models copied={copied_models}, linked={linked_models}",
+    )
+
+    step("Local runtime", "Verifying restored source, environment, and model paths")
+    try:
+        runtime_probe = verify_comfy_runtime()
+    except Exception as exc:
+        if not environment_restored or REPAIR:
+            raise
+        if STARTUP_VERBOSE:
+            print(f"[restore] Prepared environment failed local validation: {exc}", flush=True)
+        step("Prepared environment", "Self-healing failed restored environment")
+        discard_restored_environment()
+        install_comfy_dependencies(COMFYUI)
+        environment_restored = False
+        runtime_fingerprint, _ = reconcile_runtime_fingerprint(runtime_fingerprint)
+        runtime_probe = verify_comfy_runtime()
+    verify_engine_nodes()
+    checkpoint_probe = verify_z_image_checkpoint()
+    done("Local runtime", f"{runtime_probe} / {checkpoint_probe}")
+    os.environ["FFS_RUNTIME_FINGERPRINT_ID"] = runtime_fingerprint["id"]
 
     comfy_report = write_debug_report("comfy_runtime")
     if comfy_report:
         step("Diagnostics", f"ComfyUI report: {comfy_report.name}", "ok")
 
-    ensure_models()
-    ensure_custom_flux_encoder()
-    step("Z-Image checkpoint", "Inspecting GGUF and FP4 headers")
-    done("Z-Image checkpoint", verify_z_image_checkpoint())
-    models_report = write_debug_report("models")
-    if models_report:
-        step("Diagnostics", f"Model report: {models_report.name}", "ok")
+    if not environment_restored or FORCE_REBUILD_BUNDLES or REPAIR:
+        step("Prepared environment", "Packing validated Python overlay")
+        environment_manifest = snapshot_prepared_environment(runtime_fingerprint)
+        done(
+            "Prepared environment",
+            f"saved / {environment_manifest.get('file_count', 0)} files",
+        )
+        cache_wheels(
+            "accelerate",
+            "bitsandbytes",
+            "gradio",
+            "huggingface-hub",
+            "onnxruntime-gpu",
+            "opencv-python-headless",
+            "pyngrok",
+            "rembg",
+            "sentencepiece",
+            "torchsde",
+            "transformers>=5.13,<6",
+        )
 
     step("GPU", "Checking")
     gpu_name, gpu_memory_mib = gpu_summary()
@@ -1156,15 +1685,16 @@ try:
 
     gc.collect()
 
-    run_cmd([sys.executable, str(APP / "fixer.py")], quiet=False)
-
-    step("FreeFakeStudio", "Launching")
+    step("FreeFakeStudio", "Preload, warmup, and health gate")
     launch_report = write_debug_report("launch")
     if launch_report:
         step("Diagnostics", f"Launch report: {launch_report.name}", "ok")
     _render(final=True)
-    print("\nFreeFakeStudio is starting. The HTTPS interface link will print when it is ready.\n")
-    launch_app_process(timeout_seconds=180)
+    print(
+        "\nFreeFakeStudio is preparing FLUX and its warm caches. "
+        "The HTTPS link will print only after warmup and health checks pass.\n"
+    )
+    launch_app_process(timeout_seconds=1800, fingerprint=runtime_fingerprint)
 except Exception as exc:
     error_report = write_debug_report("error", exc)
     if error_report:

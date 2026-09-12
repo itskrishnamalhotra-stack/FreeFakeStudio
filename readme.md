@@ -63,6 +63,15 @@ keys are supported:
 ```text
 PUBLIC_ROUTE
 PRELOAD_FLUX
+PRELOAD_AVATAR_VISION
+FAST_RESTORE
+STAGE_FLUX_TO_SSD
+WARMUP_ENABLED
+WARMUP_SIZE
+EXPOSE_AFTER_WARMUP
+FORCE_REBUILD_BUNDLES
+FORCE_CACHE_REFRESH
+STARTUP_VERBOSE
 NGROK_AUTH_TOKEN
 HUGGINGFACE_TOKEN
 GEMINI_API_KEY
@@ -103,6 +112,8 @@ Free Colab constraints:
 
 The launcher checks Hugging Face metadata before downloading, validates the file
 header after downloading, and stores the file plus its manifest in Google Drive.
+Later starts reuse a matching validated file without a Hugging Face metadata
+request. The default Official mode does not download an unused custom encoder.
 When FLUX is selected, open Settings, choose `Official` or `Custom`, and press
 `Apply encoder`. Applying a change unloads FLUX; the next generation reloads it
 with the selected encoder. Z-Image and ERNIE are unaffected.
@@ -134,13 +145,21 @@ assets.
 
 ### Startup Priority
 
-`PRELOAD_FLUX=True` is the recommended Colab setting. It loads only
-`FLUX.2-klein 4B` before the app link is printed, so the main chat, image
-editing, and Avatar Studio do not hit a first-generation model-load delay.
+The recommended defaults are `PRELOAD_FLUX=True`,
+`PRELOAD_AVATAR_VISION=True`, `WARMUP_ENABLED=True`, and
+`EXPOSE_AFTER_WARMUP=True`. The launcher loads FLUX, runs discarded
+256x256 one-step text-to-image and reference-edit requests, loads and cheaply warms SmolVLM,
+starts Gradio, checks its local HTTP health, saves the warmed caches, and only
+then prints the external URL.
 
-If Colab gives you a low-memory runtime or startup fails before the link appears,
-set `PRELOAD_FLUX=False`, run the cell again, and load FLUX from the UI on first
-generation.
+`FAST_RESTORE=True` restores compatible prepared bundles to local Colab SSD.
+`STAGE_FLUX_TO_SSD=True` also copies the active FLUX diffusion model, encoder,
+and VAE to SSD when at least 4 GiB of disk headroom remains. If there is not
+enough local disk, the launcher safely links that file to its persistent Drive
+copy instead.
+
+Disabling `PRELOAD_FLUX` requires `EXPOSE_AFTER_WARMUP=False`, because a strict
+warmup gate cannot declare a model ready when it was not loaded.
 
 ## Persistent Workspace Layout
 
@@ -160,11 +179,27 @@ FreeFakeStudio/
 |-- cache/
 |   |-- huggingface/
 |   `-- pip/
+|-- manifests/
+|   |-- current-runtime.json
+|   |-- app-source.json
+|   |-- comfyui-source.json
+|   |-- python-overlay.json
+|   |-- runtime-cache.json
+|   `-- last-ready.json
+|-- bundles/
+|   |-- source/
+|   |-- environment/
+|   |-- caches/
+|   `-- wheelhouse/
 |-- gradio_tmp/
 `-- results/
 ```
 
-`/content/ComfyUI` is only a compatibility symlink to the persistent Drive `ComfyUI` folder. Large model files are not copied from Drive to `/content` every session.
+Prepared source, environment, and cache bundles are restored under
+`/content/freefakestudio_runtime`. The app and ComfyUI source run from that local
+SSD directory. Persistent results and master model files remain on Drive. The
+active FLUX files are staged locally when configured and disk space permits;
+other model files are linked from the local ComfyUI model tree to Drive.
 
 ## Startup Behavior
 
@@ -172,12 +207,14 @@ First run:
 
 - mounts Google Drive;
 - clones the configured modified repo into `WORKSPACE_DIR/app` if missing;
-- prepares persistent cache paths;
+- creates the organized manifests, bundles, wheelhouse, cache, and result paths;
 - checks/repairs NumPy consistency before ComfyUI imports;
 - installs only missing required Python packages where practical;
 - installs ComfyUI and ComfyUI-GGUF if missing;
 - enforces the model-compatible ComfyUI `v0.28.0` backend revision;
-- reconciles ComfyUI and ComfyUI-GGUF Python requirements in every fresh Colab session;
+- fingerprints Python, PyTorch, CUDA, cuDNN, GPU capability, and NVIDIA driver;
+- restores only environment and compiled-cache bundles matching that fingerprint;
+- rebuilds an invalid or incompatible Python overlay from pip/wheel caches;
 - verifies `torchsde`, `comfy.samplers`, and `comfy.sd` imports before opening the UI;
 - constructs and validates the complete Z-Image engine node set before opening the UI;
 - checks the Z-Image GGUF and mixed-FP4 headers before launch;
@@ -185,22 +222,38 @@ First run:
 - enables DynamicVRAM, disables execution caching and pinned-memory duplication, and logs RAM/VRAM around every Z-Image component load;
 - downloads only missing or repair-requested model files;
 - validates and persists an optional FLUX custom encoder without loading two encoders;
+- creates checksum-verified app and ComfyUI source archives;
+- extracts those archives atomically to local Colab SSD;
+- stages the selected FLUX files to SSD when space permits;
 - stops a previous PID-verified FreeFakeStudio child before a cell rerun;
 - creates one HTTPS route from `PUBLIC_ROUTE` (`Colab proxy` by default, `ngrok` when selected);
-- optionally preloads only FLUX when `PRELOAD_FLUX=True`;
-- launches Gradio with that route set as its absolute proxy root.
+- preloads FLUX when `PRELOAD_FLUX=True`;
+- runs discarded FLUX and SmolVLM warmups when `WARMUP_ENABLED=True`;
+- starts Gradio and verifies its local HTTP health;
+- atomically saves warmed Torch, Triton, CUDA, extensions, and Hugging Face caches;
+- prints the external link only after the readiness gate succeeds.
 
 Later runs:
 
 - mount Drive;
-- reuse `app`, `ComfyUI`, caches, and models;
-- validate files with fast size checks;
+- compare the runtime fingerprint and source/requirements signatures;
+- restore verified source, Python overlay, and warm-cache archives to local SSD;
+- skip dependency installation when the restored environment passes its import probe;
+- reuse persistent models without downloading them again;
 - skip existing downloads;
-- launch the UI.
+- preload and warm FLUX;
+- expose the link after the health gate passes.
 
 `UPDATE_APP=True` fast-forwards the Drive app copy and refreshes managed backend repositories. If the Drive app checkout has local edits, the notebook saves them first with `git stash push -u` and then pulls, so the update is not blocked by files such as `model_manager.py`. It does not hard reset or delete your modified app folder. The required ComfyUI compatibility tag is enforced automatically even when this option is off.
 
 `REPAIR_INSTALL=True` rechecks/redownloads suspicious or missing install files.
+
+`FORCE_REBUILD_BUNDLES=True` rebuilds the source and Python environment archives.
+Use it after changing backend files manually or when diagnosing a restore issue.
+`FORCE_CACHE_REFRESH=True` ignores the saved compiled-cache archive and writes a
+clean replacement after warmup. Both switches should return to `False` after one
+successful repair run. Corrupt archives and wheels are detected and repaired
+automatically without these switches.
 
 ## Debugging
 
@@ -220,7 +273,7 @@ WORKSPACE_DIR/diagnostics/error_*.json
 
 These reports include:
 
-- Python and platform details;
+- the full runtime fingerprint and active local/Drive paths;
 - important environment variables;
 - package versions;
 - ComfyUI/app path checks;
@@ -245,7 +298,11 @@ If Colab fails, download or open `diagnostics/latest.json` and the newest `resul
 
 ## Memory Behavior
 
-The app starts with no image model loaded.
+With the recommended settings, FLUX and the small NF4 SmolVLM analyzer are loaded
+and warmed before the URL appears. Z-Image and ERNIE remain lazy because keeping
+all image generators resident would exceed the practical free-T4 memory budget.
+If a particular free runtime cannot retain FLUX and SmolVLM together, set
+`PRELOAD_AVATAR_VISION=False`; Avatar Studio will then load it on first analysis.
 
 On generation:
 
@@ -312,10 +369,10 @@ SmolVLM notebooks:
 - `AVATAR_MAX_CANDIDATE_DOWNLOADS`: candidate download cap per search round.
 - `AVATAR_VISION_MAX_EDGE` and `AVATAR_VISION_MAX_TOKENS`: SmolVLM memory/detail controls.
 
-Free T4 loading stays lazy on purpose. Opening the app does not preload Flux,
-Z-Image, ERNIE, or SmolVLM. The first Avatar Studio generation or analysis pays
-the model-load cost; later operations reuse the loaded Flux and SmolVLM models.
-This avoids making every launch consume the peak RAM required by both models.
+FLUX and SmolVLM are preloaded and warmed by default. Z-Image and ERNIE remain
+lazy and replace FLUX through the one-image-model-at-a-time manager when selected.
+The Avatar analyzer is much smaller and stays resident for validation unless its
+preload switch is disabled.
 
 Local execution defaults to development mode. It builds the UI and uses mock engines only. It does not download or load real AI models.
 
@@ -342,6 +399,7 @@ Real generation must happen in Google Colab with a GPU runtime.
 ```text
 FreeFakeStudio.ipynb
 launch.py
+startup_restore.py
 app.py
 model_manager.py
 workspace.py
@@ -352,8 +410,11 @@ engine_ernie_image_turbo.py
 
 ## Known Limitations
 
-- Real Z-Image, FLUX, and ERNIE generation still require final Colab GPU verification.
+- A newly built prepared-runtime system still requires one complete first-run and
+  second-run Colab T4 acceptance test before startup-time claims can be measured.
 - First run can still take a long time because the required checkpoints are large.
+- Warmup removes lazy pipeline initialization but cannot make a new Colab VM keep
+  GPU memory from a previous VM; FLUX must be loaded into the new T4 each session.
 - Hugging Face gated or rate-limited files may require the user to be logged in or provide a token in Colab.
 - Gradio temporary public links are session-based and expire when the Colab runtime stops.
 
@@ -364,8 +425,9 @@ engine_ernie_image_turbo.py
 3. Set `WORKSPACE_DIR` to your Drive folder.
 4. Keep `UPDATE_APP=False` and `REPAIR_INSTALL=False` for normal testing.
 5. Run the single cell.
-6. Confirm setup reaches `FreeFakeStudio / Launching`.
-7. Open the printed `OPEN FREEFAKESTUDIO` HTTPS link.
+6. Confirm `Runtime fingerprint`, `Prepared environment`, `Local SSD runtime`,
+   FLUX preload, warmup, and local health all succeed.
+7. Confirm the `OPEN FREEFAKESTUDIO` link appears only after those messages.
 8. Generate with `Z-Image Turbo`.
 9. Generate with `FLUX.2-klein 4B`.
 10. If configured, switch FLUX to `Custom`, press `Apply encoder`, and generate again.
@@ -376,3 +438,6 @@ engine_ernie_image_turbo.py
 15. Test `Regenerate`.
 16. Switch models in this order: Z-Image -> FLUX -> ERNIE -> FLUX.
 17. If anything fails, collect `diagnostics/latest.json` and the newest `results/_debug/error_*.txt`.
+18. Disconnect the runtime, reconnect to a fresh T4, run with update/repair/force
+    switches off, and confirm `Prepared environment=restored`, source bundles are
+    restored, downloads are skipped, warmup completes, and history/avatars return.

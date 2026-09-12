@@ -134,6 +134,40 @@ def is_loaded():
 def get_loaded_encoder():
     return _loaded_encoder
 
+
+def warmup(size=256):
+    """Exercise text generation and reference editing without saving outputs."""
+    if not _loaded:
+        raise RuntimeError("FLUX must be loaded before warmup.")
+    size = min(512, max(128, (int(size) // 64) * 64))
+    dummy = Image.new("RGB", (size, size), (127, 127, 127))
+    text_result = None
+    edit_result = None
+    try:
+        text_result = generate(
+            "neutral studio calibration image", "", size, size,
+            seed=0, cfg=1.0, denoise=1.0, steps=1,
+        )
+        edit_result = img2img(
+            [dummy],
+            "neutral studio calibration image",
+            "",
+            seed=0,
+            cfg=1.0,
+            denoise=1.0,
+            steps=1,
+        )
+        return {"size": size, "steps": 1, "pipeline": "text-to-image + reference-edit"}
+    finally:
+        if text_result is not None:
+            del text_result
+        if edit_result is not None:
+            del edit_result
+        del dummy
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
 # ── Helpers ────────────────────────────────────────────────
 def _pil_to_tensor(img):
     return torch.from_numpy(np.array(img.convert("RGB")).astype(np.float32) / 255.0).unsqueeze(0)

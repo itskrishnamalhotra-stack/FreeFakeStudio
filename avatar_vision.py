@@ -77,6 +77,60 @@ def _load_model():
     return processor, model, torch
 
 
+def preload():
+    """Load the persistent Avatar Studio analyzer without running a request."""
+    _load_model()
+    return {"model": MODEL_ID, "quantization": "nf4"}
+
+
+def unload():
+    """Release the cached analyzer before loading a memory-heavy image model."""
+    _load_model.cache_clear()
+    cleanup_memory()
+
+
+def warmup(size=128):
+    """Run a tiny discarded vision request to initialize lazy CUDA paths."""
+    processor, model, torch = _load_model()
+    size = min(256, max(64, int(size)))
+    image = Image.new("RGB", (size, size), (127, 127, 127))
+    messages = [
+        {
+            "role": "user",
+            "content": [
+                {"type": "image"},
+                {"type": "text", "text": "Reply with the single word ready."},
+            ],
+        }
+    ]
+    prompt = processor.apply_chat_template(messages, add_generation_prompt=True)
+    inputs = processor(text=prompt, images=[image], return_tensors="pt")
+    for key, value in list(inputs.items()):
+        if not torch.is_tensor(value):
+            continue
+        if torch.is_floating_point(value):
+            inputs[key] = value.to(device="cuda:0", dtype=torch.float16)
+        else:
+            inputs[key] = value.to("cuda:0")
+    output = None
+    try:
+        with torch.inference_mode():
+            output = model.generate(
+                **inputs,
+                max_new_tokens=4,
+                do_sample=False,
+                num_beams=1,
+                use_cache=True,
+            )
+        return {"model": MODEL_ID, "size": size, "tokens": 4}
+    finally:
+        del inputs
+        if output is not None:
+            del output
+        del image
+        cleanup_memory()
+
+
 def _extract_json(text):
     text = (text or "").strip()
     if not text:

@@ -21,6 +21,7 @@ import gguf_nodes
 import model_manager
 import avatar_gallery
 import avatar_studio
+import avatar_vision
 
 
 def _source_function(source_path, name, namespace):
@@ -196,6 +197,50 @@ class StudioUiRegressionTests(unittest.TestCase):
 
 
 class AvatarStudioTests(unittest.TestCase):
+    def test_avatar_vision_warmup_uses_tiny_discarded_request(self):
+        class Tensor:
+            def to(self, *_args, **_kwargs):
+                return self
+
+        class InferenceMode:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+        processor = mock.Mock()
+        processor.apply_chat_template.return_value = "warmup"
+        processor.return_value = {"input_ids": Tensor()}
+        model = mock.Mock()
+        model.generate.return_value = Tensor()
+        fake_torch = types.SimpleNamespace(
+            is_tensor=lambda _value: True,
+            is_floating_point=lambda _value: False,
+            float16="float16",
+            inference_mode=lambda: InferenceMode(),
+        )
+        with mock.patch.object(
+            avatar_vision, "_load_model", return_value=(processor, model, fake_torch)
+        ), mock.patch.object(avatar_vision, "cleanup_memory"):
+            report = avatar_vision.warmup(128)
+
+        self.assertEqual(report["size"], 128)
+        self.assertEqual(report["tokens"], 4)
+        self.assertEqual(model.generate.call_args.kwargs["max_new_tokens"], 4)
+
+    def test_avatar_vision_unload_releases_cached_model(self):
+        with mock.patch.object(avatar_vision._load_model, "cache_clear") as clear, \
+                mock.patch.object(avatar_vision, "cleanup_memory") as cleanup:
+            avatar_vision.unload()
+        clear.assert_called_once_with()
+        cleanup.assert_called_once_with()
+
+    def test_non_flux_model_load_releases_avatar_analyzer(self):
+        source = Path("model_manager.py").read_text(encoding="utf-8")
+        self.assertIn("if model_name != FLUX_MODEL_NAME and not DEV_MODE", source)
+        self.assertIn("avatar_vision.unload()", source)
+
     def test_avatar_create_lock_and_restore_specs(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             avatar = avatar_studio.create_avatar(temp_dir, "Maya Test")
@@ -462,8 +507,19 @@ class AvatarStudioTests(unittest.TestCase):
         self.assertIn('TAVILY_API_KEY = ""', source)
         self.assertIn('PUBLIC_ROUTE = "Colab proxy"', source)
         self.assertIn("PRELOAD_FLUX = True", source)
+        self.assertIn('FLUX_ENCODER = "Official"', source)
+        self.assertIn("PRELOAD_AVATAR_VISION = True", source)
+        self.assertIn("FAST_RESTORE = True", source)
+        self.assertIn("STAGE_FLUX_TO_SSD = True", source)
+        self.assertIn("WARMUP_ENABLED = True", source)
+        self.assertIn("EXPOSE_AFTER_WARMUP = True", source)
+        self.assertIn("FORCE_REBUILD_BUNDLES = False", source)
+        self.assertIn("FORCE_CACHE_REFRESH = False", source)
         self.assertIn('os.environ["FFS_PUBLIC_ROUTE"]', source)
         self.assertIn('os.environ["FFS_PRELOAD_FLUX"]', source)
+        self.assertIn('os.environ["FFS_PRELOAD_AVATAR_VISION"]', source)
+        self.assertIn('os.environ["FFS_FAST_RESTORE"]', source)
+        self.assertIn('os.environ["FFS_WARMUP_ENABLED"]', source)
         self.assertIn("key_bool", source)
         self.assertIn("UPLOAD_KEYS_TXT", source)
         self.assertIn("KEYS_TXT_PATH", source)
@@ -486,6 +542,13 @@ class AvatarStudioTests(unittest.TestCase):
             "NGROK_AUTH_TOKEN",
             "PUBLIC_ROUTE",
             "PRELOAD_FLUX",
+            "PRELOAD_AVATAR_VISION",
+            "FAST_RESTORE",
+            "STAGE_FLUX_TO_SSD",
+            "WARMUP_ENABLED",
+            "EXPOSE_AFTER_WARMUP",
+            "FORCE_REBUILD_BUNDLES",
+            "FORCE_CACHE_REFRESH",
             "HUGGINGFACE_TOKEN",
             "GEMINI_API_KEY",
             "TAVILY_API_KEY",
@@ -506,6 +569,9 @@ class AvatarStudioTests(unittest.TestCase):
         self.assertIn('Preloading FLUX.2-klein 4B', source)
         self.assertNotIn('ensure_model("Z-Image Turbo"', source)
         self.assertNotIn('ensure_model("ERNIE-Image-Turbo"', source)
+        self.assertIn("engine.warmup(warmup_size)", source)
+        self.assertIn("FFS_READY_STATE_PATH", source)
+        self.assertIn("EXPOSE_AFTER_WARMUP requires PRELOAD_FLUX=True", source)
 
 
 class _Loader:
@@ -829,6 +895,101 @@ class LauncherRepositoryTests(unittest.TestCase):
         self.assertFalse(normalize("False", True))
         self.assertFalse(normalize("0", True))
 
+    def test_model_file_validation_checks_gguf_and_safetensors_headers(self):
+        file_ok = self._launch_function(
+            "file_ok",
+            {"Path": Path, "min_bytes": lambda _name: 1, "json": json},
+        )
+        with tempfile.TemporaryDirectory() as root:
+            root = Path(root)
+            gguf = root / "model.gguf"
+            gguf.write_bytes(b"GGUFpayload")
+            bad_gguf = root / "bad.gguf"
+            bad_gguf.write_bytes(b"NOPEpayload")
+            header = json.dumps({"weight": {"dtype": "F16", "shape": [1], "data_offsets": [0, 2]}}).encode()
+            safe = root / "model.safetensors"
+            safe.write_bytes(len(header).to_bytes(8, "little") + header + b"00")
+            bad_safe = root / "bad.safetensors"
+            bad_safe.write_bytes((999999).to_bytes(8, "little") + b"{}")
+
+            self.assertTrue(file_ok(gguf))
+            self.assertFalse(file_ok(bad_gguf))
+            self.assertTrue(file_ok(safe))
+            self.assertFalse(file_ok(bad_safe))
+
+    def test_public_link_is_printed_only_after_ready_gate(self):
+        source = Path("launch.py").read_text(encoding="utf-8")
+        gate_position = source.index("readiness = verify_ready_gate(proc)")
+        link_position = source.index('print(f"OPEN FREEFAKESTUDIO ({public_label}):")')
+        cache_position = source.index("persist_runtime_caches(fingerprint)")
+        self.assertLess(gate_position, cache_position)
+        self.assertLess(cache_position, link_position)
+
+    def test_cached_custom_encoder_skips_huggingface_metadata_request(self):
+        manifest = {
+            "source": "https://huggingface.co/example/encoder/blob/main/model.gguf",
+            "local_name": "flux2-klein-custom-encoder.gguf",
+            "format": "gguf",
+            "size": 2 * 1024**3,
+        }
+        namespace = {
+            "FLUX_ENCODER_MODE": "custom",
+            "FLUX_CUSTOM_ENCODER_URL": manifest["source"],
+            "REPAIR": False,
+            "load_flux_encoder_manifest": lambda: manifest,
+            "parse_huggingface_file_url": lambda _url: (
+                "example/encoder", "main", "model.gguf", ".gguf"
+            ),
+            "huggingface_file_size": mock.Mock(side_effect=AssertionError("network should be skipped")),
+            "step": lambda *_args: None,
+            "os": os,
+        }
+        ensure = self._launch_function("ensure_custom_flux_encoder", namespace)
+        with mock.patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(ensure(), manifest)
+            self.assertEqual(os.environ["FFS_FLUX_CUSTOM_ENCODER_FILE"], manifest["local_name"])
+        namespace["huggingface_file_size"].assert_not_called()
+
+    def test_ready_gate_requires_warm_flux_and_http_health(self):
+        class Process:
+            @staticmethod
+            def poll():
+                return None
+
+        class Response:
+            status = 200
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+        readiness = {
+            "ready": True,
+            "model": "FLUX.2-klein 4B",
+            "warmup": "complete",
+            "vision": "complete",
+        }
+        function = self._launch_function(
+            "verify_ready_gate",
+            {
+                "time": __import__("time"),
+                "startup_restore": types.SimpleNamespace(
+                    readiness_payload=lambda _path: readiness
+                ),
+                "READY_STATE_FILE": Path("ready.json"),
+                "EXPOSE_AFTER_WARMUP": True,
+                "WARMUP_ENABLED": True,
+                "PRELOAD_AVATAR_VISION": True,
+                "SERVER_PORT": 7860,
+                "Request": lambda *args, **kwargs: object(),
+                "urlopen": lambda *args, **kwargs: Response(),
+            },
+        )
+
+        self.assertEqual(function(Process(), timeout_seconds=1), readiness)
+
 
 class FluxEncoderTests(unittest.TestCase):
     def tearDown(self):
@@ -861,6 +1022,25 @@ class FluxEncoderTests(unittest.TestCase):
             model_manager.MODEL_REGISTRY["FLUX.2-klein 4B"]["default_steps"],
             4,
         )
+
+    def test_flux_warmup_runs_discarded_one_step_reference_pipeline(self):
+        engine_flux_klein_4b._loaded = True
+        fake_result = mock.Mock()
+        with mock.patch.object(
+            engine_flux_klein_4b, "generate", return_value=fake_result
+        ) as text_generate, mock.patch.object(
+            engine_flux_klein_4b, "img2img", return_value=fake_result
+        ) as edit_generate, mock.patch.object(
+            engine_flux_klein_4b.torch.cuda, "is_available", return_value=False
+        ):
+            report = engine_flux_klein_4b.warmup(250)
+
+        self.assertEqual(report, {"size": 192, "steps": 1, "pipeline": "text-to-image + reference-edit"})
+        self.assertEqual(text_generate.call_args.kwargs["steps"], 1)
+        args, kwargs = edit_generate.call_args
+        self.assertEqual(args[0][0].size, (192, 192))
+        self.assertEqual(kwargs["steps"], 1)
+        self.assertEqual(kwargs["seed"], 0)
         self.assertEqual(
             engine_flux_klein_4b.generate.__wrapped__.__defaults__[-1],
             4,
