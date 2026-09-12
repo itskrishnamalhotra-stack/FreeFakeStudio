@@ -1227,6 +1227,47 @@ def ensure_numpy():
     done("NumPy repair", probe.stdout.strip())
 
 
+def clear_abandoned_git_locks(path):
+    """Remove lock files left by an interrupted launcher after ruling out active Git."""
+    git_dir = Path(path) / ".git"
+    locks = [
+        git_dir / "index.lock",
+        git_dir / "shallow.lock",
+        git_dir / "packed-refs.lock",
+        git_dir / "config.lock",
+    ]
+    existing = [lock for lock in locks if lock.exists()]
+    if not existing:
+        return []
+
+    resolved = str(Path(path).resolve())
+    process_list = subprocess.run(
+        ["ps", "-eo", "args="],
+        text=True,
+        capture_output=True,
+    )
+    if process_list.returncode == 0:
+        active = [
+            line.strip()
+            for line in process_list.stdout.splitlines()
+            if "git" in line.lower() and resolved in line
+        ]
+        if active:
+            raise RuntimeError(
+                f"Git is still operating on {path}; refusing to remove its lock file."
+            )
+
+    removed = []
+    for lock in existing:
+        lock.unlink(missing_ok=True)
+        removed.append(lock.name)
+    print(
+        f"[restore] Removed abandoned Git lock(s) from {path}: {', '.join(removed)}",
+        flush=True,
+    )
+    return removed
+
+
 def ensure_repo(path, repo, tag=None, update=False):
     if not (path / ".git").exists():
         if path.exists() and any(path.iterdir()):
@@ -1250,6 +1291,7 @@ def ensure_repo(path, repo, tag=None, update=False):
         args.extend([repo, str(path)])
         run_cmd(args, quiet=True)
         return "installed"
+    clear_abandoned_git_locks(path)
     if tag:
         head = git_revision(path)
         target = run_cmd(
