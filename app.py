@@ -4910,22 +4910,32 @@ else:
                 )
             vision_state = "disabled"
             if preload_avatar_vision:
-                import avatar_vision
+                try:
+                    import avatar_vision
 
-                if warmup_enabled:
-                    print("⏳ Preloading and warming Avatar Studio SmolVLM...", flush=True)
-                    vision_report = avatar_vision.warmup(128)
-                    vision_state = "complete"
+                    if warmup_enabled:
+                        print("⏳ Preloading and warming Avatar Studio SmolVLM...", flush=True)
+                        vision_report = avatar_vision.warmup(128)
+                        vision_state = "complete"
+                        print(
+                            "✓ Avatar Studio SmolVLM warmup complete; "
+                            f"model={vision_report['model']}",
+                            flush=True,
+                        )
+                    else:
+                        vision_report = avatar_vision.preload()
+                        vision_state = "loaded"
+                        print(
+                            f"✓ Avatar Studio analyzer loaded; model={vision_report['model']}",
+                            flush=True,
+                        )
+                except Exception as vision_exc:
+                    vision_state = "deferred"
+                    _write_runtime_error("avatar vision preload", vision_exc)
                     print(
-                        "✓ Avatar Studio SmolVLM warmup complete; "
-                        f"model={vision_report['model']}",
-                        flush=True,
-                    )
-                else:
-                    vision_report = avatar_vision.preload()
-                    vision_state = "loaded"
-                    print(
-                        f"✓ Avatar Studio analyzer loaded; model={vision_report['model']}",
+                        "[startup warning] Avatar Studio vision preload failed; "
+                        "the ready FLUX interface will still open. "
+                        f"Details: {vision_exc}",
                         flush=True,
                     )
             _record_startup_ready(

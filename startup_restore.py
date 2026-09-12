@@ -418,6 +418,9 @@ def stage_file(source, destination, copy_to_ssd=True, reserve_bytes=4 * 1024**3)
     source = Path(source).resolve()
     destination = Path(destination)
     destination.parent.mkdir(parents=True, exist_ok=True)
+    if copy_to_ssd and destination.is_file() and not destination.is_symlink():
+        if destination.stat().st_size == source.stat().st_size:
+            return "reused"
     if destination.exists() or destination.is_symlink():
         destination.unlink()
     copied = False

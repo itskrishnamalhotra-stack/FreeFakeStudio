@@ -575,7 +575,11 @@ def verify_ready_gate(process, timeout_seconds=45):
             if WARMUP_ENABLED:
                 state_ok = state_ok and readiness.get("warmup") == "complete"
             if PRELOAD_AVATAR_VISION:
-                state_ok = state_ok and readiness.get("vision") in {"loaded", "complete"}
+                state_ok = state_ok and readiness.get("vision") in {
+                    "loaded",
+                    "complete",
+                    "deferred",
+                }
         if state_ok:
             try:
                 request = Request(
@@ -837,6 +841,20 @@ def package_ok(module_name):
     return importlib.util.find_spec(module_name) is not None
 
 
+def avatar_quantization_probe():
+    code = (
+        "import importlib.metadata; "
+        "from packaging.version import Version; "
+        "import bitsandbytes; "
+        "from transformers import AutoModelForImageTextToText, BitsAndBytesConfig; "
+        "version = importlib.metadata.version('bitsandbytes'); "
+        "assert Version(version) >= Version('0.46.1'), version; "
+        "print('bitsandbytes=' + version)"
+    )
+    probe = subprocess.run([sys.executable, "-c", code], text=True, capture_output=True)
+    return probe.returncode == 0, (probe.stdout or probe.stderr or "unknown error").strip()
+
+
 ENVIRONMENT_DISTRIBUTIONS = (
     "accelerate",
     "bitsandbytes",
@@ -877,9 +895,12 @@ def restore_prepared_environment(fingerprint):
         runtime_requirements_digest(),
     )
     if restored:
+        overlay = str(PYTHON_OVERLAY)
+        if overlay not in sys.path:
+            sys.path.insert(0, overlay)
         prior = os.environ.get("PYTHONPATH", "")
         os.environ["PYTHONPATH"] = os.pathsep.join(
-            item for item in (str(PYTHON_OVERLAY), prior) if item
+            item for item in (overlay, prior) if item
         )
     return restored
 
@@ -1011,17 +1032,31 @@ def prepare_local_runtime(fingerprint):
     )
     print(f"[restore] Application source {app_state}.", flush=True)
     print("[restore] Restoring prepared ComfyUI source...", flush=True)
-    comfy_state, comfy_manifest = startup_restore.ensure_source_bundle(
-        "comfyui-source",
-        DRIVE_COMFYUI,
-        LOCAL_RUNTIME / "ComfyUI",
-        source_bundles,
-        MANIFESTS,
-        comfy_signature,
-        force=FORCE_REBUILD_BUNDLES or not FAST_RESTORE,
-        exclude_names={".git", "__pycache__", ".pytest_cache"},
-        exclude_prefixes={"models", "input", "output", "temp"},
-    )
+    local_comfyui = LOCAL_RUNTIME / "ComfyUI"
+    local_models = local_comfyui / "models"
+    preserved_models = LOCAL_RUNTIME / ".preserved_models"
+    if preserved_models.exists():
+        shutil.rmtree(preserved_models)
+    if local_models.is_dir():
+        os.replace(local_models, preserved_models)
+    try:
+        comfy_state, comfy_manifest = startup_restore.ensure_source_bundle(
+            "comfyui-source",
+            DRIVE_COMFYUI,
+            local_comfyui,
+            source_bundles,
+            MANIFESTS,
+            comfy_signature,
+            force=FORCE_REBUILD_BUNDLES or not FAST_RESTORE,
+            exclude_names={".git", "__pycache__", ".pytest_cache"},
+            exclude_prefixes={"models", "input", "output", "temp"},
+        )
+    finally:
+        if preserved_models.is_dir():
+            if local_models.exists():
+                shutil.rmtree(local_models)
+            local_models.parent.mkdir(parents=True, exist_ok=True)
+            os.replace(preserved_models, local_models)
     print(f"[restore] ComfyUI source {comfy_state}.", flush=True)
     print("[restore] Mapping model files and staging active FLUX files to SSD...", flush=True)
     model_report = startup_restore.mirror_model_tree(
@@ -1576,7 +1611,6 @@ try:
         "rembg": "rembg",
         "cv2": "opencv-python-headless",
         "accelerate": "accelerate",
-        "bitsandbytes": "bitsandbytes",
         "sentencepiece": "sentencepiece",
     }
     if _use_ngrok_route():
@@ -1584,10 +1618,31 @@ try:
     missing = [pkg for module, pkg in required.items() if not package_ok(module)]
     if missing:
         pip_install(*missing)
-    try:
-        from transformers import AutoModelForImageTextToText, BitsAndBytesConfig  # noqa: F401
-    except Exception:
-        pip_install("transformers>=5.13,<6", "accelerate", "bitsandbytes", "sentencepiece")
+    quantization_ok, quantization_detail = avatar_quantization_probe()
+    if not quantization_ok:
+        if environment_restored:
+            print(
+                "[restore] Prepared overlay failed Avatar Vision validation; rebuilding it. "
+                f"Details: {quantization_detail[-500:]}",
+                flush=True,
+            )
+            discard_restored_environment()
+            environment_restored = False
+        pip_install(
+            "transformers>=5.13,<6",
+            "accelerate",
+            "bitsandbytes>=0.46.1",
+            "sentencepiece",
+        )
+        quantization_ok, quantization_detail = avatar_quantization_probe()
+        if not quantization_ok:
+            print(
+                "[startup warning] Avatar Vision quantization is unavailable and will be "
+                f"deferred: {quantization_detail[-500:]}",
+                flush=True,
+            )
+    else:
+        print(f"[dependencies] Avatar Vision quantization ready: {quantization_detail}", flush=True)
     if not package_ok("onnxruntime"):
         pip_install("onnxruntime-gpu")
     try:
@@ -1640,11 +1695,12 @@ try:
     step("Local SSD runtime", "Restoring prepared app and ComfyUI bundles")
     restore_report = prepare_local_runtime(runtime_fingerprint)
     copied_models = sum(1 for item in restore_report["models"] if item["mode"] == "copied")
+    reused_models = sum(1 for item in restore_report["models"] if item["mode"] == "reused")
     linked_models = sum(1 for item in restore_report["models"] if item["mode"] == "linked")
     done(
         "Local SSD runtime",
         f"app={restore_report['app']['state']} / comfy={restore_report['comfyui']['state']} / "
-        f"models copied={copied_models}, linked={linked_models}",
+        f"models copied={copied_models}, reused={reused_models}, linked={linked_models}",
     )
 
     step("Local runtime", "Verifying restored source, environment, and model paths")

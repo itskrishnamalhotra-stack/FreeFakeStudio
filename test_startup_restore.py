@@ -250,6 +250,23 @@ class StartupRestoreTests(unittest.TestCase):
             self.assertEqual(mode, "linked")
             symlink.assert_called_once_with(str(source.resolve()), str(destination))
 
+    def test_model_staging_reuses_complete_local_copy(self):
+        with tempfile.TemporaryDirectory() as root:
+            root = Path(root)
+            source = root / "drive" / "model.bin"
+            destination = root / "runtime" / "model.bin"
+            source.parent.mkdir()
+            destination.parent.mkdir()
+            source.write_bytes(b"complete-model")
+            destination.write_bytes(b"complete-model")
+
+            with mock.patch("startup_restore.shutil.copyfile") as copyfile:
+                mode = startup_restore.stage_file(source, destination, copy_to_ssd=True)
+
+            self.assertEqual(mode, "reused")
+            copyfile.assert_not_called()
+            self.assertEqual(destination.read_bytes(), b"complete-model")
+
     def test_required_model_is_mirrored_when_drive_listing_omits_it(self):
         with tempfile.TemporaryDirectory() as root:
             root = Path(root)
