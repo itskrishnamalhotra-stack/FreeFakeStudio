@@ -98,8 +98,10 @@ for directory in [
 ]:
     directory.mkdir(parents=True, exist_ok=True)
 
-if str(DRIVE_APP) not in sys.path:
-    sys.path.insert(0, str(DRIVE_APP))
+_drive_app_path = str(DRIVE_APP)
+sys.path[:] = [entry for entry in sys.path if entry != _drive_app_path]
+sys.path.insert(0, _drive_app_path)
+sys.modules.pop("startup_restore", None)
 import startup_restore
 
 
