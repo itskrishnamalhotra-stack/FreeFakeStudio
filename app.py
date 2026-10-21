@@ -37,6 +37,7 @@ import gradio as gr
 import workspace as ws
 import avatar_gallery
 import avatar_gallery_jobs
+import avatar_enhance
 import avatar_studio
 import avatar_guide
 import avatar_design
@@ -3122,6 +3123,17 @@ function prepareImagePreviews() {
     }, true);
 }
 
+document.addEventListener('click', function(event) {
+    var button = event.target.closest('[data-av-enhance]');
+    if (!button) return;
+    event.preventDefault();
+    if (!setStudioControlValue('#av-enhance-action-id textarea, #av-enhance-action-id input', button.dataset.avEnhance)) return;
+    window.setTimeout(function() {
+        var run = document.querySelector('#av-enhance-action-run');
+        if (run) run.click();
+    }, 60);
+});
+
 var avatarPendingUploads = new Map();
 var avatarUploadOwnedDisable = false;
 function releaseAvatarUploads() {
@@ -3172,6 +3184,31 @@ function enhanceStudioUI() {
     prepareSettingsDrawer();
     prepareAttachmentCards();
     prepareImagePreviews();
+    var enhancement = document.querySelector('#av-enhancement');
+    var enhancementShade = document.querySelector('#av-enhance-shade');
+    if (!enhancementShade) {
+        enhancementShade = document.createElement('div');
+        enhancementShade.id = 'av-enhance-shade';
+        enhancementShade.hidden = true;
+        document.body.appendChild(enhancementShade);
+        enhancementShade.addEventListener('click', function() {
+            var close = document.querySelector('#av-enhance-close');
+            if (close && !close.disabled) close.click();
+        });
+    }
+    enhancementShade.hidden = !(enhancement && enhancement.getClientRects().length);
+    if (enhancement && enhancement.getClientRects().length) {
+        enhancement.setAttribute('role', 'dialog');
+        enhancement.setAttribute('aria-modal', 'true');
+        enhancement.setAttribute('aria-label', 'Enhance realism');
+        if (!enhancement.dataset.avOpen) {
+            enhancement.dataset.avOpen = 'true';
+            var firstControl = enhancement.querySelector('button:not([disabled]),input:not([disabled])');
+            if (firstControl) firstControl.focus({preventScroll:true});
+        }
+    } else if (enhancement) {
+        delete enhancement.dataset.avOpen;
+    }
     releaseAvatarUploads();
     document.querySelectorAll('#av-extra-ready-1, #av-extra-ready-2').forEach(function(marker) {
         if (!marker.dataset.ffsObserved) {
@@ -3227,6 +3264,21 @@ document.addEventListener('keydown', function(event) {
     if (event.key === 'Escape') closeLightbox();
 });
 setInterval(enhanceStudioUI, 1200);
+document.addEventListener('keydown', function(event) {
+    var dialog = document.querySelector('#av-enhancement');
+    if (!dialog || !dialog.getClientRects().length) return;
+    var controls = Array.from(dialog.querySelectorAll('button:not([disabled]),input:not([disabled]),textarea:not([disabled]),[tabindex="0"]'))
+        .filter(function(node) { return node.getClientRects().length; });
+    if (event.key === 'Tab' && controls.length) {
+        var first = controls[0], last = controls[controls.length-1];
+        if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
+        else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
+    }
+    if (event.key === 'Escape') {
+        var close = Array.from(dialog.querySelectorAll('button')).find(function(button) { return button.textContent.trim() === 'Close'; });
+        if (close && !close.disabled) { event.preventDefault(); close.click(); }
+    }
+});
 setTimeout(enhanceStudioUI, 500);
 </script>
 """
@@ -3310,6 +3362,9 @@ def _avatar_chat_html(avatar):
     if not avatar:
         return '<div class="ffs-avatar-chat-empty">Create or select an avatar first.</div>'
     turns = []
+    gallery_items = avatar_studio.sync_console_gallery(SAVE_DIR, avatar["id"])
+    image_ids = {os.path.normcase(os.path.abspath(row["generated_path"])): row["id"]
+                 for row in gallery_items if row.get("generated_path")}
     for item in avatar.get("chat_history", [])[-40:]:
         role = html.escape(item.get("role", "assistant"))
         content = html.escape(item.get("content", ""))
@@ -3323,6 +3378,11 @@ def _avatar_chat_html(avatar):
         if image_path and os.path.exists(image_path):
             src = "/gradio_api/file=" + quote(os.path.abspath(image_path).replace("\\", "/"))
             image_html = f'<a class="ffs-chat-image" href="{src}" target="_blank"><img src="{src}" alt="Avatar result"></a>'
+            item_id = image_ids.get(os.path.normcase(os.path.abspath(image_path)))
+            if item_id:
+                image_html += (f'<div class="av-image-actions"><a href="{src}" download>Download</a>'
+                               f'<button type="button" data-av-enhance="{html.escape(item_id, quote=True)}" '
+                               'title="Generative texture reconstruction with FLUX">Enhance realism</button></div>')
         turns.append(
             f'<div class="ffs-avatar-chat-turn {role}">'
             f'<strong>{"You" if role == "user" else "Avatar Studio"}</strong>'
@@ -3339,7 +3399,7 @@ def _avatar_gallery_html(avatar):
     gallery_dir = avatar_studio.avatar_path(SAVE_DIR, avatar["id"]) / "gallery" / "images"
     paths = sorted(gallery_dir.glob("*.png"))
     if not paths:
-        return '<div class="ffs-avatar-gallery-empty">Gallery images generated here will be saved separately from chat.</div>'
+        return '<div class="ffs-avatar-gallery-empty">No saved images yet.</div>'
     tiles = []
     for path in paths[-80:]:
         src = quote(os.path.abspath(path).replace("\\", "/"))
@@ -3379,6 +3439,10 @@ def _avatar_gallery_value(avatar):
         path = item.get("generated_path")
         if path and os.path.exists(path):
             status = item.get("status", "saved").replace("_", " ").title()
+            if item.get("origin") == "console":
+                status = "Console / " + status
+            elif item.get("origin") == "enhancement":
+                status = "Enhanced / " + status
             score = (item.get("validation") or {}).get("score")
             caption = f"{status} / Score {score}" if score is not None else status
             values.append((path, caption))
@@ -3405,7 +3469,7 @@ def _avatar_gallery_details(avatar, index=None):
         f'<strong>{html.escape(item.get("status", "saved").replace("_", " ").title())}</strong>'
         f'<span>Attempt {int(item.get("attempt", 1))} / Score {html.escape(str(validation.get("score", "not checked")))}</span>'
         f'<p>{html.escape(item.get("prompt", ""))}</p>'
-        f'<small>{html.escape("; ".join(reasons) or "No validation problems recorded.")}</small>'
+        f'<small>{html.escape("; ".join(reasons) or ("Not automatically checked." if not validation else "No validation problems recorded."))}</small>'
         '</div>'
     )
 
@@ -3509,6 +3573,10 @@ def _avatar_ui_payload(avatar_id=None, step=None, *, creating=False, library_vie
         avatar_console_status: "",
         gallery_status: "" if api_ready else _status_html("error", avatar_gallery.configuration_status()["message"]),
         gallery_selected_panel: gr.update(visible=False),
+        enhance_panel: gr.update(visible=False),
+        enhance_source_id: None,
+        enhance_job_id: None,
+        enhance_gallery_btn: gr.update(interactive=False),
     }
     if refresh_library:
         avatars = avatar_design.library(SAVE_DIR)
@@ -4040,6 +4108,7 @@ with gr.Blocks(title="FreeFakeStudio") as demo:
                                         lines=2, max_lines=4,
                                     )
                                     regenerate_gallery_btn = gr.Button("Mark Selected Failed and Regenerate", variant="secondary", interactive=False)
+                                    enhance_gallery_btn = gr.Button("Enhance realism", icon=avatar_design.icon("sparkles"), interactive=False)
                         with gr.Tab("References", id="gallery-references"):
                             gallery_reference_filter = gr.Radio(
                                 ["All findings", "Approved", "Rejected", "Awaiting checks"],
@@ -4050,6 +4119,27 @@ with gr.Blocks(title="FreeFakeStudio") as demo:
                             gallery_reference_table = gr.HTML("")
                     gallery_poll_cache = gr.State({})
                     selected_avatar_gallery_index = gr.State(None)
+                enhance_source_id = gr.State(None)
+                enhance_job_id = gr.State(None)
+                enhance_action_id = gr.Textbox(elem_id="av-enhance-action-id", container=False)
+                enhance_action_run = gr.Button("Open enhancement", elem_id="av-enhance-action-run")
+                with gr.Column(visible=False, elem_id="av-enhancement") as enhance_panel:
+                    gr.Markdown("### Enhance realism")
+                    with gr.Row(elem_id="av-enhance-comparison"):
+                        enhance_before = gr.Image(label="Original", interactive=False, height=300, buttons=["download", "fullscreen"], elem_id="av-enhance-before")
+                        enhance_after = gr.Image(label="Enhanced", interactive=False, height=300, buttons=["download", "fullscreen"], elem_id="av-enhance-after")
+                    enhance_dimensions = gr.HTML("")
+                    with gr.Row():
+                        enhance_scale = gr.Radio([("1x (max 2048 px)", 1), ("2x (max 2048 px)", 2)], value=2, label="Output size")
+                        enhance_strength = gr.Slider(0.15, 0.5, value=0.3, step=0.05, label="Reconstruction strength")
+                        enhance_steps = gr.Slider(4, 8, value=4, step=1, label="Detail steps")
+                    with gr.Accordion("Reconstruction prompt", open=False):
+                        gr.Textbox(value=avatar_enhance.REALISM_PROMPT, interactive=False, show_label=False, lines=5)
+                    enhance_status = gr.HTML("")
+                    with gr.Row(elem_id="av-enhance-actions"):
+                        enhance_start = gr.Button("Reconstruct texture", icon=avatar_design.icon("sparkles"), variant="primary")
+                        enhance_stop = gr.Button("Stop enhancement", variant="stop", visible=False)
+                        enhance_close = gr.Button("Close", variant="secondary", elem_id="av-enhance-close")
     gallery_poll = gr.Timer(2.0, active=False)
     # ═══════════════════════════════════════════════════════
     # EVENT HANDLERS
@@ -4441,7 +4531,8 @@ with gr.Blocks(title="FreeFakeStudio") as demo:
                 "assistant",
                 f"Generated with {mode}. Seed {final_seed}.",
                 image_path=image_path,
-                metadata={"mode": mode, "prompt": built_prompt, "seed": final_seed},
+                metadata={"mode": mode, "prompt": built_prompt, "seed": final_seed,
+                          "aspect": aspect, "extra_references": extra_paths},
             )
             yield (
                 _status_html("done", "Avatar image saved"),
@@ -4454,7 +4545,9 @@ with gr.Blocks(title="FreeFakeStudio") as demo:
     avatar_task_controls = [avatar_generate_btn, avatar_stop_btn, gallery_plan_btn, gallery_stop_btn,
                             regenerate_gallery_btn, avatar_selector, avatar_step, avatar_back_library, avatar_rename_btn,
                             avatar_extra_1, avatar_extra_2, gallery_rejection_reason,
-                            gallery_require_face, gallery_quantity, gallery_aspect, gallery_theme, gallery_new_search]
+                            gallery_require_face, gallery_quantity, gallery_aspect, gallery_theme, gallery_new_search,
+                            enhance_gallery_btn, enhance_start, enhance_stop, enhance_close,
+                            enhance_scale, enhance_strength, enhance_steps, enhance_action_run]
 
     def avatar_task_state(avatar_id, busy, kind, selected_index=None):
         avatar = avatar_studio.selected_or_first(SAVE_DIR, avatar_id)
@@ -4466,7 +4559,14 @@ with gr.Blocks(title="FreeFakeStudio") as demo:
             avatar_stop_btn: gr.update(interactive=busy and kind == "console", visible=busy and kind == "console"),
             gallery_plan_btn: gr.update(interactive=ready and api_ready and not busy),
             gallery_stop_btn: gr.update(interactive=busy and kind == "gallery", visible=busy and kind == "gallery"),
-            regenerate_gallery_btn: gr.update(interactive=ready and bool(selected_item and selected_item.get("id"))),
+            regenerate_gallery_btn: gr.update(interactive=ready and bool(selected_item and selected_item.get("prompt")
+                                                                       and selected_item.get("origin") not in {"enhancement", "legacy"})),
+            enhance_gallery_btn: gr.update(interactive=not busy and bool(selected_item and selected_item.get("id"))),
+            enhance_start: gr.update(interactive=not busy),
+            enhance_stop: gr.update(visible=busy and kind == "enhancement", interactive=False),
+            enhance_close: gr.update(interactive=not busy),
+            enhance_action_run: gr.update(interactive=not busy),
+            **{component: gr.update(interactive=not busy) for component in (enhance_scale, enhance_strength, enhance_steps)},
             gallery_rejection_reason: gr.update(interactive=not busy),
             gallery_new_search: gr.update(interactive=False),
             **{component: gr.update(interactive=not busy) for component in
@@ -4478,7 +4578,7 @@ with gr.Blocks(title="FreeFakeStudio") as demo:
         }
 
     def run_avatar_task(iterator, columns, avatar_id, kind, selected_index=None):
-        status_component = avatar_console_status if kind == "console" else gallery_status
+        status_component = avatar_console_status if kind == "console" else enhance_status if kind == "enhancement" else gallery_status
         yield avatar_task_state(avatar_id, True, kind)
         try:
             for row in iterator:
@@ -4527,7 +4627,7 @@ with gr.Blocks(title="FreeFakeStudio") as demo:
             references.append(
                 {
                     "path": path,
-                    "image_url": "dev://mock-reference",
+                    "image_url": "dev://mock-reference/" + os.path.basename(path),
                     "source_url": "dev://local-preview",
                     "title": f"Mock gallery reference {index + 1}",
                     "description": theme or "editorial avatar gallery",
@@ -4551,10 +4651,11 @@ with gr.Blocks(title="FreeFakeStudio") as demo:
             avatar_studio.summarize_specs(avatar.get("body_specs"), limit=10),
         )
 
-    def _run_gallery_generation(avatar, reference, prompt, aspect, item_id, attempt, identity_only=False, validate_output=True):
+    def _run_gallery_generation(avatar, reference, prompt, aspect, item_id, attempt, identity_only=False, validate_output=True,
+                                extra_images=None):
         reference_path = reference.get("path")
         if identity_only:
-            references = avatar_studio.reference_images(SAVE_DIR, avatar)
+            references = avatar_studio.reference_images(SAVE_DIR, avatar, extra_images)
         elif not reference_path or not os.path.exists(reference_path):
             raise RuntimeError("The selected gallery reference image is missing.")
         else:
@@ -4645,12 +4746,13 @@ with gr.Blocks(title="FreeFakeStudio") as demo:
         avatar = avatar_studio.selected_or_first(SAVE_DIR, avatar_id)
         index = int(evt.index) if evt.index is not None else None
         item = avatar_studio.gallery_item_by_index(SAVE_DIR, avatar_id, index) if avatar else None
-        return index, _avatar_gallery_details(avatar, index), gr.update(interactive=bool(item and item.get("id"))), gr.update(visible=bool(item)), gr.update(value="")
+        regenerable = bool(item and item.get("prompt") and item.get("origin") not in {"enhancement", "legacy"})
+        return index, _avatar_gallery_details(avatar, index), gr.update(interactive=regenerable), gr.update(visible=bool(item)), gr.update(value=""), gr.update(interactive=bool(item and item.get("id")))
 
     avatar_gallery_display.select(
         select_avatar_gallery_item,
         inputs=[selected_avatar_id],
-        outputs=[selected_avatar_gallery_index, avatar_gallery_details, regenerate_gallery_btn, gallery_selected_panel, gallery_rejection_reason],
+        outputs=[selected_avatar_gallery_index, avatar_gallery_details, regenerate_gallery_btn, gallery_selected_panel, gallery_rejection_reason, enhance_gallery_btn],
         show_progress="hidden",
     )
 
@@ -4661,6 +4763,8 @@ with gr.Blocks(title="FreeFakeStudio") as demo:
         item = avatar_studio.gallery_item_by_index(SAVE_DIR, avatar_id, selected_index)
         if not item or not item.get("id"):
             raise gr.Error("That gallery item is no longer available. Refresh Avatar Studio.")
+        if item.get("origin") in {"enhancement", "legacy"} or not item.get("prompt"):
+            raise gr.Error("This image has no reusable generation recipe. Use Enhance realism instead.")
         reference = {
             "path": item.get("reference_path"),
             "image_url": item.get("reference_url"),
@@ -4671,7 +4775,7 @@ with gr.Blocks(title="FreeFakeStudio") as demo:
         prompt = item.get("prompt", "")
         prompt = (
             prompt + " User rejected the previous image. " + previous_validation["repair_instruction"]
-            if DEV_MODE or item.get("origin") == "guided"
+            if DEV_MODE or item.get("origin") in {"guided", "console"}
             else avatar_gallery.repair_generation_prompt(prompt, previous_validation)
         )
         attempt = int(item.get("attempt", 1)) + 1
@@ -4686,7 +4790,8 @@ with gr.Blocks(title="FreeFakeStudio") as demo:
         try:
             path, validation, seed = _run_gallery_generation(
                 avatar, reference, prompt, item.get("aspect") or "864x1152 (3:4)", item["id"], attempt,
-                identity_only=item.get("origin") == "guided",
+                identity_only=item.get("origin") in {"guided", "console"},
+                extra_images=[path for path in item.get("extra_references", []) if os.path.isfile(path)],
             )
         except Exception as exc:
             debug_path = _write_runtime_error("avatar gallery regeneration", exc)
@@ -4743,6 +4848,116 @@ with gr.Blocks(title="FreeFakeStudio") as demo:
     gallery_stop_btn.click(stop_avatar_gallery, inputs=[selected_avatar_id],
                           outputs=[gallery_status] + avatar_task_controls,
                           cancels=[avatar_gallery_event, avatar_regenerate_event], queue=False, show_progress="hidden")
+
+    def enhancement_dimensions(avatar_id, item_id, scale):
+        item = avatar_studio.gallery_item_by_id(SAVE_DIR, avatar_id, item_id) if avatar_id else None
+        if not item:
+            return ""
+        with Image.open(item["generated_path"]) as image:
+            width, height = image.size
+            out_width, out_height = avatar_enhance.target_size(image.size, int(scale))
+        return f'<div class="av-enhance-dimensions">{width} x {height} px &rarr; {out_width} x {out_height} px</div>'
+
+    def open_avatar_enhancement(avatar_id, item_id):
+        item = avatar_studio.gallery_item_by_id(SAVE_DIR, avatar_id, item_id) if avatar_id else None
+        if not item:
+            raise gr.Error("Select a saved avatar image first.")
+        return {enhance_panel: gr.update(visible=True), enhance_source_id: item["id"], enhance_job_id: None,
+                enhance_before: item["generated_path"], enhance_after: None, enhance_status: "",
+                enhance_scale: 2, enhance_strength: 0.3, enhance_steps: 4,
+                enhance_dimensions: enhancement_dimensions(avatar_id, item["id"], 2)}
+
+    enhancement_open_outputs = [enhance_panel, enhance_source_id, enhance_job_id, enhance_before,
+                                enhance_after, enhance_status, enhance_scale, enhance_strength, enhance_steps, enhance_dimensions]
+    enhance_action_run.click(open_avatar_enhancement, inputs=[selected_avatar_id, enhance_action_id],
+                             outputs=enhancement_open_outputs, show_progress="hidden")
+
+    def open_selected_enhancement(avatar_id, index):
+        item = avatar_studio.gallery_item_by_index(SAVE_DIR, avatar_id, index)
+        return open_avatar_enhancement(avatar_id, item.get("id") if item else None)
+
+    enhance_gallery_btn.click(open_selected_enhancement, inputs=[selected_avatar_id, selected_avatar_gallery_index],
+                              outputs=enhancement_open_outputs, show_progress="hidden")
+    enhance_scale.change(enhancement_dimensions, inputs=[selected_avatar_id, enhance_source_id, enhance_scale],
+                          outputs=[enhance_dimensions], show_progress="hidden")
+    enhance_close.click(lambda: gr.update(visible=False), outputs=[enhance_panel], show_progress="hidden")
+
+    def _enhance_avatar_image(avatar_id, source_id, scale, strength, steps):
+        item = avatar_studio.gallery_item_by_id(SAVE_DIR, avatar_id, source_id) if avatar_id else None
+        if not item:
+            raise gr.Error("The selected source image is no longer available.")
+        if int(steps) not in range(4, 9):
+            raise ValueError("Choose 4 to 8 detail steps.")
+        with Image.open(item["generated_path"]) as image:
+            source = image.convert("RGB")
+        output_size = avatar_enhance.target_size(source.size, int(scale))
+        job_id = "enhance-" + uuid.uuid4().hex[:12]
+        seed = make_seed(0)
+        avatar_studio.record_gallery_item(SAVE_DIR, avatar_id, {
+            "id": job_id, "origin": "enhancement", "source_id": source_id,
+            "source_path": item["generated_path"], "status": "enhancing", "attempt": 1,
+            "prompt": avatar_enhance.REALISM_PROMPT, "scale": int(scale), "strength": float(strength),
+            "steps": int(steps), "seed": str(seed), "output_size": list(output_size), "stop_requested": False,
+        })
+
+        def cancelled():
+            return any(row.get("stop_requested") for row in avatar_studio.load_gallery_items(SAVE_DIR, avatar_id)
+                       if row["id"] == job_id)
+
+        def edit(tile, context, prompt, tile_seed, denoise):
+            engine = model_manager.ensure_model(model_manager.FLUX_MODEL_NAME)
+            return engine.img2img([tile, context], prompt, "", tile_seed, 1.0, denoise, int(steps))
+
+        completed = False
+        try:
+            yield {enhance_job_id: job_id, enhance_after: None,
+                   enhance_stop: gr.update(interactive=True),
+                   enhance_status: _status_html("active", "Preparing FLUX texture reconstruction")}
+            for progress in avatar_enhance.reconstruct(source, edit, int(scale), float(strength), seed, cancelled):
+                if progress["image"] is None:
+                    yield {enhance_status: _status_html("active", f"Reconstructing detail tile {progress['tile']}/{progress['total']}")}
+                else:
+                    path = avatar_studio.save_gallery_image(SAVE_DIR, avatar_id, job_id, progress["image"])
+                    avatar_studio.update_gallery_item(SAVE_DIR, avatar_id, job_id, generated_path=path, status="unchecked")
+                    completed = True
+                    avatar = avatar_studio.load_avatar(SAVE_DIR, avatar_id)
+                    yield {enhance_after: path, avatar_gallery_display: _avatar_gallery_value(avatar),
+                           selected_avatar_gallery_index: None, gallery_selected_panel: gr.update(visible=False),
+                           enhance_status: _status_html("done", "Enhanced version saved. Original preserved; compare identity and fine details.")}
+        except avatar_enhance.EnhancementCancelled as exc:
+            avatar_studio.update_gallery_item(SAVE_DIR, avatar_id, job_id, status="stopped")
+            yield {enhance_status: _status_html("done", str(exc))}
+        except BaseException:
+            if not completed:
+                avatar_studio.update_gallery_item(SAVE_DIR, avatar_id, job_id, status="stopped" if cancelled() else "failed")
+            raise
+
+    enhancement_columns = [enhance_job_id, enhance_after, enhance_status, avatar_gallery_display,
+                           selected_avatar_gallery_index, gallery_selected_panel]
+
+    def enhance_avatar_image(avatar_id, source_id, scale, strength, steps):
+        iterator = _enhance_avatar_image(avatar_id, source_id, scale, strength, steps)
+        yield avatar_task_state(avatar_id, True, "enhancement")
+        try:
+            yield from iterator
+        except Exception as exc:
+            _write_runtime_error("avatar texture reconstruction", exc)
+            yield {enhance_status: _status_html("error", f"{exc} Original image preserved. Check results/_debug.")}
+        yield avatar_task_state(avatar_id, False, "enhancement")
+
+    avatar_enhance_event = enhance_start.click(enhance_avatar_image,
+        inputs=[selected_avatar_id, enhance_source_id, enhance_scale, enhance_strength, enhance_steps],
+        outputs=enhancement_columns + avatar_task_controls, trigger_mode="once", show_progress="hidden")
+    avatar_enhance_event.then(refresh_avatar_overview, inputs=[selected_avatar_id, avatar_search],
+                              outputs=[avatar_dashboard, avatar_library, avatar_library_ids], show_progress="hidden")
+
+    def stop_avatar_enhancement(avatar_id, job_id):
+        if job_id:
+            avatar_studio.update_gallery_item(SAVE_DIR, avatar_id, job_id, stop_requested=True)
+        return _status_html("active", "Stopping after the current detail tile. Original image preserved.")
+
+    enhance_stop.click(stop_avatar_enhancement, inputs=[selected_avatar_id, enhance_job_id],
+                        outputs=[enhance_status], queue=False, show_progress="hidden")
 
     starter_examples = {
         starter_portrait: "A cinematic portrait with soft window light, natural skin texture, 85mm photography",

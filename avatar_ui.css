@@ -290,10 +290,26 @@ body:has(#ffs-workspace-tabs input[value="Avatar Studio"]:checked) #ffs-settings
 #av-reference-gallery .grid-wrap { height:auto !important; min-height:0 !important; max-height:none !important; }
 #av-reference-gallery .grid-container { grid-template-columns:repeat(4,minmax(0,1fr)) !important; gap:12px !important; }
 #av-reference-gallery .gallery-item { min-width:0 !important; aspect-ratio:3/4 !important; border-radius:6px !important; }
+.av-image-actions { display:flex; flex-wrap:wrap; gap:12px; align-items:center; margin-top:8px; }
+#ffs-avatar-studio .av-image-actions :is(a,button) { font:inherit; font-size:12px; color:var(--av-accent); background:transparent; border:0; padding:6px 0; cursor:pointer; text-decoration:none; }
+#av-enhance-action-id,#av-enhance-action-run { display:none !important; }
+#av-enhance-shade { position:fixed; inset:0; z-index:3999; background:#0009; }
+#av-enhance-shade[hidden] { display:none; }
+#av-enhancement { position:fixed; z-index:4000; top:50%; left:50%; transform:translate(-50%,-50%); width:min(1000px,calc(100vw - 32px)); max-height:calc(100dvh - 32px); overflow:auto; overscroll-behavior:contain; padding:24px !important; background:var(--ffs-surface) !important; border:1px solid var(--ffs-border) !important; border-radius:8px !important; box-shadow:0 12px 48px #0004 !important; }
+#av-enhancement h3 { font-size:20px; margin:0 0 12px; }
+#av-enhancement .av-enhance-dimensions { color:var(--ffs-muted); font-size:12px; padding:8px 0; }
+#av-enhance-comparison { gap:16px !important; }
+#av-enhance-comparison>.block { flex:1 1 0 !important; min-width:0 !important; }
+#av-enhance-actions { position:sticky; bottom:-24px; z-index:5; background:var(--ffs-surface); padding:12px 0; border-top:1px solid var(--ffs-border); }
 @media (max-width:600px) {
   .av-pipeline-title { flex-direction:column; gap:5px; }
   .av-pipeline-counts { grid-template-columns:repeat(4,minmax(0,1fr)); }
   .av-reference-table table { font-size:10px; }
   .av-reference-table th,.av-reference-table td { padding:6px; }
   #av-reference-gallery .grid-container { grid-template-columns:repeat(2,minmax(0,1fr)) !important; gap:10px !important; }
+  #av-enhancement { padding:16px !important; width:calc(100vw - 16px); max-height:calc(100dvh - 16px); }
+  #av-enhance-comparison { flex-direction:row !important; gap:8px !important; }
+  #av-enhance-comparison>.block { flex:1 1 0 !important; height:180px !important; }
+  #av-enhance-actions { bottom:-16px; flex-wrap:nowrap !important; gap:8px !important; }
+  #av-enhance-actions button { min-width:0 !important; font-size:12px !important; }
 }

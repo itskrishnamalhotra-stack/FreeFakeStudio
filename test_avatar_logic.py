@@ -189,7 +189,9 @@ class AvatarLogicTests(unittest.TestCase):
         controls = ("avatar_generate_btn", "avatar_stop_btn", "gallery_plan_btn", "gallery_stop_btn",
                     "regenerate_gallery_btn", "gallery_rejection_reason", "avatar_extra_1", "avatar_extra_2",
                     "avatar_selector", "avatar_step", "avatar_back_library", "avatar_rename_btn",
-                    "gallery_require_face", "gallery_quantity", "gallery_aspect", "gallery_theme", "gallery_new_search")
+                    "gallery_require_face", "gallery_quantity", "gallery_aspect", "gallery_theme", "gallery_new_search",
+                    "enhance_gallery_btn", "enhance_start", "enhance_stop", "enhance_close", "enhance_scale",
+                    "enhance_strength", "enhance_steps", "enhance_action_run")
         namespace = {name: name for name in controls}
         namespace.update({"avatar_studio": studio, "SAVE_DIR": self.root, "DEV_MODE": True,
                           "gr": SimpleNamespace(update=lambda **kwargs: kwargs)})

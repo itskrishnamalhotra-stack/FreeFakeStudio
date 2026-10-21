@@ -342,14 +342,49 @@ def reject_gallery_item(save_dir, avatar_id, item_id, reason=""):
 
 
 def visible_gallery_items(save_dir, avatar_id):
+    sync_console_gallery(save_dir, avatar_id)
     items = load_gallery_items(save_dir, avatar_id)
     visible = [item for item in items if os.path.isfile(item.get("generated_path") or "")]
     recorded = {os.path.abspath(item["generated_path"]) for item in visible}
     prefixes = tuple(f'gallery_{item["id"]}_a' for item in items if item.get("id"))
     for path in sorted((avatar_path(save_dir, avatar_id) / "gallery" / "images").glob("*.png")):
         if os.path.abspath(path) not in recorded and not path.name.startswith(prefixes):
-            visible.append({"generated_path": str(path), "status": "saved"})
+            identifier = hashlib.sha256(os.path.abspath(path).encode("utf-8")).hexdigest()[:20]
+            visible.append({"id": "legacy-" + identifier, "origin": "legacy", "generated_path": str(path), "status": "saved"})
     return visible[-100:]
+
+
+def sync_console_gallery(save_dir, avatar_id):
+    """Index existing console results in place; do not duplicate image files."""
+    avatar = load_avatar(save_dir, avatar_id)
+    items = load_gallery_items(save_dir, avatar_id)
+    recorded = {os.path.normcase(os.path.abspath(item["generated_path"]))
+                for item in items if item.get("generated_path")}
+    identifiers = {item.get("id") for item in items}
+    changed = False
+    for turn in avatar.get("chat_history", []):
+        path = turn.get("image_path")
+        if turn.get("role") != "assistant" or not path or not os.path.isfile(path):
+            continue
+        canonical = os.path.normcase(os.path.abspath(path))
+        if canonical in recorded:
+            continue
+        metadata = turn.get("metadata") or {}
+        identifier = "console-" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:20]
+        if identifier in identifiers:
+            identifier += "-" + uuid.uuid4().hex[:8]
+        items.append({"id": identifier,
+                      "origin": "console", "generated_path": path, "status": "saved", "attempt": 1,
+                      "prompt": metadata.get("prompt", ""), "seed": metadata.get("seed"),
+                      "aspect": metadata.get("aspect"), "mode": metadata.get("mode"),
+                      "extra_references": metadata.get("extra_references", []),
+                      "created_at": turn.get("created_at") or turn.get("time") or _now(), "updated_at": _now()})
+        recorded.add(canonical)
+        identifiers.add(identifier)
+        changed = True
+    if changed:
+        save_gallery_items(save_dir, avatar_id, items)
+    return items
 
 
 def gallery_item_by_index(save_dir, avatar_id, index):
@@ -357,6 +392,11 @@ def gallery_item_by_index(save_dir, avatar_id, index):
     if index is None or not 0 <= int(index) < len(items):
         return None
     return items[int(index)]
+
+
+def gallery_item_by_id(save_dir, avatar_id, item_id):
+    saved = next((row for row in sync_console_gallery(save_dir, avatar_id) if row.get("id") == item_id), None)
+    return saved or next((row for row in visible_gallery_items(save_dir, avatar_id) if row.get("id") == item_id), None)
 
 
 def save_gallery_image(save_dir, avatar_id, item_id, image, attempt=1):

@@ -426,13 +426,40 @@ Avatar Studio is a persistent, Flux-only identity workflow stored under
 5. Use Auto Gallery to discover references, write prompts, generate with Flux,
    validate identity/anatomy with SmolVLM, and automatically repair failed
    prompts. Selecting an image exposes a manual failed-generation regeneration
-   control. Gallery images and chat images are stored separately.
+   control. Console images also appear in the avatar gallery, while retaining
+   their original chat file and conversation entry.
 
 The gallery prompt writer receives the selected reference image as well as its
 caption. To reject a result, optionally fill **What should change?** in the image
 inspector before regenerating. User rejection overrides an earlier automatic
 pass, is supplied to the prompt repair, and is saved alongside the previous
 assessment and image attempt, even if the repair API fails.
+
+### Texture Reconstruction
+
+Saved console images now appear in the avatar gallery, including older results
+indexed from saved chat history. User-uploaded references are not added as results.
+The index points at existing files without copying them.
+
+Use **Enhance realism** below a console image or in a selected gallery image's
+inspector. The dialog shows the original, output dimensions, reconstruction
+strength, detail steps, the automatic realism prompt, and the enhanced result.
+Choose 1x or 2x; both are capped at a 2048-pixel longest edge, with aspect preserved.
+Defaults are 2x, strength 0.30, and four distilled FLUX steps per tile.
+
+This is generative texture reconstruction, not conventional sharpening or recovery
+of genuine camera RAW information. The existing FLUX model edits overlapping tiles
+sequentially, using the full source image as context. Tiles are at most 768 pixels
+per edge, padded to multiples of 64, with a maximum of nine tiles. Reconstructed
+high-frequency detail is feather-blended while retaining source low-frequency
+color and structure. It bypasses Smart Mask and downloads no extra model weights.
+
+The original is never overwritten. A new **Enhanced / Unchecked** gallery entry
+records the source image, prompt, seed, strength, steps, and output size. Compare
+faces, clothing, text, and tiny details yourself: generative edits can invent
+details or change identity, and stronger reconstruction increases this risk.
+**Stop enhancement** waits for the current tile and discards incomplete output.
+An interrupted enhancement can be started again from its preserved source.
 
 ### Reference Review And Batch Recovery
 
