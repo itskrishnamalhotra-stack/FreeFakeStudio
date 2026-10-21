@@ -37,6 +37,8 @@ import gradio as gr
 import workspace as ws
 import avatar_gallery
 import avatar_studio
+import avatar_guide
+import avatar_design
 SAVE_DIR = ws.get_save_dir()
 CHAT_HISTORY_PATH = os.path.join(SAVE_DIR, "_sessions", "current_chat.json")
 
@@ -262,7 +264,16 @@ def do_generate(model_name, prompt, negative, aspect_ratio,
     mode = "generate"
     input_images = _as_image_list(input_image)
     canvas_idx = canvas_index if canvas_index is not None and input_images else None
-    primary_image = input_images[canvas_idx] if canvas_idx is not None else None
+    if canvas_idx is not None:
+        if not isinstance(canvas_idx, int) or not 0 <= canvas_idx < len(input_images):
+            yield (_status_html("error", "The selected canvas is no longer available. Select it again."),
+                   [], [], str(seed))
+            return
+        # The FLUX engine uses the first input as its editing base.
+        input_images = [input_images[canvas_idx]] + [
+            image for index, image in enumerate(input_images) if index != canvas_idx
+        ]
+    primary_image = input_images[0] if canvas_idx is not None else None
 
     # Determine mode
     if input_images:
@@ -2820,6 +2831,8 @@ html[data-ffs-settings="open"] #ffs-settings-backdrop {
 # ═══════════════════════════════════════════════════════════
 #  JAVASCRIPT — brush size boost, keyboard shortcuts
 # ═══════════════════════════════════════════════════════════
+CSS += avatar_design.CSS
+
 JS_HEAD = """
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -2854,7 +2867,7 @@ function syncRangeFill(slider) {
 }
 
 function prepareGenerationSliders() {
-    document.querySelectorAll('#ffs-settings-panel input[type="range"]').forEach(function(slider) {
+    document.querySelectorAll('#ffs-settings-panel input[type="range"], #ffs-avatar-studio input[type="range"]').forEach(function(slider) {
         syncRangeFill(slider);
         if (!slider.dataset.ffsRangeReady) {
             slider.dataset.ffsRangeReady = 'true';
@@ -2956,7 +2969,8 @@ function prepareSettingsDrawer() {
             if (event.key === 'Escape') setSettingsDrawer(false);
         });
     }
-    setSettingsDrawer(document.documentElement.dataset.ffsSettings === 'open');
+    var avatarTab = document.querySelector('#ffs-workspace-tabs input[value="Avatar Studio"]:checked');
+    setSettingsDrawer(!avatarTab && document.documentElement.dataset.ffsSettings === 'open');
 }
 
 function openMaskSettings() {
@@ -3107,6 +3121,37 @@ function prepareImagePreviews() {
     }, true);
 }
 
+var avatarPendingUploads = new Map();
+var avatarUploadOwnedDisable = false;
+function releaseAvatarUploads() {
+    avatarPendingUploads.forEach(function(token, slot) {
+        var marker = document.querySelector('#av-extra-ready-' + slot + ' [data-token]');
+        if (marker && marker.dataset.token !== token) avatarPendingUploads.delete(slot);
+    });
+    var compose = document.querySelector('#av-console-compose');
+    var send = document.querySelector('#av-console-input button.primary');
+    if (avatarPendingUploads.size || !compose || !send) return;
+    compose.removeAttribute('data-ffs-uploading');
+    send.removeAttribute('aria-busy');
+    if (avatarUploadOwnedDisable && !compose.querySelector('.ffs-status-active, .ffs-generation-stage')) send.disabled = false;
+    avatarUploadOwnedDisable = false;
+}
+document.addEventListener('change', function(event) {
+    var input = event.target;
+    if (!input.matches('.ffs-avatar-extra-row input[type="file"]') || !input.files.length) return;
+    var slot = input.closest('#av-console-extra-1') ? '1' : '2';
+    var marker = document.querySelector('#av-extra-ready-' + slot + ' [data-token]');
+    avatarPendingUploads.set(slot, marker ? marker.dataset.token : '');
+    var compose = document.querySelector('#av-console-compose');
+    var send = document.querySelector('#av-console-input button.primary');
+    if (compose && send) {
+        if (!send.disabled) avatarUploadOwnedDisable = true;
+        send.disabled = true;
+        send.setAttribute('aria-busy', 'true');
+        compose.setAttribute('data-ffs-uploading', 'true');
+    }
+}, true);
+
 function enhanceStudioUI() {
     var attach = document.querySelector('#ffs-attach button, #ffs-attach');
     var generate = document.querySelector('#ffs-generate button, #ffs-generate');
@@ -3126,6 +3171,47 @@ function enhanceStudioUI() {
     prepareSettingsDrawer();
     prepareAttachmentCards();
     prepareImagePreviews();
+    releaseAvatarUploads();
+    document.querySelectorAll('#av-extra-ready-1, #av-extra-ready-2').forEach(function(marker) {
+        if (!marker.dataset.ffsObserved) {
+            marker.dataset.ffsObserved = 'true';
+            new MutationObserver(releaseAvatarUploads).observe(marker, {childList:true, subtree:true});
+        }
+    });
+    var backToLibrary = document.querySelector('#av-back-library');
+    if (backToLibrary) {
+        backToLibrary.setAttribute('aria-label', 'All avatars');
+        backToLibrary.setAttribute('title', 'All avatars');
+    }
+    var avatarRoot = document.querySelector('#ffs-avatar-studio');
+    if (avatarRoot && avatarRoot.getClientRects().length) {
+        var library = document.querySelector('#av-library-view');
+        var creation = document.querySelector('#av-creation');
+        var view = library && library.getClientRects().length ? 'library' : creation && creation.getClientRects().length ? 'creation' : 'workbench';
+        if (document.documentElement.dataset.ffsAvatarView !== view) {
+            document.documentElement.dataset.ffsAvatarView = view;
+            window.scrollTo({top:0, behavior:'auto'});
+        }
+    }
+    var avatarChat = document.querySelector('#av-console-chat');
+    if (avatarChat && !avatarChat.dataset.ffsObserved) {
+        avatarChat.dataset.ffsObserved = 'true';
+        var scrollAvatarChat = function() {
+            window.requestAnimationFrame(function() { avatarChat.scrollTop = avatarChat.scrollHeight; });
+        };
+        new MutationObserver(scrollAvatarChat).observe(avatarChat, {childList:true, subtree:true});
+        new ResizeObserver(scrollAvatarChat).observe(avatarChat);
+        avatarChat.addEventListener('load', scrollAvatarChat, true);
+        scrollAvatarChat();
+    }
+    var heading = document.querySelector('#av-guide .av-guide-heading h2');
+    if (heading && heading.getClientRects().length && heading.textContent !== document.documentElement.dataset.ffsGuideHeading) {
+        document.documentElement.dataset.ffsGuideHeading = heading.textContent;
+        var top = heading.closest('.av-guide-heading').getBoundingClientRect().top;
+        if (top < 90 || top > 240) {
+            window.scrollTo({top: Math.max(0, window.scrollY + top - 104), behavior: 'auto'});
+        }
+    }
 
     var status = document.querySelector('#ffs-status');
     if (status && !status.dataset.ffsObserved) {
@@ -3214,8 +3300,9 @@ def _avatar_choices_update(value=None):
 
 
 def _avatar_image_value(avatar, key):
-    path = avatar.get(key) if avatar else None
-    return path if path and os.path.exists(path) else None
+    kind = key.removesuffix("_image")
+    path = (avatar.get(f"{kind}_candidate") or (avatar.get(key) if avatar.get(f"{kind}_locked") else None)) if avatar else None
+    return path if path and os.path.exists(path) else avatar_guide.draft(avatar, key.removesuffix("_image"))
 
 
 def _avatar_chat_html(avatar):
@@ -3227,16 +3314,21 @@ def _avatar_chat_html(avatar):
         content = html.escape(item.get("content", ""))
         image_path = item.get("image_path")
         image_html = ""
+        references = []
+        for path in (item.get("metadata") or {}).get("extra_references", []):
+            if os.path.isfile(path):
+                reference_src = "/gradio_api/file=" + quote(os.path.abspath(path).replace("\\", "/"))
+                references.append(f'<a class="ffs-chat-image" href="{reference_src}" target="_blank"><img src="{reference_src}" alt="Attached avatar reference"></a>')
         if image_path and os.path.exists(image_path):
-            src = quote(os.path.abspath(image_path).replace("\\", "/"))
+            src = "/gradio_api/file=" + quote(os.path.abspath(image_path).replace("\\", "/"))
             image_html = f'<a class="ffs-chat-image" href="{src}" target="_blank"><img src="{src}" alt="Avatar result"></a>'
         turns.append(
             f'<div class="ffs-avatar-chat-turn {role}">'
             f'<strong>{"You" if role == "user" else "Avatar Studio"}</strong>'
-            f'<span>{content}</span>{image_html}</div>'
+            f'<span>{content}</span><div class="av-turn-references">{"".join(references)}</div>{image_html}</div>'
         )
     return '<div class="ffs-avatar-chat-log">' + "".join(turns) + '</div>' if turns else (
-        '<div class="ffs-avatar-chat-empty">The avatar console is ready after face and body are locked.</div>'
+        '<div class="ffs-avatar-chat-empty">No creations yet.</div>'
     )
 
 
@@ -3255,7 +3347,9 @@ def _avatar_gallery_html(avatar):
 
 
 def _avatar_available_steps(avatar):
-    steps = ["Face"]
+    if avatar_guide.active(avatar):
+        return ["Guide", "Console", "Gallery"] if avatar_guide.stage(avatar) == "complete" else ["Guide"]
+    steps = (["Guide"] if avatar_guide.active(avatar) else []) + ["Face"]
     if avatar and avatar.get("face_locked"):
         steps.append("Body")
     if avatar and avatar.get("face_locked") and avatar.get("body_locked"):
@@ -3268,7 +3362,7 @@ def _avatar_step_state(avatar, requested=None):
     current = str(requested or (avatar or {}).get("current_step", "face")).title()
     if current not in available:
         current = available[-1]
-    return current, gr.update(value=current, choices=available, interactive=True)
+    return current, gr.update(value=current, choices=available, interactive=True, visible=bool(avatar) and len(available) > 1)
 
 
 def _avatar_step_visibility(step):
@@ -3280,24 +3374,14 @@ def _avatar_gallery_value(avatar):
     if not avatar:
         return []
     values = []
-    recorded = set()
-    managed_prefixes = set()
-    for item in avatar_studio.load_gallery_items(SAVE_DIR, avatar["id"]):
-        if item.get("id"):
-            managed_prefixes.add(f'gallery_{item["id"]}_a')
+    for item in avatar_studio.visible_gallery_items(SAVE_DIR, avatar["id"]):
         path = item.get("generated_path")
         if path and os.path.exists(path):
-            recorded.add(os.path.abspath(path))
             status = item.get("status", "saved").replace("_", " ").title()
             score = (item.get("validation") or {}).get("score")
             caption = f"{status} / Score {score}" if score is not None else status
             values.append((path, caption))
-    gallery_dir = avatar_studio.avatar_path(SAVE_DIR, avatar["id"]) / "gallery" / "images"
-    for path in sorted(gallery_dir.glob("*.png")):
-        managed_attempt = any(path.name.startswith(prefix) for prefix in managed_prefixes)
-        if os.path.abspath(path) not in recorded and not managed_attempt:
-            values.append((str(path), "Saved gallery image"))
-    return values[-100:]
+    return values
 
 
 def _avatar_gallery_details(avatar, index=None):
@@ -3325,41 +3409,105 @@ def _avatar_gallery_details(avatar, index=None):
     )
 
 
-def _avatar_ui_payload(avatar_id=None, step=None):
-    avatar = avatar_studio.selected_or_first(SAVE_DIR, avatar_id)
-    if not avatar:
-        empty_specs = avatar_studio.specs_html(None, "Face Specs")
-        empty_body = avatar_studio.specs_html(None, "Body Specs")
-        current_step, step_update = _avatar_step_state(None, "Face")
-        return (
-            None,
-            _avatar_choices_update(None),
-            avatar_studio.status_html(None),
-            step_update,
-            None,
-            None,
-            empty_specs,
-            empty_body,
-            _avatar_chat_html(None),
-            [],
-            _avatar_gallery_details(None),
-            *_avatar_step_visibility(current_step),
-        )
-    current_step, step_update = _avatar_step_state(avatar, step)
-    return (
-        avatar["id"],
-        _avatar_choices_update(avatar["id"]),
-        avatar_studio.status_html(avatar),
-        step_update,
-        _avatar_image_value(avatar, "face_image"),
-        _avatar_image_value(avatar, "body_image"),
-        avatar_studio.specs_html(avatar.get("face_specs"), "Face Specs"),
-        avatar_studio.specs_html(avatar.get("body_specs"), "Body Specs"),
-        _avatar_chat_html(avatar),
-        _avatar_gallery_value(avatar),
-        _avatar_gallery_details(avatar),
-        *_avatar_step_visibility(current_step),
-    )
+def _avatar_ui_payload(avatar_id=None, step=None, *, creating=False, library_view=False, refresh_library=True):
+    avatar = None if creating else avatar_studio.selected_or_first(SAVE_DIR, avatar_id)
+    current, navigation = _avatar_step_state(avatar, step)
+    ready = bool(avatar and avatar.get("face_locked") and avatar.get("body_locked"))
+    guide_stage = avatar_guide.stage(avatar)
+    face_stage = guide_stage.startswith("face")
+    guide_kind = "face" if face_stage else "body"
+    face_prompt, body_prompt, scene_one, scene_two = avatar_guide.options(avatar)
+    items = avatar_studio.load_gallery_items(SAVE_DIR, avatar["id"]) if avatar else []
+    starters = [(item["generated_path"], item.get("status", "saved").replace("_", " ").title())
+                for item in items if item.get("origin") == "guided" and os.path.isfile(item.get("generated_path") or "")]
+    face_value = _avatar_image_value(avatar, "face_image")
+    body_value = _avatar_image_value(avatar, "body_image")
+    api_ready = DEV_MODE or avatar_gallery.configuration_status()["ready"]
+    values = {
+        selected_avatar_id: avatar["id"] if avatar else None,
+        avatar_selector: gr.update(choices=avatar_studio.avatar_choices(SAVE_DIR), value=avatar["id"] if avatar else None, visible=bool(avatar), interactive=True),
+        avatar_back_library: gr.update(interactive=True),
+        avatar_status: avatar_studio.status_html(avatar),
+        avatar_step: navigation,
+        face_image: face_value,
+        body_image: body_value,
+        face_details: (avatar or {}).get("face_prompt", face_prompt),
+        body_details: (avatar or {}).get("body_prompt", body_prompt),
+        face_specs: avatar_studio.specs_html((avatar or {}).get("face_specs"), "Face Specs"),
+        body_specs: avatar_studio.specs_html((avatar or {}).get("body_specs"), "Body Specs"),
+        lock_face_btn: gr.update(interactive=face_value is not None),
+        lock_body_btn: gr.update(interactive=body_value is not None),
+        avatar_chat_display: _avatar_chat_html(avatar),
+        avatar_gallery_display: _avatar_gallery_value(avatar),
+        avatar_gallery_details: _avatar_gallery_details(avatar),
+        selected_avatar_gallery_index: None,
+        regenerate_gallery_btn: gr.update(interactive=False),
+        gallery_rejection_reason: gr.update(value="", interactive=True),
+        gallery_plan_btn: gr.update(interactive=ready and api_ready),
+        avatar_face_step: gr.update(visible=bool(avatar) and current == "Face"),
+        avatar_body_step: gr.update(visible=bool(avatar) and current == "Body"),
+        avatar_console_step: gr.update(visible=bool(avatar) and current == "Console"),
+        avatar_gallery_step: gr.update(visible=bool(avatar) and current == "Gallery"),
+        avatar_dashboard: gr.update(value=avatar_design.dashboard(avatar), visible=bool(avatar)),
+        avatar_creation: gr.update(visible=creating),
+        avatar_cancel_new: gr.update(visible=True),
+        avatar_guide_group: gr.update(visible=bool(avatar) and current == "Guide"),
+        avatar_library_view: gr.update(visible=library_view),
+        avatar_workspace_layout: gr.update(visible=not library_view),
+        guide_heading: avatar_design.guide_header(avatar),
+        guide_context: avatar_design.reference_context(avatar, guide_kind),
+        guide_brief: avatar_studio.build_reference_prompt(guide_kind, face_prompt if face_stage else body_prompt, avatar),
+        face_brief: avatar_studio.build_reference_prompt("face", (avatar or {}).get("face_prompt", face_prompt), avatar),
+        body_brief: avatar_studio.build_reference_prompt("body", (avatar or {}).get("body_prompt", body_prompt), avatar),
+        body_context: avatar_design.reference_context(avatar, "body"),
+        guide_image: gr.update(value=avatar_guide.draft(avatar, guide_kind), label="Face draft" if face_stage else "Body draft"),
+        guide_face_prompt: gr.update(value=face_prompt, visible=face_stage),
+        guide_body_prompt: gr.update(value=body_prompt, visible=not face_stage),
+        guide_scene_one: scene_one,
+        guide_scene_two: scene_two,
+        guide_scenes: gr.update(visible=guide_stage in {"body_review", "starters"}),
+        guide_next_btn: gr.update(value=avatar_guide.next_label(avatar), visible=guide_stage != "complete", interactive=True),
+        guide_regenerate_btn: gr.update(value="Try another face" if face_stage else "Try another body", visible=guide_stage in {"face_review", "body_review"}, interactive=True),
+        guide_upload: gr.update(visible=guide_stage not in {"starters", "complete"}, interactive=True),
+        guide_back_btn: gr.update(visible=guide_stage not in {"face", "face_review"}, interactive=True),
+        guide_custom_btn: gr.update(interactive=True),
+        guide_stop_btn: gr.update(visible=False),
+        guide_results: gr.update(value=starters, visible=bool(starters)),
+        guide_console_btn: gr.update(visible=guide_stage == "complete"),
+        guide_gallery_btn: gr.update(visible=guide_stage == "complete"),
+        guide_work: gr.update(visible=guide_stage not in {"starters", "complete"}),
+        guide_status: "",
+        avatar_rename_panel: gr.update(visible=False),
+        avatar_rename_name: (avatar or {}).get("name", ""),
+        avatar_extra_1: None,
+        avatar_extra_2: None,
+        avatar_extra_panel: gr.update(label="Additional references (optional)"),
+        avatar_prompt: "",
+        avatar_name_input: gr.update(),
+        avatar_creation_mode: gr.update(),
+        avatar_preset: gr.update(),
+        avatar_rename_btn: gr.update(visible=bool(avatar), interactive=True),
+        avatar_task_status: gr.update(value="", visible=False),
+        avatar_stop_btn: gr.update(interactive=False, visible=False),
+        avatar_generate_btn: gr.update(interactive=ready, visible=True),
+        gallery_stop_btn: gr.update(interactive=False, visible=False),
+        generate_face_btn: gr.update(interactive=bool(avatar)),
+        generate_body_btn: gr.update(interactive=bool(avatar and avatar.get("face_locked"))),
+        avatar_console_status: "",
+        gallery_status: "" if api_ready else _status_html("error", avatar_gallery.configuration_status()["message"]),
+        gallery_selected_panel: gr.update(visible=False),
+    }
+    if refresh_library:
+        avatars = avatar_design.library(SAVE_DIR)
+        values.update({
+            avatar_library: gr.update(value=avatar_design.library_values(SAVE_DIR), visible=bool(avatars)),
+            avatar_library_ids: [item["id"] for item in avatars],
+            avatar_search: "",
+            avatar_filter: "All avatars",
+            avatar_sort: "Recent",
+            avatar_library_empty: gr.update(value=avatar_design.library_empty(SAVE_DIR), visible=not bool(avatars)),
+        })
+    return values
 
 
 _initial_chat_history = _load_chat_history()
@@ -3695,31 +3843,90 @@ with gr.Blocks(title="FreeFakeStudio") as demo:
                 )
 
     with gr.Column(visible=False, elem_classes="ffs-avatar-studio", elem_id="ffs-avatar-studio") as avatar_workspace:
-        with gr.Row(elem_id="ffs-avatar-layout"):
-            with gr.Column(scale=0, min_width=260, elem_id="ffs-avatar-sidebar"):
-                gr.HTML(
-                    '<div class="ffs-avatar-panel-title"><strong>Avatar Studio</strong>'
-                    '<span>Persistent face/body identity workspace</span></div>'
-                )
-                avatar_name_input = gr.Textbox(label="New Avatar", placeholder="Avatar name", lines=1)
-                create_avatar_btn = gr.Button("Create Avatar", variant="primary")
-                avatar_selector = gr.Dropdown(
-                    choices=avatar_studio.avatar_choices(SAVE_DIR),
-                    value=_avatar_first_id(),
-                    label="Saved Avatars",
-                )
-                refresh_avatar_btn = gr.Button("Refresh", size="sm", variant="secondary")
-                avatar_status = gr.HTML(avatar_studio.status_html(avatar_studio.selected_or_first(SAVE_DIR)))
+        with gr.Column(elem_id="av-library-view") as avatar_library_view:
+            with gr.Row(elem_id="av-library-top"):
+                gr.HTML('<div class="av-library-title"><div><span class="av-eyebrow">CHARACTER WORKSPACE</span><h1>Avatar Studio</h1><p>Your identities, references, and creations.</p></div></div>')
+                avatar_new_btn = gr.Button("New avatar", icon=avatar_design.icon("plus"), elem_id="av-new", variant="primary", scale=0)
+            with gr.Row(elem_id="av-library-tools"):
+                avatar_search = gr.Textbox(placeholder="Search avatars", label="Search", show_label=False, container=False, scale=3)
+                avatar_filter = gr.Dropdown(choices=["All avatars", "Ready", "In progress"], value="All avatars", label="Status", scale=1)
+                avatar_sort = gr.Dropdown(choices=["Recent", "Name"], value="Recent", label="Sort", scale=1)
+                refresh_avatar_btn = gr.Button("Refresh", icon=avatar_design.icon("refresh-cw"), size="sm", variant="secondary", scale=0)
+            avatar_library_ids = gr.State([item["id"] for item in avatar_design.library(SAVE_DIR)])
+            avatar_library = gr.Gallery(
+                value=avatar_design.library_values(SAVE_DIR), columns=4, height="auto",
+                visible=bool(_initial_avatar), show_label=False, allow_preview=False,
+                interactive=False, object_fit="cover", buttons=[], elem_id="av-library",
+            )
+            avatar_library_empty = gr.HTML(avatar_design.library_empty(SAVE_DIR), visible=not bool(_initial_avatar))
+            avatar_status = gr.HTML(avatar_studio.status_html(_initial_avatar), visible=False)
+
+        with gr.Column(visible=False, elem_id="ffs-avatar-layout") as avatar_workspace_layout:
+            with gr.Column(scale=5, elem_id="ffs-avatar-main"):
+                with gr.Row(elem_id="av-workspace-tools"):
+                    avatar_back_library = gr.Button("All avatars", icon=avatar_design.icon("arrow-left"), size="sm", scale=0, elem_id="av-back-library")
+                    avatar_dashboard = gr.HTML(avatar_design.dashboard(_initial_avatar), elem_id="av-dashboard")
+                    avatar_selector = gr.Dropdown(choices=avatar_studio.avatar_choices(SAVE_DIR), value=_avatar_first_id(), label="Switch avatar", show_label=False, container=False, scale=0, elem_id="av-switch")
+                    avatar_rename_btn = gr.Button("Rename", size="sm", scale=0, elem_id="av-rename")
+                with gr.Group(visible=False, elem_id="av-rename-panel") as avatar_rename_panel:
+                    avatar_rename_name = gr.Textbox(label="Avatar name")
+                    with gr.Row():
+                        avatar_rename_save = gr.Button("Save name", variant="primary")
+                        avatar_rename_cancel = gr.Button("Cancel")
+                with gr.Group(visible=not bool(_initial_avatar), elem_id="av-creation") as avatar_creation:
+                    gr.HTML('<h2>Create an avatar</h2>')
+                    avatar_creation_mode = gr.Radio(
+                        choices=[("Guided setup", "Guided"), ("Custom avatar", "Custom")],
+                        value="Guided", label="Start your way", elem_id="av-creation-mode",
+                    )
+                    with gr.Row():
+                        avatar_name_input = gr.Textbox(label="Avatar name", placeholder="e.g. Maya", lines=1, scale=2)
+                        avatar_preset = gr.Dropdown(choices=list(avatar_guide.PRESETS), value="Studio creator", label="Starting style", scale=1)
+                    with gr.Row():
+                        create_avatar_btn = gr.Button("Create avatar", variant="primary")
+                        avatar_cancel_new = gr.Button("Cancel", variant="secondary")
+                avatar_task_status = gr.HTML("", visible=False, elem_id="av-task-status")
                 avatar_step = gr.Radio(
                     choices=_avatar_available_steps(_initial_avatar),
                     value=_initial_avatar_step,
-                    label="Step",
-                    interactive=True,
+                    show_label=False, interactive=True, visible=bool(_initial_avatar) and len(_avatar_available_steps(_initial_avatar)) > 1, elem_id="av-navigation",
                 )
-
-            with gr.Column(scale=5, elem_id="ffs-avatar-main"):
+                with gr.Group(visible=_initial_avatar_step == "Guide", elem_id="av-guide") as avatar_guide_group:
+                    guide_heading = gr.HTML(avatar_design.guide_header(_initial_avatar))
+                    with gr.Row(visible=avatar_guide.stage(_initial_avatar) not in {"complete", "starters"}, elem_id="av-guide-work") as guide_work:
+                        with gr.Column(scale=3, elem_id="av-guide-canvas"):
+                            guide_image = gr.Image(
+                                value=avatar_guide.draft(_initial_avatar, "face" if avatar_guide.stage(_initial_avatar).startswith("face") else "body"),
+                                label="Identity draft", type="pil", sources=["upload"], height=450, elem_id="av-guide-image",
+                            )
+                        with gr.Column(scale=1, elem_id="av-guide-prompts"):
+                            guide_context = gr.HTML(avatar_design.reference_context(_initial_avatar, "face"))
+                            guide_face_prompt = gr.Textbox(label="Face direction", value=avatar_guide.options(_initial_avatar)[0], lines=6)
+                            guide_body_prompt = gr.Textbox(label="Body & outfit direction", value=avatar_guide.options(_initial_avatar)[1], lines=6)
+                            with gr.Row(elem_id="av-preview-tools"):
+                                guide_regenerate_btn = gr.Button("Try another face", icon=avatar_design.icon("sparkles"), size="sm")
+                                guide_upload = gr.UploadButton("Upload image", file_types=["image"], type="filepath", size="sm")
+                            with gr.Accordion("Generation brief", open=False, elem_id="av-guide-brief"):
+                                guide_brief = gr.Textbox(label="Resolved FLUX prompt", interactive=False, lines=8)
+                            guide_custom_btn = gr.Button("Use custom controls", size="sm", elem_id="av-custom-handoff")
+                    with gr.Accordion("Your first two scenes", open=False, visible=False) as guide_scenes:
+                        guide_scene_one = gr.Textbox(label="Portrait", value=avatar_guide.options(_initial_avatar)[2], lines=3)
+                        guide_scene_two = gr.Textbox(label="Full-body scene", value=avatar_guide.options(_initial_avatar)[3], lines=3)
+                    guide_status = gr.HTML("", elem_id="av-guide-status")
+                    guide_results = gr.Gallery(
+                        value=[item for item in _avatar_gallery_value(_initial_avatar)][:2] if avatar_guide.stage(_initial_avatar) == "complete" else [],
+                        label="Starter collection", show_label=False, columns=2, height="auto",
+                        object_fit="contain", buttons=["download", "fullscreen"], elem_id="av-guide-results",
+                        visible=avatar_guide.stage(_initial_avatar) == "complete",
+                    )
+                    with gr.Row(elem_id="av-guide-actions"):
+                        guide_back_btn = gr.Button("Back", icon=avatar_design.icon("arrow-left"), size="sm", scale=0)
+                        guide_stop_btn = gr.Button("Stop", variant="stop", visible=False, scale=0)
+                        guide_next_btn = gr.Button(avatar_guide.next_label(_initial_avatar), icon=avatar_design.icon("arrow-right"), variant="primary", scale=2, elem_id="av-guide-next", visible=avatar_guide.stage(_initial_avatar) != "complete")
+                        guide_console_btn = gr.Button("Open avatar console", variant="primary", visible=avatar_guide.stage(_initial_avatar) == "complete", scale=2)
+                        guide_gallery_btn = gr.Button("View gallery", visible=False, scale=1)
                 with gr.Group(
-                    visible=_initial_avatar_step == "Face",
+                    visible=bool(_initial_avatar) and _initial_avatar_step == "Face",
                     elem_classes="ffs-avatar-step",
                 ) as avatar_face_step:
                     gr.HTML(
@@ -3727,17 +3934,17 @@ with gr.Blocks(title="FreeFakeStudio") as demo:
                         '<span>Generate or upload a clean headshot, then lock it.</span></div>'
                     )
                     with gr.Row(elem_classes="ffs-avatar-reference-row"):
-                        face_details = gr.Textbox(
-                            label="Face details",
-                            placeholder="Example: dark hair, soft makeup, oval face, clear headshot",
-                            lines=3,
-                            scale=2,
-                        )
-                        face_image = gr.Image(label="Face candidate", type="pil", sources=["upload"], height=300, scale=1)
-                    with gr.Row(elem_classes="ffs-avatar-action-row"):
-                        generate_face_btn = gr.Button("Generate Face Draft", variant="secondary")
-                        lock_face_btn = gr.Button("Confirm Face", variant="primary")
-                    face_specs = gr.HTML(avatar_studio.specs_html(None, "Face Specs"))
+                        face_image = gr.Image(value=_avatar_image_value(_initial_avatar, "face_image"), label="Face candidate", type="pil", sources=["upload"], height=450, scale=3)
+                        with gr.Column(scale=1, elem_classes="av-direction-panel"):
+                            gr.HTML(avatar_design.reference_context(None, "face"))
+                            face_details = gr.Textbox(label="Face details", placeholder="Example: dark hair, soft makeup, oval face", lines=6)
+                            with gr.Row(elem_classes="ffs-avatar-action-row"):
+                                generate_face_btn = gr.Button("Generate face", icon=avatar_design.icon("sparkles"), variant="secondary")
+                                lock_face_btn = gr.Button("Confirm face & next", icon=avatar_design.icon("arrow-right"), variant="primary", interactive=bool(_avatar_image_value(_initial_avatar, "face_image")))
+                            with gr.Accordion("Generation brief", open=False):
+                                face_brief = gr.Textbox(label="Resolved face prompt", interactive=False, lines=8)
+                    with gr.Accordion("Face identity details", open=False):
+                        face_specs = gr.HTML(avatar_studio.specs_html((_initial_avatar or {}).get("face_specs"), "Face Specs"))
 
                 with gr.Group(
                     visible=_initial_avatar_step == "Body",
@@ -3748,73 +3955,74 @@ with gr.Blocks(title="FreeFakeStudio") as demo:
                         '<span>Generate or upload a clean full-body reference, then lock it.</span></div>'
                     )
                     with gr.Row(elem_classes="ffs-avatar-reference-row"):
-                        body_details = gr.Textbox(
-                            label="Body details",
-                            placeholder="Example: full body, neutral fitted outfit, clear proportions",
-                            lines=3,
-                            scale=2,
-                        )
-                        body_image = gr.Image(label="Body candidate", type="pil", sources=["upload"], height=340, scale=1)
-                    with gr.Row(elem_classes="ffs-avatar-action-row"):
-                        generate_body_btn = gr.Button("Generate Body Draft", variant="secondary")
-                        lock_body_btn = gr.Button("Confirm Body", variant="primary")
-                    body_specs = gr.HTML(avatar_studio.specs_html(None, "Body Specs"))
+                        body_image = gr.Image(value=_avatar_image_value(_initial_avatar, "body_image"), label="Body candidate", type="pil", sources=["upload"], height=450, scale=3)
+                        with gr.Column(scale=1, elem_classes="av-direction-panel"):
+                            body_context = gr.HTML(avatar_design.reference_context(_initial_avatar, "body"))
+                            body_details = gr.Textbox(label="Body details", placeholder="Example: full body, neutral fitted outfit, clear proportions", lines=6)
+                            with gr.Row(elem_classes="ffs-avatar-action-row"):
+                                generate_body_btn = gr.Button("Generate body", icon=avatar_design.icon("sparkles"), variant="secondary")
+                                lock_body_btn = gr.Button("Confirm body & next", icon=avatar_design.icon("arrow-right"), variant="primary", interactive=bool(_avatar_image_value(_initial_avatar, "body_image")))
+                            with gr.Accordion("Generation brief", open=False):
+                                body_brief = gr.Textbox(label="Resolved body prompt", interactive=False, lines=8)
+                    with gr.Accordion("Body identity details", open=False):
+                        body_specs = gr.HTML(avatar_studio.specs_html((_initial_avatar or {}).get("body_specs"), "Body Specs"))
 
                 with gr.Group(
                     visible=_initial_avatar_step == "Console",
                     elem_classes="ffs-avatar-step",
                 ) as avatar_console_step:
                     gr.HTML(
-                        '<div class="ffs-avatar-step-title"><strong>3. Avatar Console</strong>'
-                        '<span>Face and body stay attached; add up to two extra references.</span></div>'
+                        '<div class="ffs-avatar-step-title"><strong>Avatar Console</strong></div>'
                     )
-                    with gr.Row(elem_classes="ffs-avatar-control-row"):
-                        avatar_mode = gr.Dropdown(
-                            choices=["Identity Strict", "Outfit Focus", "Pose Focus", "Scene Focus", "Group Image"],
-                            value="Identity Strict",
-                            label="Mode",
-                        )
-                        avatar_aspect = gr.Dropdown(ASPECTS, value="1024x1024 (1:1)", label="Aspect")
-                        avatar_steps = gr.Slider(1, 8, value=4, step=1, label="Steps")
-                    with gr.Row(elem_classes="ffs-avatar-extra-row"):
-                        avatar_extra_1 = gr.Image(label="Extra reference 1", type="pil", sources=["upload"], height=180)
-                        avatar_extra_2 = gr.Image(label="Extra reference 2", type="pil", sources=["upload"], height=180)
-                    avatar_prompt = gr.Textbox(label="Prompt", placeholder="Describe the scene, outfit, pose, or action.", lines=3)
-                    avatar_generate_btn = gr.Button("Generate Avatar Image", variant="primary")
-                    avatar_console_status = gr.HTML("")
-                    avatar_chat_display = gr.HTML(_avatar_chat_html(avatar_studio.selected_or_first(SAVE_DIR)))
+                    avatar_chat_display = gr.HTML(_avatar_chat_html(avatar_studio.selected_or_first(SAVE_DIR)), elem_id="av-console-chat")
+                    with gr.Column(elem_id="av-console-compose"):
+                        with gr.Accordion("Generation settings", open=False):
+                            with gr.Row(elem_classes="ffs-avatar-control-row"):
+                                avatar_mode = gr.Dropdown(choices=["Identity Strict", "Outfit Focus", "Pose Focus", "Scene Focus", "Group Image"], value="Identity Strict", label="Mode")
+                                avatar_aspect = gr.Dropdown(ASPECTS, value="1024x1024 (1:1)", label="Aspect")
+                                avatar_steps = gr.Slider(1, 8, value=4, step=1, label="Steps")
+                        with gr.Accordion("Additional references (optional)", open=False) as avatar_extra_panel:
+                            with gr.Row(elem_classes="ffs-avatar-extra-row"):
+                                avatar_extra_1 = gr.Image(label="Extra reference 1", type="pil", sources=["upload"], height=180, elem_id="av-console-extra-1")
+                                avatar_extra_2 = gr.Image(label="Extra reference 2", type="pil", sources=["upload"], height=180, elem_id="av-console-extra-2")
+                            avatar_extra_ready_1 = gr.HTML('<span data-token="initial"></span>', elem_id="av-extra-ready-1", elem_classes="av-internal")
+                            avatar_extra_ready_2 = gr.HTML('<span data-token="initial"></span>', elem_id="av-extra-ready-2", elem_classes="av-internal")
+                        avatar_console_status = gr.HTML("")
+                        with gr.Row(elem_id="av-console-input"):
+                            avatar_prompt = gr.Textbox(label="Prompt", show_label=False, container=False, placeholder="Describe the scene, outfit, pose, or action...", lines=2, max_lines=5, scale=8)
+                            avatar_generate_btn = gr.Button("Generate image", icon=avatar_design.icon("sparkles"), variant="primary", scale=0)
+                            avatar_stop_btn = gr.Button("Stop", variant="stop", scale=0, visible=False)
 
                 with gr.Group(
                     visible=_initial_avatar_step == "Gallery",
                     elem_classes="ffs-avatar-step",
                 ) as avatar_gallery_step:
                     gr.HTML(
-                        '<div class="ffs-avatar-step-title"><strong>4. Auto Gallery</strong>'
-                        '<span>Find references, generate, validate, repair, and save a persistent gallery.</span></div>'
+                        '<div class="ffs-avatar-step-title"><strong>Auto Gallery</strong></div>'
                     )
                     with gr.Row(elem_classes="ffs-avatar-gallery-controls"):
                         gallery_quantity = gr.Slider(1, 20, value=6, step=1, label="Quantity")
                         gallery_aspect = gr.Dropdown(ASPECTS, value="864x1152 (3:4)", label="Aspect")
-                        gallery_theme = gr.Textbox(label="Gallery theme", placeholder="Example: editorial street fashion, clean daylight")
-                    gallery_plan_btn = gr.Button("Generate Gallery", variant="primary")
-                    gallery_status = gr.HTML("")
-                    avatar_gallery_display = gr.Gallery(
-                        value=_avatar_gallery_value(_initial_avatar),
-                        show_label=False,
-                        columns=4,
-                        height="auto",
-                        object_fit="cover",
-                        preview=False,
-                        allow_preview=True,
-                        buttons=["download", "fullscreen"],
-                        elem_id="ffs-avatar-gallery",
-                    )
+                        gallery_theme = gr.Textbox(label="Gallery theme", placeholder="Street fashion in daylight")
+                    with gr.Row(elem_id="av-gallery-actions"):
+                        gallery_plan_btn = gr.Button("Generate gallery", icon=avatar_design.icon("sparkles"), variant="primary", scale=0, min_width=176)
+                        gallery_stop_btn = gr.Button("Stop", variant="stop", scale=0, visible=False)
+                    gallery_status = gr.HTML("" if DEV_MODE or avatar_gallery.configuration_status()["ready"] else _status_html("error", avatar_gallery.configuration_status()["message"]))
+                    with gr.Row(elem_id="av-gallery-work"):
+                        with gr.Column(scale=4):
+                            avatar_gallery_display = gr.Gallery(
+                                value=_avatar_gallery_value(_initial_avatar), show_label=False,
+                                columns=4, height="auto", object_fit="cover", preview=False,
+                                allow_preview=True, buttons=["download", "fullscreen"], elem_id="ffs-avatar-gallery",
+                            )
+                        with gr.Column(scale=1, visible=False, elem_id="av-gallery-inspector") as gallery_selected_panel:
+                            avatar_gallery_details = gr.HTML(_avatar_gallery_details(_initial_avatar))
+                            gallery_rejection_reason = gr.Textbox(
+                                label="What should change?", placeholder="Wrong face, outfit, pose, or another issue",
+                                lines=2, max_lines=4,
+                            )
+                            regenerate_gallery_btn = gr.Button("Mark Selected Failed and Regenerate", variant="secondary", interactive=False)
                     selected_avatar_gallery_index = gr.State(None)
-                    avatar_gallery_details = gr.HTML(_avatar_gallery_details(_initial_avatar))
-                    regenerate_gallery_btn = gr.Button(
-                        "Mark Selected Failed and Regenerate",
-                        variant="secondary",
-                    )
     # ═══════════════════════════════════════════════════════
     # EVENT HANDLERS
     # ═══════════════════════════════════════════════════════
@@ -3836,135 +4044,295 @@ with gr.Blocks(title="FreeFakeStudio") as demo:
         show_progress="hidden",
     )
 
+    avatar_outputs = list(_avatar_ui_payload(_avatar_first_id()).keys())
+
+    def avatar_reference_ready(image, other_image):
+        count = int(image is not None) + int(other_image is not None)
+        label = f"Additional references ({count}/2)" if count else "Additional references (optional)"
+        return f'<span data-token="{uuid.uuid4().hex}"></span>', gr.update(label=label)
+
+    avatar_extra_1.change(avatar_reference_ready, inputs=[avatar_extra_1, avatar_extra_2], outputs=[avatar_extra_ready_1, avatar_extra_panel], show_progress="hidden")
+    avatar_extra_2.change(avatar_reference_ready, inputs=[avatar_extra_2, avatar_extra_1], outputs=[avatar_extra_ready_2, avatar_extra_panel], show_progress="hidden")
+
+    def update_guide_brief(avatar_id, face, body):
+        avatar = avatar_studio.selected_or_first(SAVE_DIR, avatar_id)
+        kind = "face" if avatar_guide.stage(avatar).startswith("face") else "body"
+        return avatar_studio.build_reference_prompt(kind, face if kind == "face" else body, avatar)
+
+    for direction in (guide_face_prompt, guide_body_prompt):
+        direction.input(update_guide_brief, inputs=[selected_avatar_id, guide_face_prompt, guide_body_prompt], outputs=[guide_brief], show_progress="hidden", trigger_mode="always_last")
+    face_details.input(lambda details: avatar_studio.build_reference_prompt("face", details), inputs=[face_details], outputs=[face_brief], show_progress="hidden", trigger_mode="always_last")
+    body_details.input(lambda avatar_id, details: avatar_studio.build_reference_prompt("body", details, avatar_studio.selected_or_first(SAVE_DIR, avatar_id)), inputs=[selected_avatar_id, body_details], outputs=[body_brief], show_progress="hidden", trigger_mode="always_last")
+
     def change_avatar_step(avatar_id, step):
         avatar = avatar_studio.selected_or_first(SAVE_DIR, avatar_id)
-        current, step_update = _avatar_step_state(avatar, step)
+        current, _ = _avatar_step_state(avatar, step)
         if avatar and current.lower() != avatar.get("current_step"):
             avatar["current_step"] = current.lower()
-            avatar = avatar_studio.save_avatar(SAVE_DIR, avatar)
-        return step_update, *_avatar_step_visibility(current), avatar_studio.status_html(avatar)
+            avatar_studio.save_avatar(SAVE_DIR, avatar)
+        return _avatar_ui_payload(avatar_id, current)
 
-    avatar_step.change(
-        change_avatar_step,
-        inputs=[selected_avatar_id, avatar_step],
-        outputs=[
-            avatar_step,
-            avatar_face_step,
-            avatar_body_step,
-            avatar_console_step,
-            avatar_gallery_step,
-            avatar_status,
-        ],
-        show_progress="hidden",
-    )
+    avatar_step.input(change_avatar_step, inputs=[selected_avatar_id, avatar_step], outputs=avatar_outputs, show_progress="hidden")
 
-    def create_avatar_handler(name):
-        avatar = avatar_studio.create_avatar(SAVE_DIR, name)
-        payload = _avatar_ui_payload(avatar["id"], "Face")
-        return (*payload, gr.update(value=""))
+    def create_avatar_handler(name, mode, preset):
+        avatar = avatar_guide.create(SAVE_DIR, name, preset, mode)
+        payload = _avatar_ui_payload(avatar["id"], "Guide" if mode == "Guided" else "Face")
+        payload[avatar_name_input] = ""
+        return payload
 
-    create_avatar_btn.click(
-        create_avatar_handler,
-        inputs=[avatar_name_input],
-        outputs=[
-            selected_avatar_id, avatar_selector, avatar_status, avatar_step,
-            face_image, body_image, face_specs, body_specs,
-            avatar_chat_display, avatar_gallery_display, avatar_gallery_details,
-            avatar_face_step, avatar_body_step, avatar_console_step, avatar_gallery_step,
-            avatar_name_input,
-        ],
-        show_progress="minimal",
-    )
+    create_avatar_btn.click(create_avatar_handler, inputs=[avatar_name_input, avatar_creation_mode, avatar_preset], outputs=avatar_outputs, show_progress="minimal")
 
     def refresh_avatar_handler(avatar_id):
+        if avatar_id:
+            avatar_studio.select_avatar(SAVE_DIR, avatar_id)
         return _avatar_ui_payload(avatar_id)
 
-    refresh_avatar_btn.click(
-        refresh_avatar_handler,
-        inputs=[selected_avatar_id],
-        outputs=[
-            selected_avatar_id, avatar_selector, avatar_status, avatar_step,
-            face_image, body_image, face_specs, body_specs,
-            avatar_chat_display, avatar_gallery_display, avatar_gallery_details,
-            avatar_face_step, avatar_body_step, avatar_console_step, avatar_gallery_step,
-        ],
-        show_progress="hidden",
-    )
+    avatar_selector.input(refresh_avatar_handler, inputs=[avatar_selector], outputs=avatar_outputs, show_progress="hidden")
 
-    avatar_selector.change(
-        refresh_avatar_handler,
-        inputs=[avatar_selector],
-        outputs=[
-            selected_avatar_id, avatar_selector, avatar_status, avatar_step,
-            face_image, body_image, face_specs, body_specs,
-            avatar_chat_display, avatar_gallery_display, avatar_gallery_details,
-            avatar_face_step, avatar_body_step, avatar_console_step, avatar_gallery_step,
-        ],
-        show_progress="hidden",
-    )
+    def search_avatar_library(query, status, sort):
+        avatars = avatar_design.library(SAVE_DIR, query, status, sort)
+        return (
+            gr.update(value=avatar_design.library_values(SAVE_DIR, query, status, sort), visible=bool(avatars)),
+            [avatar["id"] for avatar in avatars],
+            gr.update(value=avatar_design.library_empty(SAVE_DIR, query, status), visible=not bool(avatars)),
+        )
 
-    def make_avatar_reference(kind, details):
+    library_inputs = [avatar_search, avatar_filter, avatar_sort]
+    library_outputs = [avatar_library, avatar_library_ids, avatar_library_empty]
+    for control in library_inputs:
+        control.input(search_avatar_library, inputs=library_inputs, outputs=library_outputs, show_progress="hidden")
+    refresh_avatar_btn.click(search_avatar_library, inputs=library_inputs, outputs=library_outputs, show_progress="hidden")
+
+    def show_avatar_library(avatar_id, query, status, sort):
+        payload = _avatar_ui_payload(avatar_id, library_view=True, refresh_library=False)
+        values = search_avatar_library(query, status, sort)
+        payload.update(dict(zip(library_outputs, values)))
+        return payload
+
+    avatar_back_library.click(show_avatar_library, inputs=[selected_avatar_id, *library_inputs], outputs=avatar_outputs, show_progress="hidden")
+    avatar_cancel_new.click(show_avatar_library, inputs=[selected_avatar_id, *library_inputs], outputs=avatar_outputs, show_progress="hidden")
+
+    def start_new_avatar():
+        payload = _avatar_ui_payload(creating=True)
+        payload[avatar_name_input] = ""
+        payload[avatar_creation_mode] = "Guided"
+        payload[avatar_preset] = gr.update(value="Studio creator", visible=True)
+        return payload
+
+    avatar_new_btn.click(start_new_avatar, outputs=avatar_outputs, show_progress="hidden")
+    avatar_creation_mode.input(lambda mode: gr.update(visible=mode == "Guided"), inputs=[avatar_creation_mode], outputs=[avatar_preset], show_progress="hidden")
+
+    def select_avatar_from_library(ids, evt: gr.SelectData):
+        index = int(evt.index)
+        if not 0 <= index < len(ids):
+            raise gr.Error("Refresh the library and select the avatar again.")
+        avatar_studio.select_avatar(SAVE_DIR, ids[index])
+        return _avatar_ui_payload(ids[index])
+
+    avatar_library.select(select_avatar_from_library, inputs=[avatar_library_ids], outputs=avatar_outputs, show_progress="hidden")
+
+    def refresh_avatar_overview(avatar_id, query):
+        avatar = avatar_studio.load_avatar(SAVE_DIR, avatar_id) if avatar_id else None
+        avatars = avatar_design.library(SAVE_DIR, query)
+        return (
+            avatar_design.dashboard(avatar),
+            gr.update(value=avatar_design.library_values(SAVE_DIR, query), visible=bool(avatars)),
+            [avatar["id"] for avatar in avatars],
+        )
+
+    avatar_rename_btn.click(lambda: gr.update(visible=True), outputs=[avatar_rename_panel], show_progress="hidden")
+    avatar_rename_cancel.click(lambda: gr.update(visible=False), outputs=[avatar_rename_panel], show_progress="hidden")
+
+    def rename_selected_avatar(avatar_id, name):
+        avatar_studio.rename_avatar(SAVE_DIR, avatar_id, name)
+        return _avatar_ui_payload(avatar_id)
+
+    avatar_rename_save.click(rename_selected_avatar, inputs=[selected_avatar_id, avatar_rename_name], outputs=avatar_outputs, show_progress="hidden")
+
+    def make_avatar_reference(kind, details, avatar=None):
+        prompt = avatar_studio.build_reference_prompt(kind, details, avatar)
         if DEV_MODE:
             return avatar_studio.make_dev_reference(kind, details)
-        prompt = (
-            "Clean adult face identity reference headshot, face only, no hands, simple background. "
-            if kind == "face"
-            else "Clean adult full-body identity reference, head to toe visible, simple background. "
-        ) + (details or "")
         aspect = "1024x1024 (1:1)" if kind == "face" else "864x1152 (3:4)"
+        references = None
+        if kind == "body" and avatar and avatar.get("face_locked"):
+            references = avatar_studio.reference_images(SAVE_DIR, {"face_image": avatar.get("face_image")})
         final_image = None
-        for _, images, _, _ in do_generate(
+        last_status = ""
+        for last_status, images, _, _ in do_generate(
             model_manager.FLUX_MODEL_NAME, prompt, DEFAULT_NEG, aspect,
-            0, 1.0, 1.0, 1, 4,
+            0, 1.0, 1.0, 1, 4, input_image=references, canvas_index=None,
         ):
             if images:
                 final_image = images[0]
-        return final_image or avatar_studio.make_dev_reference(kind, details)
+        if final_image is None:
+            raise gr.Error(re.sub("<[^>]+>", "", last_status) or "FLUX returned no image. Check results/_debug.")
+        return final_image
 
-    generate_face_btn.click(
-        lambda details: make_avatar_reference("face", details),
-        inputs=[face_details],
-        outputs=[face_image],
-        show_progress="minimal",
-    )
-    generate_body_btn.click(
-        lambda details: make_avatar_reference("body", details),
-        inputs=[body_details],
-        outputs=[body_image],
-        show_progress="minimal",
-    )
+    def make_custom_reference(avatar_id, kind, details):
+        if not avatar_id:
+            raise gr.Error("Create an avatar first.")
+        avatar = avatar_studio.load_avatar(SAVE_DIR, avatar_id)
+        avatar[f"{kind}_prompt"] = details or ""
+        avatar_studio.save_avatar(SAVE_DIR, avatar)
+        payload = _avatar_ui_payload(avatar_id, kind.title(), refresh_library=False)
+        payload[avatar_task_status] = gr.update(value='<div class="av-busy" role="status"><i></i><span>Generating identity draft</span></div>', visible=True)
+        payload[generate_face_btn if kind == "face" else generate_body_btn] = gr.update(interactive=False)
+        for control in (avatar_selector, avatar_back_library, avatar_step, avatar_rename_btn, lock_face_btn, lock_body_btn):
+            payload[control] = gr.update(interactive=False)
+        yield payload
+        try:
+            image = make_avatar_reference(kind, details, avatar)
+            avatar_studio.save_candidate(SAVE_DIR, avatar_id, kind, image, details)
+            yield _avatar_ui_payload(avatar_id, kind.title())
+        except Exception as exc:
+            _write_runtime_error("avatar reference draft", exc)
+            payload = _avatar_ui_payload(avatar_id, kind.title())
+            payload[avatar_task_status] = gr.update(value=_status_html("error", str(exc)), visible=True)
+            yield payload
 
-    def lock_avatar_reference(avatar_id, kind, image):
+    def generate_custom_face(avatar_id, details):
+        yield from make_custom_reference(avatar_id, "face", details)
+
+    def generate_custom_body(avatar_id, details):
+        yield from make_custom_reference(avatar_id, "body", details)
+
+    generate_face_btn.click(generate_custom_face, inputs=[selected_avatar_id, face_details], outputs=avatar_outputs, show_progress="hidden", trigger_mode="once")
+    generate_body_btn.click(generate_custom_body, inputs=[selected_avatar_id, body_details], outputs=avatar_outputs, show_progress="hidden", trigger_mode="once")
+
+    def upload_custom_reference(avatar_id, kind, image, details):
+        avatar_studio.save_candidate(SAVE_DIR, avatar_id, kind, image, details)
+        return _avatar_ui_payload(avatar_id, kind.title())
+
+    face_image.upload(lambda avatar_id, image, details: upload_custom_reference(avatar_id, "face", image, details), inputs=[selected_avatar_id, face_image, face_details], outputs=avatar_outputs, show_progress="minimal")
+    body_image.upload(lambda avatar_id, image, details: upload_custom_reference(avatar_id, "body", image, details), inputs=[selected_avatar_id, body_image, body_details], outputs=avatar_outputs, show_progress="minimal")
+    face_image.clear(lambda: gr.update(interactive=False), outputs=[lock_face_btn], show_progress="hidden")
+    body_image.clear(lambda: gr.update(interactive=False), outputs=[lock_body_btn], show_progress="hidden")
+
+    def lock_avatar_reference(avatar_id, kind, image, details):
         if not avatar_id:
             raise gr.Error("Create or select an avatar first.")
+        avatar = avatar_studio.load_avatar(SAVE_DIR, avatar_id)
+        avatar[f"{kind}_prompt"] = details or ""
+        avatar_studio.save_avatar(SAVE_DIR, avatar)
         avatar_studio.lock_reference(SAVE_DIR, avatar_id, kind, image, dev_mode=DEV_MODE)
         step = "Body" if kind == "face" else "Console"
         return _avatar_ui_payload(avatar_id, step)
 
     lock_face_btn.click(
-        lambda avatar_id, image: lock_avatar_reference(avatar_id, "face", image),
-        inputs=[selected_avatar_id, face_image],
-        outputs=[
-            selected_avatar_id, avatar_selector, avatar_status, avatar_step,
-            face_image, body_image, face_specs, body_specs,
-            avatar_chat_display, avatar_gallery_display, avatar_gallery_details,
-            avatar_face_step, avatar_body_step, avatar_console_step, avatar_gallery_step,
-        ],
+        lambda avatar_id, image, details: lock_avatar_reference(avatar_id, "face", image, details),
+        inputs=[selected_avatar_id, face_image, face_details],
+        outputs=avatar_outputs,
         show_progress="minimal",
     )
     lock_body_btn.click(
-        lambda avatar_id, image: lock_avatar_reference(avatar_id, "body", image),
-        inputs=[selected_avatar_id, body_image],
-        outputs=[
-            selected_avatar_id, avatar_selector, avatar_status, avatar_step,
-            face_image, body_image, face_specs, body_specs,
-            avatar_chat_display, avatar_gallery_display, avatar_gallery_details,
-            avatar_face_step, avatar_body_step, avatar_console_step, avatar_gallery_step,
-        ],
+        lambda avatar_id, image, details: lock_avatar_reference(avatar_id, "body", image, details),
+        inputs=[selected_avatar_id, body_image, body_details],
+        outputs=avatar_outputs,
         show_progress="minimal",
     )
 
-    def avatar_console_generate(avatar_id, mode, prompt, aspect, steps, extra_1, extra_2):
+    def generate_guided_image(kind, prompt, avatar):
+        if kind in {"face", "body"}:
+            return make_avatar_reference(kind, prompt, avatar)
+        references = avatar_studio.reference_images(SAVE_DIR, avatar)
+        result = None
+        last_status = ""
+        for last_status, images, _, _ in do_generate(
+            model_manager.FLUX_MODEL_NAME, prompt, DEFAULT_NEG,
+            "864x1152 (3:4)", 0, 1.0, 1.0, 1, 4,
+            input_image=references, canvas_index=None,
+        ):
+            if images:
+                result = images[0]
+        if result is None:
+            raise RuntimeError(re.sub("<[^>]+>", "", last_status) or "FLUX returned no starter image.")
+        return result
+
+    def guide_action(avatar_id, image, face, body, scene_one, scene_two, regenerate=False):
+        if not avatar_id:
+            raise gr.Error("Create a guided avatar first.")
+        avatar = avatar_guide.save_options(SAVE_DIR, avatar_id, face, body, scene_one, scene_two)
+
+        def progress(message, error=False):
+            payload = _avatar_ui_payload(avatar_id, "Guide", refresh_library=False)
+            if not error:
+                for button in (guide_next_btn, guide_regenerate_btn, guide_back_btn, guide_upload, guide_custom_btn, avatar_selector, avatar_back_library, avatar_step, avatar_rename_btn):
+                    payload[button]["interactive"] = False
+                payload[guide_next_btn]["visible"] = False
+                payload[guide_stop_btn] = gr.update(visible=True)
+            status = _status_html("error", message) if error else (
+                '<div class="av-busy" role="status"><i aria-hidden="true"></i>'
+                f'<span>{html.escape(message)}</span></div>'
+            )
+            payload[guide_status] = status
+            return payload
+
+        try:
+            if regenerate:
+                kind = "face" if avatar_guide.stage(avatar).startswith("face") else "body"
+                yield progress(f"Creating another {kind} draft")
+                candidate = generate_guided_image(kind, avatar_guide.state(avatar)[f"{kind}_prompt"], avatar)
+                avatar_guide.save_draft(SAVE_DIR, avatar, kind, candidate)
+            else:
+                validate = lambda candidate, saved, prompt: avatar_studio.validate_generated_image(
+                    candidate, saved, prompt, dev_mode=DEV_MODE
+                )
+                for _, message in avatar_guide.advance(
+                    SAVE_DIR, avatar_id, image, generate_guided_image, validate, dev_mode=DEV_MODE,
+                ):
+                    yield progress(message)
+            yield _avatar_ui_payload(avatar_id, "Guide")
+        except Exception as exc:
+            _write_runtime_error("avatar guided setup", exc)
+            yield progress(str(exc) + " Your completed steps are saved. Retry to continue.", error=True)
+
+    guide_inputs = [selected_avatar_id, guide_image, guide_face_prompt, guide_body_prompt, guide_scene_one, guide_scene_two]
+    guide_next_event = guide_next_btn.click(guide_action, inputs=guide_inputs, outputs=avatar_outputs, show_progress="hidden", trigger_mode="once")
+
+    def regenerate_guided_draft(avatar_id, image, face, body, scene_one, scene_two):
+        yield from guide_action(avatar_id, image, face, body, scene_one, scene_two, regenerate=True)
+
+    guide_regenerate_event = guide_regenerate_btn.click(regenerate_guided_draft, inputs=guide_inputs, outputs=avatar_outputs, show_progress="hidden", trigger_mode="once")
+
+    def upload_guided_draft(avatar_id, path, face, body, scene_one, scene_two):
+        avatar = avatar_guide.save_options(SAVE_DIR, avatar_id, face, body, scene_one, scene_two)
+        kind = "face" if avatar_guide.stage(avatar).startswith("face") else "body"
+        avatar_guide.save_draft(SAVE_DIR, avatar, kind, path)
+        return _avatar_ui_payload(avatar_id, "Guide")
+
+    guide_upload.upload(upload_guided_draft, inputs=[selected_avatar_id, guide_upload, guide_face_prompt, guide_body_prompt, guide_scene_one, guide_scene_two], outputs=avatar_outputs, show_progress="minimal")
+    guide_image.upload(upload_guided_draft, inputs=[selected_avatar_id, guide_image, guide_face_prompt, guide_body_prompt, guide_scene_one, guide_scene_two], outputs=avatar_outputs, show_progress="minimal")
+
+    def clear_guided_draft(avatar_id):
+        avatar_guide.clear_draft(SAVE_DIR, avatar_id)
+        return _avatar_ui_payload(avatar_id, "Guide", refresh_library=False)
+
+    guide_image.clear(clear_guided_draft, inputs=[selected_avatar_id], outputs=avatar_outputs, show_progress="hidden")
+
+    def back_in_guide(avatar_id, image, face, body, scene_one, scene_two):
+        avatar_guide.save_options(SAVE_DIR, avatar_id, face, body, scene_one, scene_two)
+        avatar_guide.back(SAVE_DIR, avatar_id)
+        return _avatar_ui_payload(avatar_id, "Guide")
+
+    guide_back_btn.click(back_in_guide, inputs=guide_inputs, outputs=avatar_outputs, show_progress="hidden")
+
+    def stop_guide(avatar_id):
+        payload = _avatar_ui_payload(avatar_id, "Guide")
+        payload[guide_status] = _status_html("done", "Stopping after the current step. Saved work can be resumed.")
+        return payload
+
+    guide_stop_btn.click(stop_guide, inputs=[selected_avatar_id], outputs=avatar_outputs, cancels=[guide_next_event, guide_regenerate_event], queue=False, show_progress="hidden")
+
+    def leave_guide(avatar_id):
+        avatar = avatar_guide.use_custom(SAVE_DIR, avatar_id)
+        return _avatar_ui_payload(avatar_id, avatar["current_step"].title())
+
+    guide_custom_btn.click(leave_guide, inputs=[selected_avatar_id], outputs=avatar_outputs, show_progress="hidden")
+    guide_console_btn.click(lambda avatar_id: change_avatar_step(avatar_id, "Console"), inputs=[selected_avatar_id], outputs=avatar_outputs, show_progress="hidden")
+    guide_gallery_btn.click(lambda avatar_id: change_avatar_step(avatar_id, "Gallery"), inputs=[selected_avatar_id], outputs=avatar_outputs, show_progress="hidden")
+
+    def _avatar_console_generate(avatar_id, mode, prompt, aspect, steps, extra_1, extra_2):
         if not avatar_id:
             raise gr.Error("Create or select an avatar first.")
         avatar = avatar_studio.load_avatar(SAVE_DIR, avatar_id)
@@ -3973,7 +4341,11 @@ with gr.Blocks(title="FreeFakeStudio") as demo:
         if not (prompt or "").strip():
             raise gr.Error("Describe what you want the avatar to do or wear.")
 
-        avatar = avatar_studio.append_avatar_chat(SAVE_DIR, avatar_id, "user", prompt)
+        extra_paths = avatar_studio.save_console_references(SAVE_DIR, avatar_id, [extra_1, extra_2])
+        avatar = avatar_studio.append_avatar_chat(
+            SAVE_DIR, avatar_id, "user", prompt,
+            metadata={"extra_references": extra_paths, "mode": mode},
+        )
         references = avatar_studio.reference_images(SAVE_DIR, avatar, [extra_1, extra_2])
         built_prompt = avatar_studio.build_generation_prompt(avatar, prompt, mode)
         yield (
@@ -4021,12 +4393,69 @@ with gr.Blocks(title="FreeFakeStudio") as demo:
                 gr.update(value=""),
             )
 
-    avatar_generate_btn.click(
+    avatar_task_controls = [avatar_generate_btn, avatar_stop_btn, gallery_plan_btn, gallery_stop_btn,
+                            regenerate_gallery_btn, avatar_selector, avatar_step, avatar_back_library, avatar_rename_btn,
+                            avatar_extra_1, avatar_extra_2, gallery_rejection_reason]
+
+    def avatar_task_state(avatar_id, busy, kind, selected_index=None):
+        avatar = avatar_studio.selected_or_first(SAVE_DIR, avatar_id)
+        ready = bool(avatar and avatar.get("face_locked") and avatar.get("body_locked"))
+        api_ready = DEV_MODE or avatar_gallery.configuration_status()["ready"]
+        selected_item = avatar_studio.gallery_item_by_index(SAVE_DIR, avatar_id, selected_index) if avatar and not busy else None
+        return {
+            avatar_generate_btn: gr.update(interactive=ready and not busy, visible=not busy),
+            avatar_stop_btn: gr.update(interactive=busy and kind == "console", visible=busy and kind == "console"),
+            gallery_plan_btn: gr.update(interactive=ready and api_ready and not busy),
+            gallery_stop_btn: gr.update(interactive=busy and kind == "gallery", visible=busy and kind == "gallery"),
+            regenerate_gallery_btn: gr.update(interactive=ready and bool(selected_item and selected_item.get("id"))),
+            gallery_rejection_reason: gr.update(interactive=not busy),
+            avatar_extra_1: gr.update(interactive=not busy),
+            avatar_extra_2: gr.update(interactive=not busy),
+            **{component: gr.update(interactive=not busy) for component in
+               (avatar_selector, avatar_step, avatar_back_library, avatar_rename_btn)},
+        }
+
+    def run_avatar_task(iterator, columns, avatar_id, kind, selected_index=None):
+        status_component = avatar_console_status if kind == "console" else gallery_status
+        yield avatar_task_state(avatar_id, True, kind)
+        try:
+            for row in iterator:
+                yield dict(zip(columns, row))
+        except Exception as exc:
+            _write_runtime_error(f"avatar {kind}", exc)
+            payload = {status_component: _status_html("error", f"{exc} Saved work is preserved; retry when ready.")}
+            if kind == "gallery":
+                saved = avatar_studio.selected_or_first(SAVE_DIR, avatar_id)
+                payload[avatar_gallery_display] = _avatar_gallery_value(saved)
+                payload[avatar_gallery_details] = _avatar_gallery_details(saved)
+            yield payload
+        yield avatar_task_state(avatar_id, False, kind, selected_index)
+
+    console_columns = [avatar_console_status, avatar_chat_display, avatar_gallery_display, selected_avatar_id, avatar_prompt]
+
+    def avatar_console_generate(avatar_id, mode, prompt, aspect, steps, extra_1, extra_2):
+        yield from run_avatar_task(
+            _avatar_console_generate(avatar_id, mode, prompt, aspect, steps, extra_1, extra_2),
+            console_columns, avatar_id, "console",
+        )
+
+    avatar_generation_event = avatar_generate_btn.click(
         avatar_console_generate,
         inputs=[selected_avatar_id, avatar_mode, avatar_prompt, avatar_aspect, avatar_steps, avatar_extra_1, avatar_extra_2],
-        outputs=[avatar_console_status, avatar_chat_display, avatar_gallery_display, selected_avatar_id, avatar_prompt],
+        outputs=console_columns + avatar_task_controls,
+        trigger_mode="once",
         show_progress="hidden",
     )
+    avatar_generation_event.then(refresh_avatar_overview, inputs=[selected_avatar_id, avatar_search], outputs=[avatar_dashboard, avatar_library, avatar_library_ids], show_progress="hidden")
+
+    def stop_avatar_console(avatar_id):
+        payload = avatar_task_state(avatar_id, False, "console")
+        payload[avatar_console_status] = _status_html("done", "Stopping after the current model operation. Saved chat is preserved.")
+        return payload
+
+    avatar_stop_btn.click(stop_avatar_console, inputs=[selected_avatar_id],
+                          outputs=[avatar_console_status] + avatar_task_controls,
+                          cancels=[avatar_generation_event], queue=False, show_progress="hidden")
 
     def _dev_gallery_references(avatar_id, quantity, theme):
         references = []
@@ -4060,12 +4489,15 @@ with gr.Blocks(title="FreeFakeStudio") as demo:
             avatar_studio.summarize_specs(avatar.get("body_specs"), limit=10),
         )
 
-    def _run_gallery_generation(avatar, reference, prompt, aspect, item_id, attempt):
+    def _run_gallery_generation(avatar, reference, prompt, aspect, item_id, attempt, identity_only=False):
         reference_path = reference.get("path")
-        if not reference_path or not os.path.exists(reference_path):
+        if identity_only:
+            references = avatar_studio.reference_images(SAVE_DIR, avatar)
+        elif not reference_path or not os.path.exists(reference_path):
             raise RuntimeError("The selected gallery reference image is missing.")
-        with Image.open(reference_path) as reference_image:
-            references = avatar_studio.reference_images(SAVE_DIR, avatar, [reference_image.convert("RGB")])
+        else:
+            with Image.open(reference_path) as reference_image:
+                references = avatar_studio.reference_images(SAVE_DIR, avatar, [reference_image.convert("RGB")])
         final_image = None
         final_seed = "0"
         for _, images, _, seed_str in do_generate(
@@ -4087,10 +4519,14 @@ with gr.Blocks(title="FreeFakeStudio") as demo:
         if final_image is None:
             raise RuntimeError("FLUX did not return a gallery image. Check the newest runtime debug log.")
         path = avatar_studio.save_gallery_image(SAVE_DIR, avatar["id"], item_id, final_image, attempt)
+        avatar_studio.update_gallery_item(
+            SAVE_DIR, avatar["id"], item_id, generated_path=path,
+            attempt=attempt, seed=final_seed, status="checking",
+        )
         validation = avatar_studio.validate_generated_image(final_image, avatar, prompt, dev_mode=DEV_MODE)
         return path, validation, final_seed
 
-    def create_avatar_gallery(avatar_id, quantity, aspect, theme):
+    def _create_avatar_gallery(avatar_id, quantity, aspect, theme):
         if not avatar_id:
             raise gr.Error("Create or select an avatar first.")
         avatar = avatar_studio.load_avatar(SAVE_DIR, avatar_id)
@@ -4117,6 +4553,7 @@ with gr.Blocks(title="FreeFakeStudio") as demo:
 
         max_repairs = max(0, min(3, int(os.environ.get("FFS_AVATAR_GALLERY_RETRIES", "2"))))
         completed = 0
+        passed = 0
         for index, reference in enumerate(references, 1):
             item_id = uuid.uuid4().hex[:12]
             prompt = _gallery_prompt(avatar, theme, reference)
@@ -4163,6 +4600,8 @@ with gr.Blocks(title="FreeFakeStudio") as demo:
                         )
             except Exception as exc:
                 debug_path = _write_runtime_error("avatar gallery generation", exc)
+                saved_item = next((row for row in avatar_studio.load_gallery_items(SAVE_DIR, avatar_id)
+                                   if row.get("id") == item["id"]), {})
                 avatar_studio.update_gallery_item(
                     SAVE_DIR,
                     avatar_id,
@@ -4170,7 +4609,7 @@ with gr.Blocks(title="FreeFakeStudio") as demo:
                     status="failed",
                     prompt=prompt,
                     attempt=int(item.get("attempt", 0)) + 1,
-                    generated_path=generated_path,
+                    generated_path=saved_item.get("generated_path") or generated_path,
                     validation={
                         "pass": False,
                         "score": 0,
@@ -4196,73 +4635,77 @@ with gr.Blocks(title="FreeFakeStudio") as demo:
                 seed=final_seed,
             )
             completed += 1
+            passed += int(bool(last_validation.get("pass")))
             current_avatar = avatar_studio.load_avatar(SAVE_DIR, avatar_id)
+            selected_index = len(_avatar_gallery_value(current_avatar)) - 1
             yield (
-                _status_html("active", f"Validated {completed} of {len(references)} gallery images"),
+                _status_html("active", f"Saved {completed} of {len(references)} / {passed} passed checks"),
                 _avatar_gallery_value(current_avatar),
                 avatar_studio.status_html(current_avatar),
-                _avatar_gallery_details(current_avatar, completed - 1),
-                completed - 1,
+                _avatar_gallery_details(current_avatar, selected_index),
+                selected_index,
             )
 
         current_avatar = avatar_studio.load_avatar(SAVE_DIR, avatar_id)
         shortfall = count - len(references)
-        detail = f"Saved {completed} validated gallery image(s)."
+        detail = f"Saved {completed} image(s): {passed} passed, {completed - passed} need review."
         if shortfall > 0:
             detail += f" The search approved {shortfall} fewer reference(s) than requested; run again to add more."
         yield (
             _status_html("done", detail),
             _avatar_gallery_value(current_avatar),
             avatar_studio.status_html(current_avatar),
-            _avatar_gallery_details(current_avatar, completed - 1),
-            completed - 1,
+            _avatar_gallery_details(current_avatar, selected_index),
+            selected_index,
         )
 
-    gallery_plan_btn.click(
+    gallery_columns = [gallery_status, avatar_gallery_display, avatar_status,
+                       avatar_gallery_details, selected_avatar_gallery_index]
+
+    def create_avatar_gallery(avatar_id, quantity, aspect, theme):
+        yield from run_avatar_task(_create_avatar_gallery(avatar_id, quantity, aspect, theme),
+                                   gallery_columns, avatar_id, "gallery")
+
+    avatar_gallery_event = gallery_plan_btn.click(
         create_avatar_gallery,
         inputs=[selected_avatar_id, gallery_quantity, gallery_aspect, gallery_theme],
-        outputs=[
-            gallery_status,
-            avatar_gallery_display,
-            avatar_status,
-            avatar_gallery_details,
-            selected_avatar_gallery_index,
-        ],
+        outputs=gallery_columns + avatar_task_controls,
+        trigger_mode="once",
         show_progress="hidden",
     )
+    avatar_gallery_event.then(refresh_avatar_overview, inputs=[selected_avatar_id, avatar_search], outputs=[avatar_dashboard, avatar_library, avatar_library_ids], show_progress="hidden")
 
     def select_avatar_gallery_item(avatar_id, evt: gr.SelectData):
         avatar = avatar_studio.selected_or_first(SAVE_DIR, avatar_id)
         index = int(evt.index) if evt.index is not None else None
-        return index, _avatar_gallery_details(avatar, index)
+        item = avatar_studio.gallery_item_by_index(SAVE_DIR, avatar_id, index) if avatar else None
+        return index, _avatar_gallery_details(avatar, index), gr.update(interactive=bool(item and item.get("id"))), gr.update(visible=bool(item)), gr.update(value="")
 
     avatar_gallery_display.select(
         select_avatar_gallery_item,
         inputs=[selected_avatar_id],
-        outputs=[selected_avatar_gallery_index, avatar_gallery_details],
+        outputs=[selected_avatar_gallery_index, avatar_gallery_details, regenerate_gallery_btn, gallery_selected_panel, gallery_rejection_reason],
         show_progress="hidden",
     )
 
-    def regenerate_avatar_gallery_item(avatar_id, selected_index):
+    def _regenerate_avatar_gallery_item(avatar_id, selected_index, rejection_reason=""):
         if not avatar_id or selected_index is None:
             raise gr.Error("Select a gallery image first.")
         avatar = avatar_studio.load_avatar(SAVE_DIR, avatar_id)
         item = avatar_studio.gallery_item_by_index(SAVE_DIR, avatar_id, selected_index)
-        if not item:
+        if not item or not item.get("id"):
             raise gr.Error("That gallery item is no longer available. Refresh Avatar Studio.")
         reference = {
             "path": item.get("reference_path"),
             "image_url": item.get("reference_url"),
             "source_url": item.get("reference_source"),
         }
-        previous_validation = item.get("validation") or {
-            "reasons": ["The user marked this generation as failed."],
-            "repair_instruction": "Correct the visible identity, anatomy, outfit, or composition problem.",
-        }
+        item = avatar_studio.reject_gallery_item(SAVE_DIR, avatar_id, item["id"], rejection_reason)
+        previous_validation = item["validation"]
         prompt = item.get("prompt", "")
         prompt = (
-            prompt + " Correct the failed identity, anatomy, outfit, or composition details."
-            if DEV_MODE
+            prompt + " User rejected the previous image. " + previous_validation["repair_instruction"]
+            if DEV_MODE or item.get("origin") == "guided"
             else avatar_gallery.repair_generation_prompt(prompt, previous_validation)
         )
         attempt = int(item.get("attempt", 1)) + 1
@@ -4276,7 +4719,8 @@ with gr.Blocks(title="FreeFakeStudio") as demo:
         )
         try:
             path, validation, seed = _run_gallery_generation(
-                avatar, reference, prompt, item.get("aspect") or "864x1152 (3:4)", item["id"], attempt
+                avatar, reference, prompt, item.get("aspect") or "864x1152 (3:4)", item["id"], attempt,
+                identity_only=item.get("origin") == "guided",
             )
         except Exception as exc:
             debug_path = _write_runtime_error("avatar gallery regeneration", exc)
@@ -4310,12 +4754,28 @@ with gr.Blocks(title="FreeFakeStudio") as demo:
             _avatar_gallery_details(avatar, selected_index),
         )
 
-    regenerate_gallery_btn.click(
+    regenerate_columns = [gallery_status, avatar_gallery_display, avatar_gallery_details]
+
+    def regenerate_avatar_gallery_item(avatar_id, selected_index, rejection_reason):
+        yield from run_avatar_task(_regenerate_avatar_gallery_item(avatar_id, selected_index, rejection_reason),
+                                   regenerate_columns, avatar_id, "gallery", selected_index)
+
+    avatar_regenerate_event = regenerate_gallery_btn.click(
         regenerate_avatar_gallery_item,
-        inputs=[selected_avatar_id, selected_avatar_gallery_index],
-        outputs=[gallery_status, avatar_gallery_display, avatar_gallery_details],
+        inputs=[selected_avatar_id, selected_avatar_gallery_index, gallery_rejection_reason],
+        outputs=regenerate_columns + avatar_task_controls,
+        trigger_mode="once",
         show_progress="hidden",
     )
+
+    def stop_avatar_gallery(avatar_id):
+        payload = avatar_task_state(avatar_id, False, "gallery")
+        payload[gallery_status] = _status_html("done", "Stopping after the current operation. Completed gallery images remain saved.")
+        return payload
+
+    gallery_stop_btn.click(stop_avatar_gallery, inputs=[selected_avatar_id],
+                          outputs=[gallery_status] + avatar_task_controls,
+                          cancels=[avatar_gallery_event, avatar_regenerate_event], queue=False, show_progress="hidden")
 
     starter_examples = {
         starter_portrait: "A cinematic portrait with soft window light, natural skin texture, 85mm photography",

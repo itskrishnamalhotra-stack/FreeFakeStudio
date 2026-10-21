@@ -303,6 +303,7 @@ class AvatarStudioTests(unittest.TestCase):
                 return {
                     "kind": kind,
                     "analyzer": "fake-smolvlm",
+                    "usable_reference": True,
                     "image_size": list(image.size),
                     "answers": [
                         {

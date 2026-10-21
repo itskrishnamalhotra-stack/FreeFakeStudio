@@ -336,6 +336,67 @@ The Gradio app uses a conversational image workflow:
 
 ## Avatar Studio
 
+New avatars can start with **Guided setup** or **Custom avatar**. Existing avatars
+continue to use their saved workflow. The searchable portrait library switches
+between identities. A compact identity bar keeps the saved face/body references
+and confirmation state visible. The last selected avatar is restored when the app reconnects.
+
+Use **All avatars** to return to the full library. Search, filter by readiness,
+sort by name, or rename an avatar without changing its saved folder or history.
+The guide keeps its primary action in a floating footer, including on mobile.
+The generation workspace puts the image beside its prompt and image controls.
+Chat history appears above the composer; generation settings are collapsed until
+opened. Selecting a gallery image opens its contextual validation/regeneration inspector.
+
+Face and body generation use automatic reference instructions, shared by guided
+and custom creation. The face brief specifies a single clear headshot, framing,
+expression, lighting and background. The body brief specifies full head-to-toe
+framing and a neutral pose; a confirmed face is attached as its identity reference.
+Your appearance details are appended. **Generation brief** displays that exact
+assembled FLUX prompt and updates while you edit. This is an image-generation
+prompt prefix, not a separate chat-model system role, and cannot guarantee that
+every generated image obeys the framing perfectly. Uploads bypass generation.
+
+Confirmation requires an explicit usable-reference verdict from SmolVLM. An
+unusable or uncertain result shows an error and leaves any previously confirmed
+identity untouched. Prompt summaries prioritize appearance and proportions rather
+than visibility checks, so hair, eyes and facial features reach avatar generation.
+
+Guided setup uses FLUX and the local SmolVLM analyzer without requiring Gemini or
+Tavily keys:
+
+1. Name the avatar and choose a starting style. The suggested face, body, and two
+   scene prompts are editable.
+2. Click **Generate face**, or upload your own headshot, then confirm it with
+   **Use this face & next**. The body draft uses the confirmed face as a reference.
+3. Review or replace the body, then click **Use this body & create 2 images**.
+4. Two starter images are generated sequentially from the locked identity,
+   checked, and saved to the avatar's gallery. A failed quality check permits up
+   to two further attempts; remaining mismatches are visibly marked **Needs review**.
+5. Open the avatar console or gallery. The regular reference-search Auto Gallery
+   still requires Gemini and Tavily credentials.
+
+Guide options, drafts, confirmed identities, progress, and each finished image
+are saved in the avatar workspace. Reopen an unfinished guided avatar to resume;
+successful starter images are not regenerated. **Use custom controls** leaves the
+guide and retains the confirmed references and drafts. Production generation
+errors are reported and never replaced with mock images.
+
+**Back** returns to the previous identity review without deleting saved work.
+Replacing a confirmed face requires confirming the body again; earlier starter
+images stay on disk but are marked as belonging to the previous identity.
+Changing one starter scene regenerates that scene rather than both. Custom
+face/body drafts and their prompts also survive reopening the avatar.
+
+The console saves uploaded extra references with each user message. **Stop** is
+available during guided, console, and gallery generation. A running GPU operation
+may finish before cancellation takes effect; already saved work is retained.
+Gallery selection, validation details, and regeneration use the same visible
+100-image window so a selected thumbnail always identifies the corresponding file.
+The reference section displays its attachment count. Send waits for the image
+component's upload acknowledgement, preventing a just-selected reference from
+being silently omitted. The conversation scrolls to each new image after it loads.
+
 Avatar Studio is a persistent, Flux-only identity workflow stored under
 `results/avatars/` in Google Drive:
 
@@ -350,6 +411,12 @@ Avatar Studio is a persistent, Flux-only identity workflow stored under
    validate identity/anatomy with SmolVLM, and automatically repair failed
    prompts. Selecting an image exposes a manual failed-generation regeneration
    control. Gallery images and chat images are stored separately.
+
+The gallery prompt writer receives the selected reference image as well as its
+caption. To reject a result, optionally fill **What should change?** in the image
+inspector before regenerating. User rejection overrides an earlier automatic
+pass, is supplied to the prompt repair, and is saved alongside the previous
+assessment and image attempt, even if the repair API fails.
 
 Auto Gallery reads `GEMINI_API_KEY` and `TAVILY_API_KEY` from the uploaded keys
 txt, the single Colab cell form, Colab Secrets (the key icon in Colab's left

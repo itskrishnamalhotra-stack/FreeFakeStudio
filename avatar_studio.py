@@ -1,4 +1,6 @@
 import json
+import hashlib
+import html
 import os
 import re
 import uuid
@@ -126,7 +128,9 @@ def create_avatar(save_dir, name):
         "gallery_count": 0,
         "gallery_manifest": "gallery/gallery.json",
     }
-    return save_avatar(save_dir, avatar)
+    saved = save_avatar(save_dir, avatar)
+    select_avatar(save_dir, avatar_id)
+    return saved
 
 
 def list_avatars(save_dir):
@@ -148,12 +152,23 @@ def avatar_choices(save_dir):
     return [(avatar.get("name", avatar["id"]), avatar["id"]) for avatar in avatars]
 
 
+def select_avatar(save_dir, avatar_id):
+    avatar = load_avatar(save_dir, avatar_id)
+    _atomic_json(avatar_root(save_dir) / "_active.json", {"avatar_id": avatar["id"]})
+    return avatar
+
+
 def selected_or_first(save_dir, avatar_id=None):
     if avatar_id:
         try:
             return load_avatar(save_dir, avatar_id)
         except Exception:
             pass
+    try:
+        selected = json.loads((avatar_root(save_dir) / "_active.json").read_text(encoding="utf-8"))
+        return load_avatar(save_dir, selected["avatar_id"])
+    except (OSError, ValueError, KeyError):
+        pass
     avatars = list_avatars(save_dir)
     return avatars[0] if avatars else None
 
@@ -184,6 +199,42 @@ def save_reference_image(save_dir, avatar_id, kind, image):
     return str(path)
 
 
+def save_candidate(save_dir, avatar_id, kind, image, prompt=""):
+    if kind not in {"face", "body"}:
+        raise ValueError("Choose face or body.")
+    avatar = load_avatar(save_dir, avatar_id)
+    pil = _coerce_image(image)
+    if pil is None:
+        raise ValueError(f"Add a {kind} image first.")
+    path = avatar_path(save_dir, avatar_id) / kind / f"{kind}_candidate.png"
+    temporary = path.with_suffix(".tmp")
+    pil.save(temporary, format="PNG")
+    os.replace(temporary, path)
+    avatar[f"{kind}_candidate"] = str(path)
+    avatar[f"{kind}_prompt"] = (prompt or "").strip()
+    avatar["current_step"] = kind
+    return save_avatar(save_dir, avatar)
+
+
+def rename_avatar(save_dir, avatar_id, name):
+    clean = (name or "").strip()
+    if not clean:
+        raise ValueError("Enter an avatar name.")
+    avatar = load_avatar(save_dir, avatar_id)
+    avatar["name"] = clean[:80]
+    return save_avatar(save_dir, avatar)
+
+
+def identity_fingerprint(avatar):
+    digest = hashlib.sha256()
+    for kind in ("face", "body"):
+        path = avatar.get(f"{kind}_image")
+        if path and os.path.isfile(path):
+            with Image.open(path) as image:
+                digest.update(image.convert("RGB").tobytes())
+    return digest.hexdigest()
+
+
 def save_chat_image(save_dir, avatar_id, image):
     pil_image = _coerce_image(image)
     if pil_image is None:
@@ -193,6 +244,20 @@ def save_chat_image(save_dir, avatar_id, image):
     path = folder / f"chat_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}.png"
     pil_image.save(path)
     return str(path)
+
+
+def save_console_references(save_dir, avatar_id, images):
+    folder = avatar_path(save_dir, avatar_id) / "chat" / "references"
+    folder.mkdir(parents=True, exist_ok=True)
+    paths = []
+    for value in list(images or [])[:MAX_EXTRA_REFERENCES]:
+        image = _coerce_image(value)
+        if image is None:
+            continue
+        path = folder / f"reference_{uuid.uuid4().hex[:12]}.png"
+        image.save(path)
+        paths.append(str(path))
+    return paths
 
 
 def gallery_manifest_path(save_dir, avatar_id):
@@ -245,8 +310,35 @@ def update_gallery_item(save_dir, avatar_id, item_id, **changes):
     return updated
 
 
+def reject_gallery_item(save_dir, avatar_id, item_id, reason=""):
+    item = next((row for row in load_gallery_items(save_dir, avatar_id) if row.get("id") == item_id), None)
+    if item is None:
+        raise KeyError(f"Gallery item {item_id} was not found.")
+    reason = str(reason or "").strip()[:2000]
+    feedback = reason or "The user rejected the image. Correct identity, anatomy, outfit, or composition inconsistencies."
+    history = list(item.get("rejections") or [])
+    history.append({"time": _now(), "reason": feedback, "validation": item.get("validation"),
+                    "generated_path": item.get("generated_path"), "attempt": item.get("attempt")})
+    return update_gallery_item(
+        save_dir, avatar_id, item_id, status="rejected", rejections=history,
+        validation={"pass": False, "user_rejected": True,
+                    "reasons": [f"User rejection: {feedback}"], "repair_instruction": feedback},
+    )
+
+
+def visible_gallery_items(save_dir, avatar_id):
+    items = load_gallery_items(save_dir, avatar_id)
+    visible = [item for item in items if os.path.isfile(item.get("generated_path") or "")]
+    recorded = {os.path.abspath(item["generated_path"]) for item in visible}
+    prefixes = tuple(f'gallery_{item["id"]}_a' for item in items if item.get("id"))
+    for path in sorted((avatar_path(save_dir, avatar_id) / "gallery" / "images").glob("*.png")):
+        if os.path.abspath(path) not in recorded and not path.name.startswith(prefixes):
+            visible.append({"generated_path": str(path), "status": "saved"})
+    return visible[-100:]
+
+
 def gallery_item_by_index(save_dir, avatar_id, index):
-    items = [item for item in load_gallery_items(save_dir, avatar_id) if item.get("generated_path")]
+    items = visible_gallery_items(save_dir, avatar_id)
     if index is None or not 0 <= int(index) < len(items):
         return None
     return items[int(index)]
@@ -286,6 +378,43 @@ def reference_images(save_dir, avatar, extra_images=None):
         if pil_image is not None:
             images.append(pil_image)
     return images[:4]
+
+
+REFERENCE_INSTRUCTIONS = {
+    "face": (
+        "Identity reference photograph of one adult person. A tight, front-facing headshot: "
+        "the entire head and hairstyle fit inside the frame, from the crown to the base of the neck. "
+        "No torso, hands, other people, props, or headwear obscuring the face. "
+        "Camera at eye level, eyes open and looking into the lens, relaxed neutral expression. "
+        "Even soft studio lighting, plain neutral background, accurate skin tone and natural skin texture. "
+        "Keep the eyes, nose, lips, jawline, ears and hair clearly readable. "
+        "One photograph, not a collage or contact sheet; no text, watermark or beauty-filter effects."
+    ),
+    "body": (
+        "Identity reference photograph of one adult person, standing upright in a relaxed neutral pose. "
+        "A single full-body view, with the entire head, both hands, legs and both feet inside the frame "
+        "and a small margin above the head and below the feet. Arms rest slightly away from the torso; "
+        "legs and hands are separated and readable. Level camera, natural proportions, no wide-angle distortion. "
+        "Plain neutral studio background, even soft lighting, realistic anatomy and natural skin texture. "
+        "Follow the requested physical attributes and outfit without hiding the body silhouette. "
+        "One photograph, not a collage or contact sheet; no additional people, text or watermark."
+    ),
+}
+
+
+def build_reference_prompt(kind, details, avatar=None):
+    if kind not in REFERENCE_INSTRUCTIONS:
+        raise ValueError("Reference kind must be face or body.")
+    parts = [REFERENCE_INSTRUCTIONS[kind]]
+    if kind == "body" and avatar and avatar.get("face_locked"):
+        parts.append(
+            "The attached face reference defines this person's identity. Preserve its facial structure, "
+            "eye color, hair color and hairstyle, skin tone and visible distinguishing features. "
+            "Create the body for that same person; do not invent a different face."
+        )
+    if str(details or "").strip():
+        parts.append(f"Appearance details: {str(details).strip()}")
+    return "\n\n".join(parts)
 
 
 def build_generation_prompt(avatar, user_prompt, mode="Identity Strict"):
@@ -344,6 +473,8 @@ def _mock_specs(kind, image):
     return {
         "kind": kind,
         "analyzer": "mock-smolvlm-dev",
+        "usable_reference": True,
+        "rejection_reasons": [],
         "created_at": _now(),
         "image_size": [width, height],
         "answers": answers,
@@ -373,14 +504,40 @@ def analyze_reference_image(kind, image, dev_mode=True):
 
 
 def lock_reference(save_dir, avatar_id, kind, image, dev_mode=True):
+    if kind not in {"face", "body"}:
+        raise ValueError("Reference kind must be face or body.")
     avatar = load_avatar(save_dir, avatar_id)
+    previous = _coerce_image(avatar.get(f"{kind}_image")) if avatar.get(f"{kind}_image") and os.path.isfile(avatar[f"{kind}_image"]) else None
+    candidate = _coerce_image(image)
+    if candidate is None:
+        raise ValueError(f"Add or generate a {kind} image first.")
+    changed = previous is not None and (previous.size != candidate.size or previous.tobytes() != candidate.tobytes())
+    specs = analyze_reference_image(kind, image, dev_mode=dev_mode)
+    if specs.get("usable_reference") is not True:
+        reasons = specs.get("rejection_reasons") or ["The analyzer could not confirm a usable reference."]
+        detail = "; ".join(str(reason) for reason in reasons) if isinstance(reasons, list) else str(reasons)
+        raise ValueError(f"Cannot confirm this {kind} reference: {detail} Upload or generate another image.")
     image_path = save_reference_image(save_dir, avatar_id, kind, image)
-    specs = analyze_reference_image(kind, image_path, dev_mode=dev_mode)
     spec_path = avatar_path(save_dir, avatar_id) / kind / f"{kind}_specs.json"
     _atomic_json(spec_path, specs)
     avatar[f"{kind}_image"] = image_path
     avatar[f"{kind}_specs"] = str(spec_path)
     avatar[f"{kind}_locked"] = True
+    avatar[f"{kind}_candidate"] = image_path
+    if changed and kind == "face":
+        avatar["body_locked"] = False
+        avatar["body_candidate"] = None
+        if avatar.get("guide"):
+            drafts = dict(avatar["guide"].get("drafts", {}))
+            drafts.pop("body", None)
+            avatar["guide"] = {**avatar["guide"], "drafts": drafts}
+    if changed:
+        items = load_gallery_items(save_dir, avatar_id)
+        for item in items:
+            if item.get("origin") == "guided":
+                item["status"] = "identity_changed"
+        if items:
+            save_gallery_items(save_dir, avatar_id, items)
     avatar["current_step"] = "body" if kind == "face" else "console"
     return save_avatar(save_dir, avatar), specs
 
@@ -395,15 +552,24 @@ def load_specs(path):
         return None
 
 
-def summarize_specs(path_or_payload, limit=6):
+IDENTITY_SPEC_KEYS = (
+    "face_shape", "skin_tone", "hair_color", "hair_length", "hairstyle", "eye_color",
+    "lip_fullness", "cheek_fullness", "jawline", "nose_shape", "eyebrows", "chin_shape", "visible_marks",
+    "body_build", "waist_shape", "hip_shape", "shoulder_width", "height_impression", "skin_tone_consistency",
+)
+
+
+def summarize_specs(path_or_payload, limit=16):
     specs = path_or_payload if isinstance(path_or_payload, dict) else load_specs(path_or_payload)
     if not specs:
         return "not analyzed yet"
     parts = []
-    for item in specs.get("answers", []):
-        if item.get("strictness") in ("required", "important"):
-            parts.append(f"{item.get('key')}: {item.get('answer')}")
-        if len(parts) >= limit:
+    answers = {item.get("key"): item for item in specs.get("answers", [])}
+    for key in IDENTITY_SPEC_KEYS:
+        item = answers.get(key)
+        if item and item.get("answer"):
+            parts.append(f"{key}: {item['answer']}")
+        if len(parts) >= max(1, limit):
             break
     return "; ".join(parts) if parts else "analysis available"
 
@@ -416,9 +582,9 @@ def specs_html(path_or_payload, title):
     for item in specs.get("answers", [])[:10]:
         rows.append(
             '<div class="ffs-avatar-spec-row">'
-            f'<span>{item.get("question", "")}</span>'
-            f'<strong>{item.get("answer", "")}</strong>'
-            f'<em>{item.get("strictness", "")} / {int(float(item.get("confidence", 0)) * 100)}%</em>'
+            f'<span>{html.escape(str(item.get("question", "")))}</span>'
+            f'<strong>{html.escape(str(item.get("answer", "")))}</strong>'
+            f'<em>{html.escape(str(item.get("strictness", "")))} / {int(float(item.get("confidence", 0)) * 100)}%</em>'
             '</div>'
         )
     return f'<div class="ffs-avatar-specs"><strong>{title}</strong>{"".join(rows)}</div>'
@@ -437,7 +603,7 @@ def status_html(avatar):
     step = avatar.get("current_step", "face")
     return (
         '<div class="ffs-avatar-status">'
-        f'<strong>{avatar.get("name", "Avatar")}</strong>'
+        f'<strong>{html.escape(avatar.get("name", "Avatar"))}</strong>'
         f'<span>Step: {step}</span>'
         f'<small>Face {face} / Body {body} / Gallery {avatar.get("gallery_count", 0)} images</small>'
         '</div>'

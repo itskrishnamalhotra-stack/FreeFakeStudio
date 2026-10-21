@@ -66,3 +66,7 @@ imagetexttotext.ipynb
 
 # Filled local/Colab key bundle; commit only FreeFakeStudio.keys.example.txt
 FreeFakeStudio.keys.txt
+
+# Local browser verification artifacts
+.playwright-cli/
+output/playwright/

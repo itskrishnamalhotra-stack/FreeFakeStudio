@@ -173,6 +173,9 @@ def _normalise_answers(kind, payload, questions, image_size):
     return {
         "kind": kind,
         "analyzer": MODEL_ID,
+        "usable_reference": payload.get("usable_reference") is True,
+        "rejection_reasons": [str(reason)[:280] for reason in payload.get("rejection_reasons", [])]
+        if isinstance(payload.get("rejection_reasons"), list) else [],
         "image_size": list(image_size),
         "answers": answers,
         "raw_summary": str(payload.get("summary", ""))[:1200],
@@ -190,10 +193,18 @@ def analyze_reference_image(kind, image, questions):
 Carefully inspect this {kind} reference image for an AI avatar workflow.
 Answer only from visible evidence. Do not invent details.
 If a detail is not visible, answer "unclear".
+Set usable_reference to true only for one clearly visible adult subject with a
+usable {kind} reference. A face reference must show the face clearly; a body
+reference must show the whole body with readable proportions and no major
+occlusion. Reject missing people, unclear age, cropped bodies, hidden faces in
+face references, collages and multiple subjects. If uncertain, set it to false.
+Give rejection_reasons when unusable; otherwise return an empty list.
 
 Return strict JSON with this shape:
 {{
   "summary": "one short visual summary",
+  "usable_reference": true,
+  "rejection_reasons": [],
   "answers": [
     {{"key": "example", "answer": "short answer", "confidence": 0.0}}
   ]

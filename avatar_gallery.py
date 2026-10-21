@@ -464,10 +464,22 @@ Reference description: {reference.get('description') or reference.get('title') o
 Face identity notes: {face_summary}
 Body identity notes: {body_summary}
 
+Inspect the attached selected reference image, rather than relying only on its
+caption. Describe its visible outfit, pose, framing and setting as appropriate
+for the requested theme, without copying the reference person's identity.
 Describe one coherent photograph. Do not mention these instructions or the order of
 the reference images. Return JSON only.
 """.strip()
-    return gemini_json(prompt, schema, max_output_tokens=900)["prompt"].strip()
+    image_bytes = reference.get("validation_bytes")
+    if not image_bytes:
+        with Image.open(reference["path"]) as source:
+            image = ImageOps.exif_transpose(source).convert("RGB")
+        image.thumbnail((768, 768), Image.Resampling.LANCZOS)
+        buffer = io.BytesIO()
+        image.save(buffer, "JPEG", quality=80)
+        image_bytes = buffer.getvalue()
+    visual_reference = {**reference, "validation_bytes": image_bytes}
+    return gemini_json(prompt, schema, images=[visual_reference], max_output_tokens=900)["prompt"].strip()
 
 
 def repair_generation_prompt(prompt, validation):
