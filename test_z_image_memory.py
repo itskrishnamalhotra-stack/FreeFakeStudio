@@ -198,36 +198,14 @@ class StudioUiRegressionTests(unittest.TestCase):
 
 class AvatarStudioTests(unittest.TestCase):
     def test_avatar_vision_warmup_uses_tiny_discarded_request(self):
-        class Tensor:
-            def to(self, *_args, **_kwargs):
-                return self
-
-        class InferenceMode:
-            def __enter__(self):
-                return self
-
-            def __exit__(self, *_args):
-                return False
-
-        processor = mock.Mock()
-        processor.apply_chat_template.return_value = "warmup"
-        processor.return_value = {"input_ids": Tensor()}
-        model = mock.Mock()
-        model.generate.return_value = Tensor()
-        fake_torch = types.SimpleNamespace(
-            is_tensor=lambda _value: True,
-            is_floating_point=lambda _value: False,
-            float16="float16",
-            inference_mode=lambda: InferenceMode(),
-        )
         with mock.patch.object(
-            avatar_vision, "_load_model", return_value=(processor, model, fake_torch)
+            avatar_vision, "_ask_question", return_value="ready"
         ), mock.patch.object(avatar_vision, "cleanup_memory"):
             report = avatar_vision.warmup(128)
 
         self.assertEqual(report["size"], 128)
         self.assertEqual(report["tokens"], 4)
-        self.assertEqual(model.generate.call_args.kwargs["max_new_tokens"], 4)
+        self.assertEqual(report["answer"], "ready")
 
     def test_avatar_vision_unload_releases_cached_model(self):
         with mock.patch.object(avatar_vision._load_model, "cache_clear") as clear, \

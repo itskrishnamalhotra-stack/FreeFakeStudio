@@ -488,19 +488,11 @@ def analyze_reference_image(kind, image, dev_mode=True):
     if dev_mode:
         return _mock_specs(kind, pil_image)
     questions = FACE_SPEC_QUESTIONS if kind == "face" else BODY_SPEC_QUESTIONS
-    try:
-        import avatar_vision
+    import avatar_vision
 
-        specs = avatar_vision.analyze_reference_image(kind, pil_image, questions)
-        specs["created_at"] = _now()
-        return specs
-    except Exception as exc:
-        if os.environ.get("FFS_AVATAR_ANALYZER_STRICT", "1").lower() not in ("0", "false", "no"):
-            raise
-        specs = _mock_specs(kind, pil_image)
-        specs["analyzer"] = "mock-after-vision-error"
-        specs["analyzer_error"] = str(exc)
-        return specs
+    specs = avatar_vision.analyze_reference_image(kind, pil_image, questions)
+    specs["created_at"] = _now()
+    return specs
 
 
 def lock_reference(save_dir, avatar_id, kind, image, dev_mode=True):

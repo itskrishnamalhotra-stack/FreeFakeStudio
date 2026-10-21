@@ -362,6 +362,22 @@ unusable or uncertain result shows an error and leaves any previously confirmed
 identity untouched. Prompt summaries prioritize appearance and proportions rather
 than visibility checks, so hair, eyes and facial features reach avatar generation.
 
+Vision analysis follows `imagetexttotext.ipynb`: the same NF4/FP16 model is asked
+short questions sequentially, and Python assembles the saved specifications.
+SmolVLM no longer has to emit twenty answers in one JSON response. Quality checks
+also use short questions; an uncertain mandatory answer cannot count as a pass.
+This uses more individual inference calls, not additional model copies.
+
+An empty reply gets one shorter-prompt retry without the KV cache. Persistent
+failure is reported rather than replaced with guessed details. Warmup now checks
+decoded text too. Recovery/failure reports are saved as `results/_debug/vision_*.json`
+with package versions, token counts, raw special-token output and retry details;
+the diagnostic retry also checks numerical scores. Share the newest report and
+runtime error log when reporting a vision failure. No model downloads or install
+repair are required merely to get these code changes.
+The legacy `FFS_AVATAR_ANALYZER_STRICT=0` flag no longer substitutes mock identity
+specifications after a production failure; mocks are limited to development mode.
+
 Guided setup uses FLUX and the local SmolVLM analyzer without requiring Gemini or
 Tavily keys:
 

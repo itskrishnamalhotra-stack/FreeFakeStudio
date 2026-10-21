@@ -3,7 +3,11 @@ import gc
 import json
 import os
 import re
+import uuid
+from datetime import datetime, timezone
 from functools import lru_cache
+from importlib import metadata
+from pathlib import Path
 
 from PIL import Image
 
@@ -91,59 +95,124 @@ def unload():
 
 def warmup(size=128):
     """Run a tiny discarded vision request to initialize lazy CUDA paths."""
-    processor, model, torch = _load_model()
     size = min(256, max(64, int(size)))
     image = Image.new("RGB", (size, size), (127, 127, 127))
-    messages = [
-        {
-            "role": "user",
-            "content": [
-                {"type": "image"},
-                {"type": "text", "text": "Reply with the single word ready."},
-            ],
-        }
-    ]
-    prompt = processor.apply_chat_template(messages, add_generation_prompt=True)
-    inputs = processor(text=prompt, images=[image], return_tensors="pt")
-    for key, value in list(inputs.items()):
-        if not torch.is_tensor(value):
-            continue
-        if torch.is_floating_point(value):
-            inputs[key] = value.to(device="cuda:0", dtype=torch.float16)
-        else:
-            inputs[key] = value.to("cuda:0")
-    output = None
     try:
-        with torch.inference_mode():
-            output = model.generate(
-                **inputs,
-                max_new_tokens=4,
-                do_sample=False,
-                num_beams=1,
-                use_cache=True,
-            )
-        return {"model": MODEL_ID, "size": size, "tokens": 4}
+        answer = _ask_question(image, "Reply with the single word ready.", max_tokens=4, context="warmup")
+        return {"model": MODEL_ID, "size": size, "tokens": 4, "answer": answer}
     finally:
-        del inputs
-        if output is not None:
-            del output
         del image
         cleanup_memory()
 
 
-def _extract_json(text):
-    text = (text or "").strip()
-    if not text:
-        raise ValueError("Vision model returned an empty answer.")
-    fenced = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.S)
-    if fenced:
-        text = fenced.group(1)
-    else:
-        start = text.find("{")
-        end = text.rfind("}")
-        if start >= 0 and end > start:
-            text = text[start : end + 1]
-    return json.loads(text)
+def _write_vision_diagnostic(report):
+    try:
+        import workspace
+
+        folder = Path(workspace.get_save_dir()) / "_debug"
+        folder.mkdir(parents=True, exist_ok=True)
+        path = folder / f"vision_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}.json"
+        versions = {}
+        for package in ("transformers", "torch", "bitsandbytes", "accelerate"):
+            try:
+                versions[package] = metadata.version(package)
+            except metadata.PackageNotFoundError:
+                versions[package] = "not installed"
+        payload = {"time_utc": datetime.now(timezone.utc).isoformat(), "model": MODEL_ID,
+                   "versions": versions, **report}
+        path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+        print(f"[vision] Diagnostic: {path}", flush=True)
+        return str(path)
+    except Exception as exc:
+        print(f"[vision] Could not save diagnostic: {exc}", flush=True)
+        return None
+
+
+def _ask_question(image, question, max_tokens=96, context="analysis"):
+    """Notebook-style visual Q&A, with bounded empty-response recovery."""
+    processor, model, torch = _load_model()
+    limit = max(1, min(int(max_tokens), max(1, MAX_NEW_TOKENS)))
+    attempts = []
+    for attempt in range(2):
+        instruction = (
+            "Carefully inspect the provided image. Answer only from visible evidence. "
+            "Do not invent details. If the detail cannot be determined, say unclear. "
+            f"Answer directly and briefly.\n\nQuestion: {question}"
+            if attempt == 0 else f"Look at this image. {question}\nGive a short answer, or say unclear."
+        )
+        messages = [{"role": "user", "content": [
+            {"type": "image"}, {"type": "text", "text": instruction},
+        ]}]
+        prompt = processor.apply_chat_template(messages, add_generation_prompt=True)
+        inputs = processor(text=prompt, images=[image], return_tensors="pt")
+        output = generated = sequences = scores = None
+        record = {"attempt": attempt + 1, "use_cache": attempt == 0, "max_new_tokens": limit}
+        try:
+            for key, value in list(inputs.items()):
+                if not torch.is_tensor(value):
+                    continue
+                inputs[key] = (value.to(device="cuda:0", dtype=torch.float16)
+                               if torch.is_floating_point(value) else value.to("cuda:0"))
+            input_length = inputs["input_ids"].shape[1]
+            record["input_tokens"] = input_length
+            diagnostic_options = {"return_dict_in_generate": True, "output_scores": True} if attempt else {}
+            with torch.inference_mode():
+                output = model.generate(
+                    **inputs, max_new_tokens=limit, min_new_tokens=1,
+                    do_sample=False, num_beams=1, use_cache=attempt == 0,
+                    **diagnostic_options,
+                )
+            sequences = getattr(output, "sequences", output)
+            if len(sequences.shape) != 2 or sequences.shape[1] < input_length:
+                raise RuntimeError("Unexpected vision output shape; cannot safely remove the input prompt.")
+            generated = sequences[:, input_length:]
+            record["output_tokens"] = sequences.shape[1]
+            record["new_tokens"] = generated.shape[1]
+            scores = getattr(output, "scores", None)
+            if scores:
+                record["first_step_scores_finite"] = bool(torch.isfinite(scores[0]).all().item())
+                # EOS suppression legitimately uses -inf; NaNs/+inf indicate numerical trouble.
+                record["first_step_scores_have_nan"] = bool(torch.isnan(scores[0]).any().item())
+                record["first_step_scores_have_positive_inf"] = bool(torch.isposinf(scores[0]).any().item())
+            answer = processor.batch_decode(generated, skip_special_tokens=True)[0].strip()
+            if answer:
+                if attempts:
+                    _write_vision_diagnostic({"context": context, "question": question[:1000],
+                                              "image_size": list(image.size), "recovered": True,
+                                              "attempts": attempts + [record]})
+                return answer
+            record["raw_decoded"] = processor.batch_decode(generated, skip_special_tokens=False)[0][:2000]
+            record["token_ids"] = generated[0, :64].detach().cpu().tolist()
+            print(f"[vision] Empty reply for {context}; attempt {attempt + 1}/2, "
+                  f"input={input_length}, new={record['new_tokens']} tokens", flush=True)
+            attempts.append(record)
+        finally:
+            del inputs, output, generated, sequences, scores
+            cleanup_memory()
+    tokenizer = getattr(processor, "tokenizer", None)
+    path = _write_vision_diagnostic({
+        "context": context, "question": question[:1000], "image_size": list(image.size),
+        "recovered": False, "attempts": attempts,
+        "torch_version": str(getattr(torch, "__version__", "unknown")),
+        "eos_token_id": getattr(tokenizer, "eos_token_id", None),
+        "pad_token_id": getattr(tokenizer, "pad_token_id", None),
+    })
+    raise RuntimeError("Vision analysis produced no readable text after two short-question attempts. "
+                       f"No result was accepted from this analysis. Diagnostic: {path or 'could not be saved'}")
+
+
+def _yes_no(answer):
+    text = str(answer or "").strip().lower()
+    text = re.sub(r"^(?:answer\s*:\s*)", "", text).strip(' \"\'`*')
+    if re.search(r"\b(unclear|unknown|uncertain|cannot|can't|not sure)\b", text):
+        return None
+    if re.search(r"\byes\b", text) and re.search(r"\bno\b", text):
+        return None
+    if re.match(r"yes\b", text):
+        return True
+    if re.match(r"no\b", text):
+        return False
+    return None
 
 
 def _normalise_answers(kind, payload, questions, image_size):
@@ -183,168 +252,95 @@ def _normalise_answers(kind, payload, questions, image_size):
 
 
 def analyze_reference_image(kind, image, questions):
-    processor, model, torch = _load_model()
+    if kind not in {"face", "body"}:
+        raise ValueError("Reference kind must be face or body.")
     inference_image = prepare_image(image.convert("RGB"))
-
-    question_lines = "\n".join(
-        f'- key "{key}" ({strictness}): {question}' for key, question, strictness in questions
-    )
-    instruction = f"""
-Carefully inspect this {kind} reference image for an AI avatar workflow.
-Answer only from visible evidence. Do not invent details.
-If a detail is not visible, answer "unclear".
-Set usable_reference to true only for one clearly visible adult subject with a
-usable {kind} reference. A face reference must show the face clearly; a body
-reference must show the whole body with readable proportions and no major
-occlusion. Reject missing people, unclear age, cropped bodies, hidden faces in
-face references, collages and multiple subjects. If uncertain, set it to false.
-Give rejection_reasons when unusable; otherwise return an empty list.
-
-Return strict JSON with this shape:
-{{
-  "summary": "one short visual summary",
-  "usable_reference": true,
-  "rejection_reasons": [],
-  "answers": [
-    {{"key": "example", "answer": "short answer", "confidence": 0.0}}
-  ]
-}}
-
-Questions:
-{question_lines}
-""".strip()
-
-    messages = [
-        {
-            "role": "user",
-            "content": [
-                {"type": "image"},
-                {"type": "text", "text": instruction},
-            ],
-        }
-    ]
-    prompt = processor.apply_chat_template(messages, add_generation_prompt=True)
-    inputs = processor(text=prompt, images=[inference_image], return_tensors="pt")
-    for key, value in list(inputs.items()):
-        if not torch.is_tensor(value):
-            continue
-        if torch.is_floating_point(value):
-            inputs[key] = value.to(device="cuda:0", dtype=torch.float16)
-        else:
-            inputs[key] = value.to("cuda:0")
-
-    input_length = inputs["input_ids"].shape[1]
-    output = None
-    generated = None
+    gates = {
+        f"usable_{kind}_reference": (
+            "Does this image show exactly one adult person with a clear face?" if kind == "face"
+            else "Does this image show exactly one adult person from head to feet?", True),
+        "face_visibility" if kind == "face" else "body_visibility": (
+            "Is the whole face clearly visible?" if kind == "face"
+            else "Is the full body visible, including the head and feet?", True),
+        "adult_presenting": ("Does the person appear to be an adult?", True),
+    }
+    if kind == "body":
+        gates["occlusion"] = ("Is the person's body heavily hidden by objects or cropping?", False)
+    answers = {}
+    reasons = []
     try:
-        with torch.inference_mode():
-            output = model.generate(
-                **inputs,
-                max_new_tokens=MAX_NEW_TOKENS,
-                do_sample=False,
-                num_beams=1,
-                use_cache=True,
-            )
-        generated = output[:, input_length:]
-        answer = processor.batch_decode(generated, skip_special_tokens=True)[0].strip()
-        payload = _extract_json(answer)
-        return _normalise_answers(kind, payload, questions, image.size)
+        for key, (question, expected) in gates.items():
+            answer = _ask_question(inference_image, question + " Answer yes, no, or unclear.",
+                                   max_tokens=32, context=f"{kind}/{key}")
+            answers[key] = {"key": key, "answer": answer, "confidence": 0.0 if _yes_no(answer) is None else 0.5}
+            if _yes_no(answer) is not expected:
+                reasons.append(f"{question} {answer}")
+        if not reasons:
+            for index, (key, question, _) in enumerate(questions, 1):
+                if key in answers:
+                    continue
+                print(f"[vision] {kind} detail {index}/{len(questions)}: {key}", flush=True)
+                if key == "skin_tone_consistency":
+                    # Only the body image is supplied; comparison to another photo is not possible.
+                    answer = "unclear; the separate face reference is not supplied to this question"
+                else:
+                    answer = _ask_question(inference_image, question, context=f"{kind}/{key}")
+                answers[key] = {"key": key, "answer": answer, "confidence": 0.0 if "unclear" in answer.lower() else 0.5}
+        payload = {"usable_reference": not reasons, "rejection_reasons": reasons,
+                   "answers": list(answers.values())}
+        specs = _normalise_answers(kind, payload, questions, image.size)
+        specs["analysis_method"] = "single-question-v1"
+        specs["confidence_source"] = "availability heuristic, not calibrated model probability"
+        return specs
     finally:
-        del inputs
-        if output is not None:
-            del output
-        if generated is not None:
-            del generated
-        if inference_image is not image:
-            del inference_image
+        del inference_image
         cleanup_memory()
 
 
 def validate_avatar_generation(image, face_specs, body_specs, requested_prompt):
-    processor, model, torch = _load_model()
+    from avatar_studio import summarize_specs
+
+    if not face_specs or not body_specs:
+        raise ValueError("Saved face or body specifications are missing; confirm the identity references again.")
     inference_image = prepare_image(image.convert("RGB"))
-    face_notes = json.dumps(face_specs or {}, ensure_ascii=False)[:7000]
-    body_notes = json.dumps(body_specs or {}, ensure_ascii=False)[:7000]
-    instruction = f"""
-Quality-check this generated AI avatar image against the locked identity notes.
-Judge only visible evidence. If the face is hidden or too small, do not fail face
-identity by itself; set face_test_applicable to false. Apply the same rule to the
-body when it is not visible. Always reject broken anatomy, duplicated limbs, severe
-artifacts, or an image that does not match the requested scene.
+    checks = {}
+    raw = {}
 
-Requested image: {requested_prompt}
-Locked face notes: {face_notes}
-Locked body notes: {body_notes}
+    def ask(key, question):
+        answer = _ask_question(inference_image, question + " Answer yes, no, or unclear.",
+                               max_tokens=48, context=f"quality/{key}")
+        raw[key] = answer
+        checks[key] = _yes_no(answer)
+        return checks[key]
 
-Return strict JSON:
-{{
-  "pass": true,
-  "score": 0,
-  "adult_person_visible": true,
-  "face_test_applicable": true,
-  "face_identity_match": true,
-  "body_test_applicable": true,
-  "body_identity_match": true,
-  "request_match": true,
-  "anatomy_ok": true,
-  "reasons": ["short reason"],
-  "repair_instruction": "one concise prompt correction"
-}}
-""".strip()
-    messages = [
-        {
-            "role": "user",
-            "content": [
-                {"type": "image"},
-                {"type": "text", "text": instruction},
-            ],
-        }
-    ]
-    prompt = processor.apply_chat_template(messages, add_generation_prompt=True)
-    inputs = processor(text=prompt, images=[inference_image], return_tensors="pt")
-    for key, value in list(inputs.items()):
-        if not torch.is_tensor(value):
-            continue
-        if torch.is_floating_point(value):
-            inputs[key] = value.to(device="cuda:0", dtype=torch.float16)
-        else:
-            inputs[key] = value.to("cuda:0")
-
-    input_length = inputs["input_ids"].shape[1]
-    output = None
-    generated = None
     try:
-        with torch.inference_mode():
-            output = model.generate(
-                **inputs,
-                max_new_tokens=min(MAX_NEW_TOKENS, 500),
-                do_sample=False,
-                num_beams=1,
-                use_cache=True,
-            )
-        generated = output[:, input_length:]
-        answer = processor.batch_decode(generated, skip_special_tokens=True)[0].strip()
-        payload = _extract_json(answer)
-        face_ok = not payload.get("face_test_applicable", True) or payload.get("face_identity_match") is True
-        body_ok = not payload.get("body_test_applicable", True) or payload.get("body_identity_match") is True
-        passed = (
-            payload.get("adult_person_visible") is True
-            and face_ok
-            and body_ok
-            and payload.get("request_match") is True
-            and payload.get("anatomy_ok") is True
-            and int(payload.get("score", 0)) >= 72
-        )
-        payload["pass"] = bool(payload.get("pass") is True and passed)
-        payload["score"] = max(0, min(100, int(payload.get("score", 0))))
-        payload["validator"] = MODEL_ID
-        return payload
+        ask("adult_person_visible", "Does the image show an adult person?")
+        face_visible = ask("face_test_applicable", "Is a face clearly visible and large enough to inspect its features?")
+        body_visible = ask("body_test_applicable", "Is enough of the body visible to inspect its build and proportions?")
+        if face_visible is not False:
+            ask("face_identity_match", "Does the visible face match these appearance notes? " + summarize_specs(face_specs))
+        if body_visible is not False:
+            ask("body_identity_match", "Does the visible body match these build and proportion notes? " + summarize_specs(body_specs))
+        scene = str(requested_prompt or "").rsplit("User request:", 1)[-1].strip()[:4000]
+        ask("request_match", "Does the image match this requested scene and action? " + scene)
+        ask("anatomy_ok", "Does the visible anatomy look natural, without duplicated limbs or severe distortions?")
+        required = ["adult_person_visible", "request_match", "anatomy_ok"]
+        for part, visible in (("face", face_visible), ("body", body_visible)):
+            if visible is not False:
+                required.extend([f"{part}_test_applicable", f"{part}_identity_match"])
+        reasons = [f"{key}: {raw[key]}" for key in required if checks.get(key) is not True]
+        return {
+            "pass": not reasons, "score": round(100 * sum(checks.get(key) is True for key in required) / len(required)),
+            "score_source": "fraction of required checks passed, not model confidence",
+            "adult_person_visible": checks["adult_person_visible"] is True,
+            "face_test_applicable": face_visible is not False,
+            "face_identity_match": checks.get("face_identity_match") is True,
+            "body_test_applicable": body_visible is not False,
+            "body_identity_match": checks.get("body_identity_match") is True,
+            "request_match": checks["request_match"] is True, "anatomy_ok": checks["anatomy_ok"] is True,
+            "reasons": reasons, "repair_instruction": "; ".join(reasons),
+            "answers": raw, "validator": MODEL_ID, "analysis_method": "single-question-v1",
+        }
     finally:
-        del inputs
-        if output is not None:
-            del output
-        if generated is not None:
-            del generated
-        if inference_image is not image:
-            del inference_image
+        del inference_image
         cleanup_memory()
