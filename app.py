@@ -36,6 +36,7 @@ import gradio as gr
 # ── Save directory ─────────────────────────────────────────
 import workspace as ws
 import avatar_gallery
+import avatar_gallery_jobs
 import avatar_studio
 import avatar_guide
 import avatar_design
@@ -3423,6 +3424,8 @@ def _avatar_ui_payload(avatar_id=None, step=None, *, creating=False, library_vie
     face_value = _avatar_image_value(avatar, "face_image")
     body_value = _avatar_image_value(avatar, "body_image")
     api_ready = DEV_MODE or avatar_gallery.configuration_status()["ready"]
+    gallery_data = avatar_gallery_jobs.safe_snapshot(SAVE_DIR, avatar["id"] if avatar else None)
+    pending_batch = gallery_data.get("job") and gallery_data["job"]["status"] != "complete"
     values = {
         selected_avatar_id: avatar["id"] if avatar else None,
         avatar_selector: gr.update(choices=avatar_studio.avatar_choices(SAVE_DIR), value=avatar["id"] if avatar else None, visible=bool(avatar), interactive=True),
@@ -3443,7 +3446,17 @@ def _avatar_ui_payload(avatar_id=None, step=None, *, creating=False, library_vie
         selected_avatar_gallery_index: None,
         regenerate_gallery_btn: gr.update(interactive=False),
         gallery_rejection_reason: gr.update(value="", interactive=True),
-        gallery_plan_btn: gr.update(interactive=ready and api_ready),
+        gallery_plan_btn: gr.update(interactive=ready and api_ready, value="Resume batch" if pending_batch else "Generate gallery"),
+        gallery_pipeline_status: avatar_design.gallery_pipeline(gallery_data),
+        gallery_reference_display: gallery_data["images"],
+        gallery_reference_table: avatar_design.reference_table(gallery_data),
+        gallery_reference_filter: "All findings",
+        gallery_poll_cache: {},
+        gallery_new_search: gr.update(interactive=bool(pending_batch and not gallery_data["job"].get("item_ids"))),
+        gallery_require_face: gr.update(value=gallery_data["job"]["require_face"] if pending_batch else False),
+        gallery_quantity: gr.update(value=gallery_data["job"]["quantity"]) if pending_batch else gr.update(),
+        gallery_aspect: gr.update(value=gallery_data["job"]["aspect"]) if pending_batch else gr.update(),
+        gallery_theme: gr.update(value=gallery_data["job"]["theme"]) if pending_batch else gr.update(),
         avatar_face_step: gr.update(visible=bool(avatar) and current == "Face"),
         avatar_body_step: gr.update(visible=bool(avatar) and current == "Body"),
         avatar_console_step: gr.update(visible=bool(avatar) and current == "Console"),
@@ -4007,22 +4020,37 @@ with gr.Blocks(title="FreeFakeStudio") as demo:
                     with gr.Row(elem_id="av-gallery-actions"):
                         gallery_plan_btn = gr.Button("Generate gallery", icon=avatar_design.icon("sparkles"), variant="primary", scale=0, min_width=176)
                         gallery_stop_btn = gr.Button("Stop", variant="stop", scale=0, visible=False)
+                        gallery_new_search = gr.Button("New search", variant="secondary", scale=0, interactive=False)
+                    gallery_require_face = gr.Checkbox(value=False, label="Require visible face")
                     gallery_status = gr.HTML("" if DEV_MODE or avatar_gallery.configuration_status()["ready"] else _status_html("error", avatar_gallery.configuration_status()["message"]))
-                    with gr.Row(elem_id="av-gallery-work"):
-                        with gr.Column(scale=4):
-                            avatar_gallery_display = gr.Gallery(
-                                value=_avatar_gallery_value(_initial_avatar), show_label=False,
-                                columns=4, height="auto", object_fit="cover", preview=False,
-                                allow_preview=True, buttons=["download", "fullscreen"], elem_id="ffs-avatar-gallery",
+                    gallery_pipeline_status = gr.HTML("")
+                    with gr.Tabs(selected="gallery-results") as gallery_views:
+                        with gr.Tab("Results", id="gallery-results"):
+                            with gr.Row(elem_id="av-gallery-work"):
+                                with gr.Column(scale=4):
+                                    avatar_gallery_display = gr.Gallery(
+                                        value=_avatar_gallery_value(_initial_avatar), show_label=False,
+                                        columns=4, height="auto", object_fit="cover", preview=False,
+                                        allow_preview=True, buttons=["download", "fullscreen"], elem_id="ffs-avatar-gallery",
+                                    )
+                                with gr.Column(scale=1, visible=False, elem_id="av-gallery-inspector") as gallery_selected_panel:
+                                    avatar_gallery_details = gr.HTML(_avatar_gallery_details(_initial_avatar))
+                                    gallery_rejection_reason = gr.Textbox(
+                                        label="What should change?", placeholder="Wrong face, outfit, pose, or another issue",
+                                        lines=2, max_lines=4,
+                                    )
+                                    regenerate_gallery_btn = gr.Button("Mark Selected Failed and Regenerate", variant="secondary", interactive=False)
+                        with gr.Tab("References", id="gallery-references"):
+                            gallery_reference_filter = gr.Radio(
+                                ["All findings", "Approved", "Rejected", "Awaiting checks"],
+                                value="All findings", label="Reference status",
                             )
-                        with gr.Column(scale=1, visible=False, elem_id="av-gallery-inspector") as gallery_selected_panel:
-                            avatar_gallery_details = gr.HTML(_avatar_gallery_details(_initial_avatar))
-                            gallery_rejection_reason = gr.Textbox(
-                                label="What should change?", placeholder="Wrong face, outfit, pose, or another issue",
-                                lines=2, max_lines=4,
-                            )
-                            regenerate_gallery_btn = gr.Button("Mark Selected Failed and Regenerate", variant="secondary", interactive=False)
+                            gallery_reference_display = gr.Gallery(columns=4, height="auto", show_label=False,
+                                                                   elem_id="av-reference-gallery")
+                            gallery_reference_table = gr.HTML("")
+                    gallery_poll_cache = gr.State({})
                     selected_avatar_gallery_index = gr.State(None)
+    gallery_poll = gr.Timer(2.0, active=False)
     # ═══════════════════════════════════════════════════════
     # EVENT HANDLERS
     # ═══════════════════════════════════════════════════════
@@ -4035,16 +4063,46 @@ with gr.Blocks(title="FreeFakeStudio") as demo:
             gr.update(visible=not avatar_open),
             gr.update(visible=not avatar_open),
             gr.update(visible=avatar_open),
+            gr.update(active=avatar_open),
         )
 
     workspace_tab.change(
         switch_workspace_tab,
         inputs=[workspace_tab],
-        outputs=[settings_panel, create_workspace, composer_dock, avatar_workspace],
+        outputs=[settings_panel, create_workspace, composer_dock, avatar_workspace, gallery_poll],
         show_progress="hidden",
     )
 
     avatar_outputs = list(_avatar_ui_payload(_avatar_first_id()).keys())
+
+    def poll_gallery_pipeline(avatar_id, filter_value, previous, step):
+        if not avatar_id or step != "Gallery":
+            return [gr.skip()] * 6
+        data = avatar_gallery_jobs.safe_snapshot(SAVE_DIR, avatar_id, filter_value)
+        summary = json.dumps({"job": data["job"], "counts": data["counts"], "error": data.get("error")}, sort_keys=True)
+        refs = json.dumps(data["rows"], sort_keys=True)
+        job = data.get("job") or {}
+        label = "Resume batch" if job and job.get("status") != "complete" else "Generate gallery"
+        previous = previous or {}
+        return (
+            avatar_design.gallery_pipeline(data) if previous.get("summary") != summary else gr.skip(),
+            gr.update(value=data["images"]) if previous.get("refs") != refs else gr.skip(),
+            avatar_design.reference_table(data) if previous.get("refs") != refs else gr.skip(),
+            gr.update(value=label) if previous.get("label") != label else gr.skip(),
+            {"summary": summary, "refs": refs, "label": label},
+            gr.update(interactive=bool(job.get("status") in {"paused", "stopped"} and not job.get("item_ids"))),
+        )
+
+    for event in (gallery_poll.tick, gallery_reference_filter.change):
+        event(poll_gallery_pipeline, inputs=[selected_avatar_id, gallery_reference_filter, gallery_poll_cache, avatar_step],
+              outputs=[gallery_pipeline_status, gallery_reference_display, gallery_reference_table, gallery_plan_btn, gallery_poll_cache, gallery_new_search],
+              queue=False, show_progress="hidden")
+
+    def start_new_gallery_search(avatar_id):
+        avatar_gallery_jobs.new_search(SAVE_DIR, avatar_id)
+        return _avatar_ui_payload(avatar_id, "Gallery")
+
+    gallery_new_search.click(start_new_gallery_search, inputs=[selected_avatar_id], outputs=avatar_outputs, show_progress="hidden")
 
     def avatar_reference_ready(image, other_image):
         count = int(image is not None) + int(other_image is not None)
@@ -4395,7 +4453,8 @@ with gr.Blocks(title="FreeFakeStudio") as demo:
 
     avatar_task_controls = [avatar_generate_btn, avatar_stop_btn, gallery_plan_btn, gallery_stop_btn,
                             regenerate_gallery_btn, avatar_selector, avatar_step, avatar_back_library, avatar_rename_btn,
-                            avatar_extra_1, avatar_extra_2, gallery_rejection_reason]
+                            avatar_extra_1, avatar_extra_2, gallery_rejection_reason,
+                            gallery_require_face, gallery_quantity, gallery_aspect, gallery_theme, gallery_new_search]
 
     def avatar_task_state(avatar_id, busy, kind, selected_index=None):
         avatar = avatar_studio.selected_or_first(SAVE_DIR, avatar_id)
@@ -4409,6 +4468,9 @@ with gr.Blocks(title="FreeFakeStudio") as demo:
             gallery_stop_btn: gr.update(interactive=busy and kind == "gallery", visible=busy and kind == "gallery"),
             regenerate_gallery_btn: gr.update(interactive=ready and bool(selected_item and selected_item.get("id"))),
             gallery_rejection_reason: gr.update(interactive=not busy),
+            gallery_new_search: gr.update(interactive=False),
+            **{component: gr.update(interactive=not busy) for component in
+               (gallery_require_face, gallery_quantity, gallery_aspect, gallery_theme)},
             avatar_extra_1: gr.update(interactive=not busy),
             avatar_extra_2: gr.update(interactive=not busy),
             **{component: gr.update(interactive=not busy) for component in
@@ -4489,7 +4551,7 @@ with gr.Blocks(title="FreeFakeStudio") as demo:
             avatar_studio.summarize_specs(avatar.get("body_specs"), limit=10),
         )
 
-    def _run_gallery_generation(avatar, reference, prompt, aspect, item_id, attempt, identity_only=False):
+    def _run_gallery_generation(avatar, reference, prompt, aspect, item_id, attempt, identity_only=False, validate_output=True):
         reference_path = reference.get("path")
         if identity_only:
             references = avatar_studio.reference_images(SAVE_DIR, avatar)
@@ -4523,152 +4585,56 @@ with gr.Blocks(title="FreeFakeStudio") as demo:
             SAVE_DIR, avatar["id"], item_id, generated_path=path,
             attempt=attempt, seed=final_seed, status="checking",
         )
-        validation = avatar_studio.validate_generated_image(final_image, avatar, prompt, dev_mode=DEV_MODE)
+        validation = avatar_studio.validate_generated_image(final_image, avatar, prompt, dev_mode=DEV_MODE) if validate_output else None
         return path, validation, final_seed
 
-    def _create_avatar_gallery(avatar_id, quantity, aspect, theme):
+    def _create_avatar_gallery(avatar_id, quantity, aspect, theme, require_face=False):
         if not avatar_id:
             raise gr.Error("Create or select an avatar first.")
         avatar = avatar_studio.load_avatar(SAVE_DIR, avatar_id)
         if not avatar.get("face_locked") or not avatar.get("body_locked"):
             raise gr.Error("Lock the face and body before generating the gallery.")
-        count = int(quantity or 1)
         avatar["current_step"] = "gallery"
         avatar_studio.save_avatar(SAVE_DIR, avatar)
-        yield (
-            _status_html("active", "Finding and checking gallery references"),
-            _avatar_gallery_value(avatar),
-            avatar_studio.status_html(avatar),
-            _avatar_gallery_details(avatar),
-            None,
+        validate = lambda image, saved, prompt: avatar_studio.validate_generated_image(
+            image, saved, prompt, dev_mode=DEV_MODE,
         )
-
-        reference_dir = avatar_studio.avatar_path(SAVE_DIR, avatar_id) / "gallery" / "references"
-        if DEV_MODE:
-            references, report = _dev_gallery_references(avatar_id, count, theme)
-        else:
-            references, report = avatar_gallery.discover_references(theme, count, reference_dir)
-        if not references:
-            raise gr.Error("No usable gallery references were approved. Try a broader theme.")
-
-        max_repairs = max(0, min(3, int(os.environ.get("FFS_AVATAR_GALLERY_RETRIES", "2"))))
-        completed = 0
-        passed = 0
-        for index, reference in enumerate(references, 1):
-            item_id = uuid.uuid4().hex[:12]
-            prompt = _gallery_prompt(avatar, theme, reference)
-            item = avatar_studio.record_gallery_item(
-                SAVE_DIR,
-                avatar_id,
-                {
-                    "id": item_id,
-                    "status": "generating",
-                    "theme": theme or "",
-                    "aspect": aspect,
-                    "reference_path": reference.get("path"),
-                    "reference_url": reference.get("image_url"),
-                    "reference_source": reference.get("source_url"),
-                    "reference_validation": reference.get("validation"),
-                    "prompt": prompt,
-                    "attempt": 0,
-                },
-            )
-            yield (
-                _status_html("active", f"Generating gallery image {index} of {len(references)}"),
-                _avatar_gallery_value(avatar_studio.load_avatar(SAVE_DIR, avatar_id)),
-                avatar_studio.status_html(avatar_studio.load_avatar(SAVE_DIR, avatar_id)),
-                _avatar_gallery_details(avatar),
-                None,
-            )
-
-            last_validation = {"pass": False, "score": 0, "reasons": ["generation did not complete"]}
-            generated_path = None
-            final_seed = "0"
-            try:
-                for repair_index in range(max_repairs + 1):
-                    attempt = repair_index + 1
-                    generated_path, last_validation, final_seed = _run_gallery_generation(
-                        avatar, reference, prompt, aspect, item_id, attempt
-                    )
-                    if last_validation.get("pass"):
-                        break
-                    if repair_index < max_repairs:
-                        prompt = (
-                            prompt + " Fix identity and anatomy while preserving the requested scene."
-                            if DEV_MODE
-                            else avatar_gallery.repair_generation_prompt(prompt, last_validation)
-                        )
-            except Exception as exc:
-                debug_path = _write_runtime_error("avatar gallery generation", exc)
-                saved_item = next((row for row in avatar_studio.load_gallery_items(SAVE_DIR, avatar_id)
-                                   if row.get("id") == item["id"]), {})
-                avatar_studio.update_gallery_item(
-                    SAVE_DIR,
-                    avatar_id,
-                    item["id"],
-                    status="failed",
-                    prompt=prompt,
-                    attempt=int(item.get("attempt", 0)) + 1,
-                    generated_path=saved_item.get("generated_path") or generated_path,
-                    validation={
-                        "pass": False,
-                        "score": 0,
-                        "reasons": [str(exc)],
-                        "debug_path": debug_path,
-                    },
-                    seed=final_seed,
-                )
-                raise gr.Error(
-                    f"Gallery image {index} failed. Check results/_debug for the full traceback."
-                ) from exc
-
-            status = "passed" if last_validation.get("pass") else "needs_review"
-            avatar_studio.update_gallery_item(
-                SAVE_DIR,
-                avatar_id,
-                item["id"],
-                status=status,
-                prompt=prompt,
-                attempt=attempt,
-                generated_path=generated_path,
-                validation=last_validation,
-                seed=final_seed,
-            )
-            completed += 1
-            passed += int(bool(last_validation.get("pass")))
-            current_avatar = avatar_studio.load_avatar(SAVE_DIR, avatar_id)
-            selected_index = len(_avatar_gallery_value(current_avatar)) - 1
-            yield (
-                _status_html("active", f"Saved {completed} of {len(references)} / {passed} passed checks"),
-                _avatar_gallery_value(current_avatar),
-                avatar_studio.status_html(current_avatar),
-                _avatar_gallery_details(current_avatar, selected_index),
-                selected_index,
-            )
-
-        current_avatar = avatar_studio.load_avatar(SAVE_DIR, avatar_id)
-        shortfall = count - len(references)
-        detail = f"Saved {completed} image(s): {passed} passed, {completed - passed} need review."
-        if shortfall > 0:
-            detail += f" The search approved {shortfall} fewer reference(s) than requested; run again to add more."
-        yield (
-            _status_html("done", detail),
-            _avatar_gallery_value(current_avatar),
-            avatar_studio.status_html(current_avatar),
-            _avatar_gallery_details(current_avatar, selected_index),
-            selected_index,
+        generate = lambda *args: _run_gallery_generation(*args, validate_output=False)
+        repair = (lambda prompt, result: prompt + " Fix identity and anatomy while preserving the requested scene.") if DEV_MODE else avatar_gallery.repair_generation_prompt
+        iterator = avatar_gallery_jobs.run(
+            SAVE_DIR, avatar_id, quantity, aspect, theme, require_face,
+            _gallery_prompt, generate, validate, repair,
+            mock_discover=_dev_gallery_references if DEV_MODE else None,
         )
+        showed_results = False
+        for job in iterator:
+            saved = avatar_studio.load_avatar(SAVE_DIR, avatar_id)
+            visible = avatar_studio.visible_gallery_items(SAVE_DIR, avatar_id)
+            batch_visible = [index for index, row in enumerate(visible) if row.get("batch_id") == job["id"]]
+            selected_index = batch_visible[-1] if batch_visible else None
+            tab = gr.skip()
+            if not showed_results:
+                if job["phase"] in {"generating", "checking", "repairing", "complete"}:
+                    tab = gr.update(selected="gallery-results")
+                    showed_results = True
+                else:
+                    tab = gr.update(selected="gallery-references")
+            yield (
+                _status_html("done" if job["status"] == "complete" else "active", job["message"]),
+                _avatar_gallery_value(saved), avatar_studio.status_html(saved),
+                _avatar_gallery_details(saved, selected_index), selected_index, tab,
+            )
 
     gallery_columns = [gallery_status, avatar_gallery_display, avatar_status,
-                       avatar_gallery_details, selected_avatar_gallery_index]
+                       avatar_gallery_details, selected_avatar_gallery_index, gallery_views]
 
-    def create_avatar_gallery(avatar_id, quantity, aspect, theme):
-        yield from run_avatar_task(_create_avatar_gallery(avatar_id, quantity, aspect, theme),
+    def create_avatar_gallery(avatar_id, quantity, aspect, theme, require_face):
+        yield from run_avatar_task(_create_avatar_gallery(avatar_id, quantity, aspect, theme, require_face),
                                    gallery_columns, avatar_id, "gallery")
 
     avatar_gallery_event = gallery_plan_btn.click(
         create_avatar_gallery,
-        inputs=[selected_avatar_id, gallery_quantity, gallery_aspect, gallery_theme],
+        inputs=[selected_avatar_id, gallery_quantity, gallery_aspect, gallery_theme, gallery_require_face],
         outputs=gallery_columns + avatar_task_controls,
         trigger_mode="once",
         show_progress="hidden",
@@ -4769,6 +4735,7 @@ with gr.Blocks(title="FreeFakeStudio") as demo:
     )
 
     def stop_avatar_gallery(avatar_id):
+        avatar_gallery_jobs.stop_batch(SAVE_DIR, avatar_id)
         payload = avatar_task_state(avatar_id, False, "gallery")
         payload[gallery_status] = _status_html("done", "Stopping after the current operation. Completed gallery images remain saved.")
         return payload

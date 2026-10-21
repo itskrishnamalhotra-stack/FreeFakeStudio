@@ -1,14 +1,21 @@
 import base64
+import hashlib
 import io
 import json
 import os
 import re
 import uuid
+import time
+import random
+from contextlib import contextmanager
+from contextvars import ContextVar
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 from functools import lru_cache
 from pathlib import Path
 
 import requests
-from PIL import Image, ImageOps
+from PIL import Image, ImageOps, ImageStat
 
 
 GEMINI_MODEL_PRIORITY = (
@@ -19,6 +26,81 @@ GEMINI_MODEL_PRIORITY = (
 )
 MAX_DOWNLOAD_BYTES = 18 * 1024 * 1024
 MIN_REFERENCE_EDGE = 300
+_api_context = ContextVar("gallery_api_context", default={})
+
+
+class GalleryAPIError(RuntimeError):
+    def __init__(self, service, status, message, retryable=False):
+        super().__init__(f"{service} API error {status}: {message}")
+        self.status = status
+        self.retryable = retryable
+
+
+class GeminiResponseError(RuntimeError):
+    pass
+
+
+class GalleryCancelled(RuntimeError):
+    pass
+
+
+@contextmanager
+def api_context(on_retry=None, cancelled=None):
+    token = _api_context.set({"on_retry": on_retry, "cancelled": cancelled})
+    try:
+        yield
+    finally:
+        _api_context.reset(token)
+
+
+def check_cancelled():
+    cancelled = _api_context.get().get("cancelled")
+    if cancelled and cancelled():
+        raise GalleryCancelled("Batch stopped. Pending work remains saved.")
+
+
+def _request_with_retry(call, service):
+    for attempt in range(4):
+        check_cancelled()
+        response = None
+        try:
+            response = call()
+            if response.ok:
+                return response
+            status = response.status_code
+            try:
+                error = response.json().get("error", {})
+                message = str(error.get("message", "Request failed")) if isinstance(error, dict) else str(error)
+            except (ValueError, AttributeError):
+                message = "Request failed"
+        except (requests.ConnectionError, requests.Timeout):
+            status, message = 0, "Temporary connection failure or timeout"
+        retryable = status == 0 or status in (408, 429) or 500 <= status <= 599
+        for name in ("GEMINI_API_KEY", "TAVILY_API_KEY"):
+            secret = os.environ.get(name, "")
+            if secret:
+                message = message.replace(secret, "[redacted]")
+        delay = 2 ** attempt + random.uniform(0, 0.25)
+        retry_after = (getattr(response, "headers", {}) or {}).get("Retry-After")
+        if retry_after:
+            try:
+                delay = max(delay, float(retry_after))
+            except ValueError:
+                try:
+                    delay = max(delay, (parsedate_to_datetime(retry_after) - datetime.now(timezone.utc)).total_seconds())
+                except (ValueError, TypeError):
+                    pass
+        if not retryable or attempt == 3 or delay > 60:
+            raise GalleryAPIError(service, status, message[:800], retryable) from None
+        callback = _api_context.get().get("on_retry")
+        if callback:
+            callback(f"{service} temporarily unavailable ({status}); retry {attempt + 1}/3 in {delay:.0f}s")
+        while delay > 0:
+            check_cancelled()
+            pause = min(1.0, delay)
+            time.sleep(pause)
+            delay -= pause
+    raise RuntimeError("Unreachable API retry state")
 
 
 def _env_int(name, default, minimum=None, maximum=None):
@@ -87,12 +169,11 @@ def _gemini_model():
     key = _secret("GEMINI_API_KEY")
     if not key:
         raise RuntimeError(configuration_status()["message"])
-    response = requests.get(
+    response = _request_with_retry(lambda: requests.get(
         "https://generativelanguage.googleapis.com/v1beta/models",
         params={"key": key},
         timeout=45,
-    )
-    response.raise_for_status()
+    ), "Gemini")
     supported = {
         item.get("name", "").removeprefix("models/")
         for item in response.json().get("models", [])
@@ -115,7 +196,7 @@ def _extract_json(data):
         text = re.sub(r"\s*```$", "", text)
         return json.loads(text)
     except Exception as exc:
-        raise RuntimeError("Gemini returned an invalid JSON response.") from exc
+        raise GeminiResponseError("Gemini returned an invalid JSON response.") from exc
 
 
 def gemini_json(prompt, schema, images=None, max_output_tokens=2400):
@@ -149,7 +230,7 @@ def gemini_json(prompt, schema, images=None, max_output_tokens=2400):
             "responseJsonSchema": schema,
         },
     }
-    response = requests.post(
+    response = _request_with_retry(lambda: requests.post(
         f"https://generativelanguage.googleapis.com/v1beta/models/{_gemini_model()}:generateContent",
         params={"key": key},
         headers={
@@ -158,9 +239,7 @@ def gemini_json(prompt, schema, images=None, max_output_tokens=2400):
         },
         json=payload,
         timeout=180,
-    )
-    if not response.ok:
-        raise RuntimeError(f"Gemini API error {response.status_code}: {response.text[:800]}")
+    ), "Gemini")
     return _extract_json(response.json())
 
 
@@ -210,14 +289,12 @@ def _tavily_search(query, max_results=20):
     time_range = _time_range()
     if time_range:
         body["time_range"] = time_range
-    response = requests.post(
+    response = _request_with_retry(lambda: requests.post(
         "https://api.tavily.com/search",
         headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
         json=body,
         timeout=90,
-    )
-    if not response.ok:
-        raise RuntimeError(f"Tavily API error {response.status_code}: {response.text[:800]}")
+    ), "Tavily")
     return response.json()
 
 
@@ -265,15 +342,25 @@ def _download_candidate(candidate, output_dir):
         allow_redirects=True,
         stream=True,
     )
-    response.raise_for_status()
     data = bytearray()
-    for chunk in response.iter_content(256 * 1024):
-        data.extend(chunk)
-        if len(data) > MAX_DOWNLOAD_BYTES:
-            raise ValueError("reference image is too large")
-    image = ImageOps.exif_transpose(Image.open(io.BytesIO(data))).convert("RGB")
+    try:
+        response.raise_for_status()
+        for chunk in response.iter_content(256 * 1024):
+            data.extend(chunk)
+            if len(data) > MAX_DOWNLOAD_BYTES:
+                raise ValueError("reference image is too large")
+    finally:
+        close = getattr(response, "close", None)
+        if close:
+            close()
+    with Image.open(io.BytesIO(data)) as source:
+        if source.width * source.height > 20_000_000:
+            raise ValueError("reference image has too many pixels")
+        image = ImageOps.exif_transpose(source).convert("RGB")
     if min(image.size) < MIN_REFERENCE_EDGE:
         raise ValueError("reference image is too small")
+    deviation = ImageStat.Stat(image.convert("L").resize((64, 64))).stddev[0]
+    pixel_hash = hashlib.sha256(str(image.size).encode("ascii") + image.tobytes()).hexdigest()
     filename = f"reference_{uuid.uuid4().hex[:12]}.jpg"
     path = Path(output_dir) / filename
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -287,11 +374,13 @@ def _download_candidate(candidate, output_dir):
         "path": str(path),
         "width": image.width,
         "height": image.height,
+        "pixel_hash": pixel_hash,
+        "local_quality": {"blank": deviation < 2.0, "luminance_stddev": round(deviation, 3)},
         "validation_bytes": buffer.getvalue(),
     }
 
 
-def _validate_references(candidates):
+def _validate_references(candidates, on_result=None, require_face=False):
     schema = {
         "type": "object",
         "properties": {
@@ -308,12 +397,14 @@ def _validate_references(candidates):
                         "outfit_or_pose_visible": {"type": "boolean"},
                         "person_large_enough": {"type": "boolean"},
                         "major_obstruction": {"type": "boolean"},
+                        "image_clear": {"type": "boolean"},
+                        "face_visible": {"type": "boolean"},
                         "reason": {"type": "string"},
                     },
                     "required": [
                         "index", "accept", "score", "adult_confidence",
                         "adult_person_visible", "outfit_or_pose_visible",
-                        "person_large_enough", "major_obstruction", "reason",
+                        "person_large_enough", "major_obstruction", "image_clear", "face_visible", "reason",
                     ],
                 },
             }
@@ -326,6 +417,9 @@ AI avatar image. Accept only a clearly adult person with a useful visible outfit
 pose, or composition. Reject minors or age-ambiguous people, product-only images,
 illustrations, tiny subjects, and images where text or UI blocks important details.
 A face is not mandatory when the body/outfit reference remains useful. Score 0-100.
+Reject blank images and images too blurred, dark, or obscured to read the outfit
+or pose. Set image_clear only when those visual details are readable. Record
+face_visible separately; do not mistake an obscured face for a blank photograph.
 Return one result for every supplied candidate and JSON only.
     """.strip()
     validations = {}
@@ -338,14 +432,23 @@ Return one result for every supplied candidate and JSON only.
                 images=batch,
                 max_output_tokens=max(1800, len(batch) * 320),
             )
+            received = set()
             for item in result.get("results", []):
                 try:
-                    validations[offset + int(item["index"]) - 1] = item
+                    local_index = int(item["index"]) - 1
+                    if not 0 <= local_index < len(batch):
+                        continue
+                    validations[offset + local_index] = item
+                    received.add(local_index)
+                    if on_result:
+                        on_result(batch[local_index], item, reference_passes(item, require_face))
                 except (KeyError, TypeError, ValueError):
                     continue
-        except Exception:
+            if len(received) != len(batch):
+                raise GeminiResponseError("Gemini did not evaluate every supplied reference.")
+        except GeminiResponseError:
             if len(batch) <= 1:
-                return
+                raise
             midpoint = len(batch) // 2
             validate_batch(batch[:midpoint], offset)
             validate_batch(batch[midpoint:], offset + midpoint)
@@ -355,22 +458,26 @@ Return one result for every supplied candidate and JSON only.
     accepted = []
     for index, candidate in enumerate(candidates):
         check = validations.get(index, {})
-        passes = (
-            check.get("accept") is True
-            and int(check.get("score", 0)) >= 68
-            and int(check.get("adult_confidence", 0)) >= 85
-            and check.get("adult_person_visible") is True
-            and check.get("outfit_or_pose_visible") is True
-            and check.get("person_large_enough") is True
-            and check.get("major_obstruction") is False
-        )
+        passes = reference_passes(check, require_face)
         if passes:
             accepted.append({**candidate, "validation": check})
     accepted.sort(key=lambda item: int(item["validation"].get("score", 0)), reverse=True)
     return accepted
 
 
+def reference_passes(check, require_face=False):
+    return (
+        check.get("accept") is True and int(check.get("score", 0)) >= 68
+        and int(check.get("adult_confidence", 0)) >= 85
+        and check.get("adult_person_visible") is True
+        and check.get("outfit_or_pose_visible") is True and check.get("person_large_enough") is True
+        and check.get("major_obstruction") is False and check.get("image_clear") is True
+        and (not require_face or check.get("face_visible") is True)
+    )
+
+
 def discover_references(theme, quantity, output_dir):
+    """Legacy standalone helper; Avatar Studio uses avatar_gallery_jobs for durable batches."""
     status = configuration_status()
     if not status["ready"]:
         raise RuntimeError(status["message"])
@@ -456,8 +563,9 @@ def create_generation_prompt(avatar_name, theme, reference, face_summary, body_s
     }
     prompt = f"""
 Write one precise FLUX.2 Klein image-editing prompt for a saved AI avatar named
-{avatar_name}. Preserve identity using the attached face and body references. Use
-the third reference only for outfit, pose, composition, and scene inspiration.
+{avatar_name}. The downstream FLUX request will attach the saved face and body
+as identity anchors and this external reference for outfit, pose, composition,
+and scene inspiration. You receive the external image and identity notes here.
 
 Gallery theme: {theme or 'varied editorial lifestyle'}
 Reference description: {reference.get('description') or reference.get('title') or 'visual reference'}

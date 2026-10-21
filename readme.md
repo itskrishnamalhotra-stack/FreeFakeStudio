@@ -434,6 +434,43 @@ inspector before regenerating. User rejection overrides an earlier automatic
 pass, is supplied to the prompt repair, and is saved alongside the previous
 assessment and image attempt, even if the repair API fails.
 
+### Reference Review And Batch Recovery
+
+The Gallery workspace shows live Finding, Cleaning, Prompting, Generating, and
+Checking stages. Open **References** to inspect all findings, approved images,
+rejections with reasons, and images awaiting checks. Findings without a downloaded
+file still appear in the source table. **Results** contains generated images.
+
+Local file checks reject unreadable, undersized, blank, oversized, and exact
+duplicate images. Gemini then checks clarity, adult-subject confidence, and useful
+outfit/pose visibility. **Require visible face** is optional and off by default:
+a hidden face can still provide a useful clothing or pose reference. These checks
+are estimates, so inspect their findings and generated results yourself.
+
+Approved references are committed to a batch, and every prompt is saved before
+FLUX starts generating. Each saved image is checked with SmolVLM. Prompt repairs
+through Gemini happen only after all committed references have their first image.
+Repair attempts remain bounded by `AVATAR_GALLERY_RETRIES`.
+
+Temporary Gemini/Tavily connection errors, HTTP 408, 429, and 5xx responses receive
+up to three retries with backoff and jitter. Authentication/configuration errors
+are not retried. If retries fail, use **Resume batch**: saved prompts, completed
+images, pending visual checks, and remaining references are reused. A resumed
+batch retains its original theme, quantity, aspect, and face requirement. **Stop**
+preserves the batch; an in-progress inference/API request may finish first.
+
+The avatar's `gallery/references/catalog.json` retains findings and rejection
+reasons; `gallery/batches/` retains checkpoints, with `gallery/active_batch.json`
+pointing to the current batch. Existing `search_*.json` reports and reference files
+are imported without deletion. Unused matching references are consumed before a
+new search. References associated with existing generated images are not repeated.
+Runs made before batch checkpoints existed can recover their saved references and
+images, but not prompts or progress that the old code never saved.
+
+If an empty search is paused after exhausting its budget, **New search** closes
+that search while retaining its findings. A committed unfinished batch must be
+resumed first. A changed confirmed identity cannot silently resume an older batch.
+
 Auto Gallery reads `GEMINI_API_KEY` and `TAVILY_API_KEY` from the uploaded keys
 txt, the single Colab cell form, Colab Secrets (the key icon in Colab's left
 sidebar), or saved private Drive settings. The committed notebook keeps those
@@ -449,7 +486,7 @@ SmolVLM notebooks:
 - `AVATAR_REFERENCE_TIME_RANGE`: optional recency filter such as `month`.
 - `AVATAR_SEARCH_ROUNDS`: 1-5 Tavily/Gemini planning rounds; more rounds cost more but improve fill rate.
 - `AVATAR_GALLERY_RETRIES`: 0-3 prompt repair attempts after a failed validation.
-- `AVATAR_MAX_CANDIDATE_DOWNLOADS`: candidate download cap per search round.
+- `AVATAR_MAX_CANDIDATE_DOWNLOADS`: total candidate download cap per gallery batch.
 - `AVATAR_VISION_MAX_EDGE` and `AVATAR_VISION_MAX_TOKENS`: SmolVLM memory/detail controls.
 
 FLUX and SmolVLM are preloaded and warmed by default. Z-Image and ERNIE remain

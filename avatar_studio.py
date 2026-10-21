@@ -4,6 +4,7 @@ import html
 import os
 import re
 import uuid
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -78,9 +79,21 @@ def _atomic_json(path, payload):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(f"{path.name}.{uuid.uuid4().hex}.tmp")
-    with open(temporary, "w", encoding="utf-8") as handle:
-        json.dump(payload, handle, indent=2, ensure_ascii=False)
-    os.replace(temporary, path)
+    try:
+        with open(temporary, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle, indent=2, ensure_ascii=False)
+        for attempt in range(6):
+            try:
+                os.replace(temporary, path)
+                break
+            except PermissionError as exc:
+                # A Windows preview reader or scanner may briefly hold the target.
+                if getattr(exc, "winerror", None) not in {5, 32, 33} or attempt == 5:
+                    raise
+                time.sleep(0.02 * 2 ** attempt)
+    finally:
+        if temporary.exists():
+            temporary.unlink()
 
 
 def avatar_path(save_dir, avatar_id):
@@ -271,9 +284,11 @@ def load_gallery_items(save_dir, avatar_id):
     try:
         with open(path, "r", encoding="utf-8") as handle:
             payload = json.load(handle)
-        return payload if isinstance(payload, list) else []
-    except Exception:
-        return []
+        if not isinstance(payload, list):
+            raise ValueError("Expected a gallery item list")
+        return payload
+    except (OSError, ValueError) as exc:
+        raise RuntimeError(f"Saved gallery items cannot be read: {path}. Preserve this file for diagnosis.") from exc
 
 
 def save_gallery_items(save_dir, avatar_id, items):

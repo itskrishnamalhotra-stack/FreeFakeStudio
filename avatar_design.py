@@ -30,6 +30,33 @@ def icon(name):
     return str(Path(__file__).parent / "assets" / "avatar-icons" / f"{name}.svg")
 
 
+def gallery_pipeline(data):
+    if data.get("error"):
+        return f'<div class="av-pipeline"><strong>Saved state error</strong><p>{html.escape(data["error"])}</p></div>'
+    job = data.get("job") or {}
+    counts = data.get("counts", {})
+    stages = ("finding", "cleaning", "prompting", "generating", "checking", "repairing", "complete")
+    phase = job.get("phase", "finding")
+    trail = "".join(f'<li class="{"current" if phase == stage else ""}">{stage.title()}</li>' for stage in stages)
+    numbers = "".join(f'<span><b>{counts.get(key, 0)}</b>{label}</span>' for key, label in (
+        ("found", "Found"), ("approved", "Approved"), ("rejected", "Rejected"),
+        ("queued", "Committed"), ("prompts", "Prompts"), ("generated", "Generated"), ("review", "Need review")))
+    message = html.escape(job.get("message", "No batch started"))
+    status = html.escape(job.get("status", "idle").title())
+    events = "".join(f'<li><time>{html.escape(row["time"].split("T")[-1])}</time>{html.escape(row["message"])}</li>'
+                     for row in data.get("events", []))
+    return (f'<div class="av-pipeline"><div class="av-pipeline-title"><strong>{status}</strong><span>{message}</span></div>'
+            f'<ol class="av-pipeline-stages">{trail}</ol><div class="av-pipeline-counts">{numbers}</div>'
+            f'<ul class="av-pipeline-events">{events}</ul></div>')
+
+
+def reference_table(data):
+    rows = "".join('<tr>' + "".join(f'<td>{html.escape(str(value))}</td>' for value in row) + '</tr>'
+                   for row in data.get("rows", []))
+    return ('<div class="av-reference-table"><table><thead><tr><th>Status</th><th>Finding</th>'
+            '<th>Face visible</th><th>Image source</th></tr></thead><tbody>' + rows + '</tbody></table></div>')
+
+
 def library(save_dir, query="", status="All avatars", sort="Recent"):
     search = str(query or "").strip().casefold()
     values = [avatar for avatar in studio.list_avatars(save_dir)
