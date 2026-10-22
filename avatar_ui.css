@@ -296,6 +296,7 @@ body:has(#ffs-workspace-tabs input[value="Avatar Studio"]:checked) #ffs-settings
 #av-enhance-shade { position:fixed; inset:0; z-index:3999; background:#0009; }
 #av-enhance-shade[hidden] { display:none; }
 #av-enhancement { position:fixed; z-index:4000; top:50%; left:50%; transform:translate(-50%,-50%); width:min(1000px,calc(100vw - 32px)); max-height:calc(100dvh - 32px); overflow:auto; overscroll-behavior:contain; padding:24px !important; background:var(--ffs-surface) !important; border:1px solid var(--ffs-border) !important; border-radius:8px !important; box-shadow:0 12px 48px #0004 !important; }
+#av-enhancement > * { flex-shrink:0 !important; }
 #av-enhancement h3 { font-size:20px; margin:0 0 12px; }
 #av-enhancement .av-enhance-dimensions { color:var(--ffs-muted); font-size:12px; padding:8px 0; }
 #av-enhance-comparison { gap:16px !important; }

@@ -445,21 +445,39 @@ Use **Enhance realism** below a console image or in a selected gallery image's
 inspector. The dialog shows the original, output dimensions, reconstruction
 strength, detail steps, the automatic realism prompt, and the enhanced result.
 Choose 1x or 2x; both are capped at a 2048-pixel longest edge, with aspect preserved.
-Defaults are 2x, strength 0.30, and four distilled FLUX steps per tile.
+Defaults are **Full photo**, **1x**, strength **1.00**, and **four** distilled FLUX
+steps. This performs one FLUX edit and saves one output image. The before/after
+views use matching dimensions; the original file is never resized or overwritten.
 
 This is generative texture reconstruction, not conventional sharpening or recovery
-of genuine camera RAW information. The existing FLUX model edits overlapping tiles
-sequentially, using the full source image as context. Tiles are at most 768 pixels
-per edge, padded to multiples of 64, with a maximum of nine tiles. Reconstructed
-high-frequency detail is feather-blended while retaining source low-frequency
-color and structure. It bypasses Smart Mask and downloads no extra model weights.
+of genuine camera RAW information. Full photo edits the whole image at a working
+size of at most 1024 pixels per edge, padded to multiples of 64. A larger export
+in this mode is resized after generation: it is not native 2K reconstruction.
+The full generated correction is retained, including material and lighting changes.
+It bypasses Smart Mask and downloads no extra model weights.
+
+Optional **HD tiles** performs that full-photo edit followed by sequential,
+overlapping detail edits at the output resolution. Tiles are at most 768 pixels
+per edge, with up to nine tiles (ten FLUX passes including the full-photo edit).
+Complete generated tiles are feather-blended. The dialog states the pass count
+before starting and reports each pass; multiple sampling bars still produce only
+one saved image. Four steps means four sampler steps per pass, not four outputs.
 
 The original is never overwritten. A new **Enhanced / Unchecked** gallery entry
-records the source image, prompt, seed, strength, steps, and output size. Compare
+records the source image, prompt, seed, strength, steps, method, native working
+size, output size, pass count, and pixel-change diagnostics. An almost unchanged
+result is marked **No change**, not reported as a verified enhancement. Pixel
+change is not a realism, identity, or quality score. Compare
 faces, clothing, text, and tiny details yourself: generative edits can invent
 details or change identity, and stronger reconstruction increases this risk.
-**Stop enhancement** waits for the current tile and discards incomplete output.
+**Stop enhancement** waits for the current FLUX pass and discards incomplete output.
 An interrupted enhancement can be started again from its preserved source.
+
+To update an existing Colab runtime, stop the running launch cell, set
+`UPDATE_APP = True`, and run the cell once. Existing Drive model files are reused.
+For the first comparison use Full photo, 1x, strength 1.00, and four steps. Inspect
+the result at matching size before trying the slower HD tiles mode. This feature
+does not guarantee photorealism or preservation of every detail.
 
 ### Reference Review And Batch Recovery
 

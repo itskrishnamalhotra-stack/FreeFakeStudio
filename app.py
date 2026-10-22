@@ -4126,15 +4126,17 @@ with gr.Blocks(title="FreeFakeStudio") as demo:
                 with gr.Column(visible=False, elem_id="av-enhancement") as enhance_panel:
                     gr.Markdown("### Enhance realism")
                     with gr.Row(elem_id="av-enhance-comparison"):
-                        enhance_before = gr.Image(label="Original", interactive=False, height=300, buttons=["download", "fullscreen"], elem_id="av-enhance-before")
+                        enhance_before = gr.Image(label="Original (matched comparison size)", interactive=False, height=300, buttons=["download", "fullscreen"], elem_id="av-enhance-before")
                         enhance_after = gr.Image(label="Enhanced", interactive=False, height=300, buttons=["download", "fullscreen"], elem_id="av-enhance-after")
                     enhance_dimensions = gr.HTML("")
+                    enhance_method = gr.Radio([("Full photo (one FLUX pass)", "photo"), ("HD tiles (multiple passes, one image)", "hd_tiles")],
+                                              value="photo", label="Processing")
                     with gr.Row():
-                        enhance_scale = gr.Radio([("1x (max 2048 px)", 1), ("2x (max 2048 px)", 2)], value=2, label="Output size")
-                        enhance_strength = gr.Slider(0.15, 0.5, value=0.3, step=0.05, label="Reconstruction strength")
+                        enhance_scale = gr.Radio([("1x (max 2048 px)", 1), ("2x (max 2048 px)", 2)], value=1, label="Output size")
+                        enhance_strength = gr.Slider(0.35, 1.0, value=1.0, step=0.05, label="Reconstruction strength")
                         enhance_steps = gr.Slider(4, 8, value=4, step=1, label="Detail steps")
                     with gr.Accordion("Reconstruction prompt", open=False):
-                        gr.Textbox(value=avatar_enhance.REALISM_PROMPT, interactive=False, show_label=False, lines=5)
+                        gr.Textbox(value=avatar_enhance.PHOTO_PROMPT, interactive=False, show_label=False, lines=5)
                     enhance_status = gr.HTML("")
                     with gr.Row(elem_id="av-enhance-actions"):
                         enhance_start = gr.Button("Reconstruct texture", icon=avatar_design.icon("sparkles"), variant="primary")
@@ -4547,7 +4549,7 @@ with gr.Blocks(title="FreeFakeStudio") as demo:
                             avatar_extra_1, avatar_extra_2, gallery_rejection_reason,
                             gallery_require_face, gallery_quantity, gallery_aspect, gallery_theme, gallery_new_search,
                             enhance_gallery_btn, enhance_start, enhance_stop, enhance_close,
-                            enhance_scale, enhance_strength, enhance_steps, enhance_action_run]
+                            enhance_scale, enhance_strength, enhance_steps, enhance_action_run, enhance_method]
 
     def avatar_task_state(avatar_id, busy, kind, selected_index=None):
         avatar = avatar_studio.selected_or_first(SAVE_DIR, avatar_id)
@@ -4566,7 +4568,7 @@ with gr.Blocks(title="FreeFakeStudio") as demo:
             enhance_stop: gr.update(visible=busy and kind == "enhancement", interactive=False),
             enhance_close: gr.update(interactive=not busy),
             enhance_action_run: gr.update(interactive=not busy),
-            **{component: gr.update(interactive=not busy) for component in (enhance_scale, enhance_strength, enhance_steps)},
+            **{component: gr.update(interactive=not busy) for component in (enhance_scale, enhance_strength, enhance_steps, enhance_method)},
             gallery_rejection_reason: gr.update(interactive=not busy),
             gallery_new_search: gr.update(interactive=False),
             **{component: gr.update(interactive=not busy) for component in
@@ -4849,14 +4851,20 @@ with gr.Blocks(title="FreeFakeStudio") as demo:
                           outputs=[gallery_status] + avatar_task_controls,
                           cancels=[avatar_gallery_event, avatar_regenerate_event], queue=False, show_progress="hidden")
 
-    def enhancement_dimensions(avatar_id, item_id, scale):
+    def enhancement_dimensions(avatar_id, item_id, scale, method="photo"):
         item = avatar_studio.gallery_item_by_id(SAVE_DIR, avatar_id, item_id) if avatar_id else None
         if not item:
             return ""
         with Image.open(item["generated_path"]) as image:
             width, height = image.size
             out_width, out_height = avatar_enhance.target_size(image.size, int(scale))
-        return f'<div class="av-enhance-dimensions">{width} x {height} px &rarr; {out_width} x {out_height} px</div>'
+            working = image.copy()
+            working.thumbnail((1024, 1024), Image.Resampling.LANCZOS)
+        passes = 1 + (len(avatar_enhance.tile_boxes((out_width, out_height))) if method == "hd_tiles" else 0)
+        detail = "Full-photo reconstruction followed by overlapping HD tiles." if method == "hd_tiles" else "Full-photo reconstruction; larger export sizes are resized after the FLUX pass."
+        return (f'<div class="av-enhance-dimensions">{width} x {height} px &rarr; {out_width} x {out_height} px'
+                f'<br>FLUX working image: {working.width} x {working.height} px / {passes} processing pass(es) / 1 output image'
+                f'<br>{detail} Strong reconstruction can change identity or details; compare the result.</div>')
 
     def open_avatar_enhancement(avatar_id, item_id):
         item = avatar_studio.gallery_item_by_id(SAVE_DIR, avatar_id, item_id) if avatar_id else None
@@ -4864,11 +4872,11 @@ with gr.Blocks(title="FreeFakeStudio") as demo:
             raise gr.Error("Select a saved avatar image first.")
         return {enhance_panel: gr.update(visible=True), enhance_source_id: item["id"], enhance_job_id: None,
                 enhance_before: item["generated_path"], enhance_after: None, enhance_status: "",
-                enhance_scale: 2, enhance_strength: 0.3, enhance_steps: 4,
-                enhance_dimensions: enhancement_dimensions(avatar_id, item["id"], 2)}
+                enhance_scale: 1, enhance_strength: 1.0, enhance_steps: 4, enhance_method: "photo",
+                enhance_dimensions: enhancement_dimensions(avatar_id, item["id"], 1, "photo")}
 
     enhancement_open_outputs = [enhance_panel, enhance_source_id, enhance_job_id, enhance_before,
-                                enhance_after, enhance_status, enhance_scale, enhance_strength, enhance_steps, enhance_dimensions]
+                                enhance_after, enhance_status, enhance_scale, enhance_strength, enhance_steps, enhance_dimensions, enhance_method]
     enhance_action_run.click(open_avatar_enhancement, inputs=[selected_avatar_id, enhance_action_id],
                              outputs=enhancement_open_outputs, show_progress="hidden")
 
@@ -4878,11 +4886,12 @@ with gr.Blocks(title="FreeFakeStudio") as demo:
 
     enhance_gallery_btn.click(open_selected_enhancement, inputs=[selected_avatar_id, selected_avatar_gallery_index],
                               outputs=enhancement_open_outputs, show_progress="hidden")
-    enhance_scale.change(enhancement_dimensions, inputs=[selected_avatar_id, enhance_source_id, enhance_scale],
-                          outputs=[enhance_dimensions], show_progress="hidden")
+    for enhancement_setting in (enhance_scale, enhance_method):
+        enhancement_setting.change(enhancement_dimensions, inputs=[selected_avatar_id, enhance_source_id, enhance_scale, enhance_method],
+                                     outputs=[enhance_dimensions], show_progress="hidden")
     enhance_close.click(lambda: gr.update(visible=False), outputs=[enhance_panel], show_progress="hidden")
 
-    def _enhance_avatar_image(avatar_id, source_id, scale, strength, steps):
+    def _enhance_avatar_image(avatar_id, source_id, scale, strength, steps, method="photo"):
         item = avatar_studio.gallery_item_by_id(SAVE_DIR, avatar_id, source_id) if avatar_id else None
         if not item:
             raise gr.Error("The selected source image is no longer available.")
@@ -4896,7 +4905,7 @@ with gr.Blocks(title="FreeFakeStudio") as demo:
         avatar_studio.record_gallery_item(SAVE_DIR, avatar_id, {
             "id": job_id, "origin": "enhancement", "source_id": source_id,
             "source_path": item["generated_path"], "status": "enhancing", "attempt": 1,
-            "prompt": avatar_enhance.REALISM_PROMPT, "scale": int(scale), "strength": float(strength),
+            "prompt": avatar_enhance.PHOTO_PROMPT, "method": method, "scale": int(scale), "strength": float(strength),
             "steps": int(steps), "seed": str(seed), "output_size": list(output_size), "stop_requested": False,
         })
 
@@ -4906,24 +4915,34 @@ with gr.Blocks(title="FreeFakeStudio") as demo:
 
         def edit(tile, context, prompt, tile_seed, denoise):
             engine = model_manager.ensure_model(model_manager.FLUX_MODEL_NAME)
-            return engine.img2img([tile, context], prompt, "", tile_seed, 1.0, denoise, int(steps))
+            references = [tile] if context is None else [tile, context]
+            return engine.img2img(references, prompt, "", tile_seed, 1.0, denoise, int(steps))
 
         completed = False
         try:
             yield {enhance_job_id: job_id, enhance_after: None,
                    enhance_stop: gr.update(interactive=True),
                    enhance_status: _status_html("active", "Preparing FLUX texture reconstruction")}
-            for progress in avatar_enhance.reconstruct(source, edit, int(scale), float(strength), seed, cancelled):
+            for progress in avatar_enhance.reconstruct(source, edit, int(scale), float(strength), seed, cancelled, method=method):
                 if progress["image"] is None:
-                    yield {enhance_status: _status_html("active", f"Reconstructing detail tile {progress['tile']}/{progress['total']}")}
+                    phase = "full photo" if progress["stage"] == "full_photo" else "HD tile"
+                    message = f"FLUX pass {progress['tile']}/{progress['total']}: {phase} / 1 output image"
+                    print(f"[enhance] {message}", flush=True)
+                    yield {enhance_status: _status_html("active", message)}
                 else:
                     path = avatar_studio.save_gallery_image(SAVE_DIR, avatar_id, job_id, progress["image"])
-                    avatar_studio.update_gallery_item(SAVE_DIR, avatar_id, job_id, generated_path=path, status="unchecked")
+                    diagnostics = progress["diagnostics"]
+                    avatar_studio.update_gallery_item(SAVE_DIR, avatar_id, job_id, generated_path=path,
+                        status="no_change" if diagnostics["near_noop"] else "unchecked", diagnostics=diagnostics,
+                        processing_passes=progress["total"], working_size=list(progress["working_size"]))
                     completed = True
                     avatar = avatar_studio.load_avatar(SAVE_DIR, avatar_id)
-                    yield {enhance_after: path, avatar_gallery_display: _avatar_gallery_value(avatar),
+                    message = ("Result is nearly identical to a plain resize; no visible reconstruction verified. Original preserved."
+                               if diagnostics["near_noop"] else "Reconstructed version saved. Original preserved; compare realism, identity and fine details.")
+                    yield {enhance_after: path, enhance_before: source.resize(progress["image"].size, Image.Resampling.LANCZOS),
+                           avatar_gallery_display: _avatar_gallery_value(avatar),
                            selected_avatar_gallery_index: None, gallery_selected_panel: gr.update(visible=False),
-                           enhance_status: _status_html("done", "Enhanced version saved. Original preserved; compare identity and fine details.")}
+                           enhance_status: _status_html("error" if diagnostics["near_noop"] else "done", message)}
         except avatar_enhance.EnhancementCancelled as exc:
             avatar_studio.update_gallery_item(SAVE_DIR, avatar_id, job_id, status="stopped")
             yield {enhance_status: _status_html("done", str(exc))}
@@ -4932,11 +4951,11 @@ with gr.Blocks(title="FreeFakeStudio") as demo:
                 avatar_studio.update_gallery_item(SAVE_DIR, avatar_id, job_id, status="stopped" if cancelled() else "failed")
             raise
 
-    enhancement_columns = [enhance_job_id, enhance_after, enhance_status, avatar_gallery_display,
+    enhancement_columns = [enhance_job_id, enhance_after, enhance_before, enhance_status, avatar_gallery_display,
                            selected_avatar_gallery_index, gallery_selected_panel]
 
-    def enhance_avatar_image(avatar_id, source_id, scale, strength, steps):
-        iterator = _enhance_avatar_image(avatar_id, source_id, scale, strength, steps)
+    def enhance_avatar_image(avatar_id, source_id, scale, strength, steps, method):
+        iterator = _enhance_avatar_image(avatar_id, source_id, scale, strength, steps, method)
         yield avatar_task_state(avatar_id, True, "enhancement")
         try:
             yield from iterator
@@ -4946,7 +4965,7 @@ with gr.Blocks(title="FreeFakeStudio") as demo:
         yield avatar_task_state(avatar_id, False, "enhancement")
 
     avatar_enhance_event = enhance_start.click(enhance_avatar_image,
-        inputs=[selected_avatar_id, enhance_source_id, enhance_scale, enhance_strength, enhance_steps],
+        inputs=[selected_avatar_id, enhance_source_id, enhance_scale, enhance_strength, enhance_steps, enhance_method],
         outputs=enhancement_columns + avatar_task_controls, trigger_mode="once", show_progress="hidden")
     avatar_enhance_event.then(refresh_avatar_overview, inputs=[selected_avatar_id, avatar_search],
                               outputs=[avatar_dashboard, avatar_library, avatar_library_ids], show_progress="hidden")

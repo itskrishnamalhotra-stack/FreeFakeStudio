@@ -191,7 +191,7 @@ class AvatarLogicTests(unittest.TestCase):
                     "avatar_selector", "avatar_step", "avatar_back_library", "avatar_rename_btn",
                     "gallery_require_face", "gallery_quantity", "gallery_aspect", "gallery_theme", "gallery_new_search",
                     "enhance_gallery_btn", "enhance_start", "enhance_stop", "enhance_close", "enhance_scale",
-                    "enhance_strength", "enhance_steps", "enhance_action_run")
+                    "enhance_strength", "enhance_steps", "enhance_action_run", "enhance_method")
         namespace = {name: name for name in controls}
         namespace.update({"avatar_studio": studio, "SAVE_DIR": self.root, "DEV_MODE": True,
                           "gr": SimpleNamespace(update=lambda **kwargs: kwargs)})
