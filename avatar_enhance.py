@@ -7,15 +7,17 @@ from PIL import Image, ImageOps
 
 
 REALISM_PROMPT = (
-    "Edit the supplied image to achieve the realism and fine surface detail of a high-resolution "
-    "professional RAW photograph. Preserve the exact subjects, facial identity, facial structure, "
+    "Reconstruct the supplied image as a real professional photograph, not an illustration or CGI render. "
+    "Preserve the exact subjects, facial identity, facial structure, "
     "pose, expression, anatomy, clothing, framing, camera angle, background and overall lighting. "
     "Reconstruct natural human skin microtexture: fine irregular pores, tiny vellus hairs, realistic "
     "hair follicles, subtle skin creases, natural variation in skin tone, realistic highlights and "
     "nonuniform skin reflectance. Add believable individual hair strands, eyebrow hairs, fabric "
-    "fibres and fine environmental textures where appropriate. The details must be subtle, physically "
+    "fibres and fine environmental textures where appropriate. Correct obvious rendering artifacts where "
+    "the intended structure is clear, but do not redesign the person, change their pose, or add or remove "
+    "objects. The details must be subtle, physically "
     "plausible and consistent with the existing image. Do not beautify, airbrush or smooth the skin. "
-    "Do not change anyone's appearance or add or remove objects. Maintain realistic photographic "
+    "Maintain realistic photographic "
     "detail instead of CGI or waxy smoothness."
 )
 TILE_PROMPT = (
@@ -23,12 +25,7 @@ TILE_PROMPT = (
     "original photograph for context only. Return only the same crop as image 1, with unchanged "
     "geometry. Never draw the whole photograph, a new face, a collage, or a border inside this tile. "
 )
-PHOTO_PROMPT = (
-    "Reconstruct this supplied image as a real professional photograph, not an illustration or CGI render. "
-    "Replace plastic or painted skin, artificial hair and simplified materials with plausible photographic "
-    "detail and natural light response. Correct obvious rendering artifacts where the intended structure "
-    "is clear, without redesigning the person, changing their pose or adding new objects. "
-) + REALISM_PROMPT
+PHOTO_PROMPT = REALISM_PROMPT
 METHODS = ("photo", "hd_tiles")
 MAX_EDGE = 2048
 TILE_EDGE = 768

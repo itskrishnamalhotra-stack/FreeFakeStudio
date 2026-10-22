@@ -23,6 +23,26 @@ def fixture(size=(180, 240)):
 
 
 class ReconstructionTests(unittest.TestCase):
+    def test_reconstruction_uses_exact_requested_prompt(self):
+        expected = (
+            "Reconstruct the supplied image as a real professional photograph, not an illustration or CGI render. "
+            "Preserve the exact subjects, facial identity, facial structure, pose, expression, anatomy, clothing, "
+            "framing, camera angle, background and overall lighting. Reconstruct natural human skin microtexture: "
+            "fine irregular pores, tiny vellus hairs, realistic hair follicles, subtle skin creases, natural variation "
+            "in skin tone, realistic highlights and nonuniform skin reflectance. Add believable individual hair "
+            "strands, eyebrow hairs, fabric fibres and fine environmental textures where appropriate. Correct obvious "
+            "rendering artifacts where the intended structure is clear, but do not redesign the person, change their "
+            "pose, or add or remove objects. The details must be subtle, physically plausible and consistent with the "
+            "existing image. Do not beautify, airbrush or smooth the skin. Maintain realistic photographic detail "
+            "instead of CGI or waxy smoothness."
+        )
+        self.assertEqual(enhance.PHOTO_PROMPT, expected)
+        self.assertEqual(enhance.REALISM_PROMPT, expected)
+        editor = mock.Mock(side_effect=lambda tile, *args: tile.copy())
+        list(enhance.reconstruct(fixture(), editor, method="hd_tiles"))
+        self.assertEqual(editor.call_args_list[0].args[2], expected)
+        self.assertEqual(editor.call_args_list[1].args[2], enhance.TILE_PROMPT + expected)
+
     def test_target_cap_preserves_aspect_and_bounds_work(self):
         self.assertEqual(enhance.target_size((512, 768)), (1024, 1536))
         self.assertEqual(enhance.target_size((1024, 1536)), (1365, 2048))
