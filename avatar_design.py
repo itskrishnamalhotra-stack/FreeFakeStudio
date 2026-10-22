@@ -35,6 +35,8 @@ def gallery_pipeline(data):
         return f'<div class="av-pipeline"><strong>Saved state error</strong><p>{html.escape(data["error"])}</p></div>'
     job = data.get("job") or {}
     counts = data.get("counts", {})
+    if not job and not any(counts.values()):
+        return '<div class="av-pipeline-idle">No batch in progress</div>'
     stages = ("finding", "cleaning", "prompting", "generating", "checking", "repairing", "complete")
     phase = job.get("phase", "finding")
     trail = "".join(f'<li class="{"current" if phase == stage else ""}">{stage.title()}</li>' for stage in stages)
@@ -45,9 +47,11 @@ def gallery_pipeline(data):
     status = html.escape(job.get("status", "idle").title())
     events = "".join(f'<li><time>{html.escape(row["time"].split("T")[-1])}</time>{html.escape(row["message"])}</li>'
                      for row in data.get("events", []))
+    key = html.escape(str(job.get("id", "saved-references")), quote=True)
     return (f'<div class="av-pipeline"><div class="av-pipeline-title"><strong>{status}</strong><span>{message}</span></div>'
-            f'<ol class="av-pipeline-stages">{trail}</ol><div class="av-pipeline-counts">{numbers}</div>'
-            f'<ul class="av-pipeline-events">{events}</ul></div>')
+            f'<div class="av-pipeline-counts">{numbers}</div>'
+            f'<details data-av-disclosure="activity-{key}"><summary>Batch activity</summary>'
+            f'<ol class="av-pipeline-stages">{trail}</ol><ul class="av-pipeline-events">{events}</ul></details></div>')
 
 
 def reference_table(data):

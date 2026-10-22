@@ -24,6 +24,7 @@ from urllib.parse import unquote, urlparse
 from urllib.request import Request, urlopen
 
 from IPython.display import HTML, clear_output, display
+from runtime_environment import provider, cloud_runtime, local_runtime_root
 
 
 def running_in_colab():
@@ -34,7 +35,7 @@ def running_in_colab():
         return False
 
 
-if not running_in_colab() and os.environ.get("FFS_ALLOW_LOCAL_SETUP") != "1":
+if not cloud_runtime() and os.environ.get("FFS_ALLOW_LOCAL_SETUP") != "1":
     raise RuntimeError(
         "launch.py is Colab-only because it can install packages and download large models. "
         "Run app.py locally for mock UI testing."
@@ -79,7 +80,7 @@ RESULTS = WS / "results"
 DIAGNOSTICS = WS / "diagnostics"
 MANIFESTS = WS / "manifests"
 BUNDLES = WS / "bundles"
-LOCAL_RUNTIME = Path(os.environ.get("FFS_LOCAL_RUNTIME", "/content/freefakestudio_runtime")).resolve()
+LOCAL_RUNTIME = local_runtime_root().resolve()
 LOCAL_CACHE = LOCAL_RUNTIME / "cache"
 PYTHON_OVERLAY = LOCAL_RUNTIME / "python_packages"
 READY_STATE_FILE = LOCAL_RUNTIME / "state" / "ready.json"
@@ -278,6 +279,8 @@ save_private_settings(_private_settings)
 
 
 def _use_ngrok_route():
+    if provider() == "kaggle":
+        return True
     if PUBLIC_ROUTE_MODE == "ngrok":
         return True
     if PUBLIC_ROUTE_MODE == "colab_proxy":
@@ -670,7 +673,9 @@ def launch_app_process(timeout_seconds=1800, fingerprint=None):
         "FFS_READY_STATE_PATH": str(READY_STATE_FILE),
         "FFS_RUNTIME_FINGERPRINT_ID": (fingerprint or {}).get("id", "unknown"),
     }
-    cmd = [sys.executable, "-u", str(APP / "app.py")]
+    import secrets
+    env["FFS_ACCESS_TOKEN"] = os.environ.get("FFS_ACCESS_TOKEN") or secrets.token_urlsafe(32)
+    cmd = [sys.executable, "-u", str(APP / ("app.py" if os.environ.get("FFS_UI") == "legacy" else "web_server.py"))]
     with log_path.open("w", encoding="utf-8") as log:
         log.write(f"Command: {' '.join(cmd)}\n")
         log.write(f"Working directory: {APP}\n\n")
@@ -713,9 +718,12 @@ def launch_app_process(timeout_seconds=1800, fingerprint=None):
                     if fingerprint is not None:
                         print("Saving warmed runtime caches to Drive...", flush=True)
                         persist_runtime_caches(fingerprint)
+                        if provider() == "kaggle":
+                            from drive_store import DriveStore
+                            DriveStore.from_environment().sync(("bundles/caches", "manifests", "diagnostics"))
                     print("\n" + "=" * 72)
                     print(f"OPEN FREEFAKESTUDIO ({public_label}):")
-                    print(public_url)
+                    print(public_url + "#access=" + env["FFS_ACCESS_TOKEN"])
                     print("=" * 72 + "\n")
                     print(
                         f"Ready: model={readiness.get('model')} "
@@ -759,7 +767,7 @@ def launch_app_process(timeout_seconds=1800, fingerprint=None):
                 except subprocess.TimeoutExpired:
                     proc.kill()
                 raise RuntimeError(
-                    f"Gradio did not start its local server within {timeout_seconds}s. "
+                    f"The web server did not become ready within {timeout_seconds}s. "
                     f"App log: {log_path}\nLast output:\n{tail}"
                 )
 
@@ -860,7 +868,10 @@ ENVIRONMENT_DISTRIBUTIONS = (
     "bitsandbytes",
     "comfy-kitchen",
     "gguf",
-    "gradio",
+    "fastapi",
+    "uvicorn",
+    "python-multipart",
+    "requests",
     "huggingface-hub",
     "onnxruntime-gpu",
     "opencv-python-headless",
@@ -1327,6 +1338,7 @@ def ensure_comfy_directories():
 
 def ensure_symlink(link, target):
     link = Path(link)
+    link.parent.mkdir(parents=True, exist_ok=True)
     if link.is_symlink() and link.resolve() == target.resolve():
         return
     if link.is_symlink():
@@ -1610,6 +1622,9 @@ def ensure_models():
     }
 
     for model_name, files in specs.items():
+        if os.environ.get("FFS_MODEL_SET", "flux") != "all" and model_name != "FLUX.2-klein 4B":
+            step(model_name, "Optional; not downloaded", "ok")
+            continue
         needed = []
         for repo, remote, dest, name in files:
             target = Path(dest) / (name or Path(remote).name)
@@ -1649,7 +1664,10 @@ try:
     step("Python packages", "Checking")
     required = {
         "huggingface_hub": "huggingface_hub",
-        "gradio": "gradio",
+        "fastapi": "fastapi>=0.115,<1",
+        "uvicorn": "uvicorn>=0.30,<1",
+        "multipart": "python-multipart>=0.0.20",
+        "requests": "requests>=2.32,<3",
         "rembg": "rembg",
         "cv2": "opencv-python-headless",
         "accelerate": "accelerate",
@@ -1657,9 +1675,14 @@ try:
     }
     if _use_ngrok_route():
         required["pyngrok"] = "pyngrok"
+    if os.environ.get("FFS_UI") == "legacy":
+        required["gradio"] = "gradio"
     missing = [pkg for module, pkg in required.items() if not package_ok(module)]
     if missing:
         pip_install(*missing)
+    from packaging.version import Version
+    if Version(package_version("fastapi") or "0") < Version("0.115") or Version(package_version("pydantic") or "0") < Version("2.7"):
+        pip_install("fastapi>=0.115,<1", "pydantic>=2.7,<3", "uvicorn>=0.30,<1", "python-multipart>=0.0.20")
     quantization_ok, quantization_detail = avatar_quantization_probe()
     if not quantization_ok:
         if environment_restored:
@@ -1727,6 +1750,11 @@ try:
 
     ensure_models()
     ensure_custom_flux_encoder()
+    if provider() == "kaggle":
+        from drive_store import DriveStore
+        step("Drive model persistence", "Saving any newly downloaded models to your existing folder")
+        DriveStore.from_environment().sync(("ComfyUI/models", "config", "manifests"))
+        done("Drive model persistence", "Verified")
     write_model_manifest()
     models_report = write_debug_report("models")
     if models_report:
@@ -1786,7 +1814,10 @@ try:
         cache_wheels(
             "accelerate",
             "bitsandbytes",
-            "gradio",
+            "fastapi>=0.115,<1",
+            "uvicorn>=0.30,<1",
+            "python-multipart>=0.0.20",
+            "requests>=2.32,<3",
             "huggingface-hub",
             "onnxruntime-gpu",
             "opencv-python-headless",
@@ -1806,8 +1837,8 @@ try:
     available_ram = memory.get("MemAvailable", 0)
     step("Host RAM", "Checking")
     if total_ram and total_ram < 11 * 1024**3:
-        fail(f"Only {total_ram / 1024**3:.1f} GB host RAM; Z-Image requires at least 11 GB.")
-        raise RuntimeError("This runtime does not have enough host RAM for Z-Image Turbo.")
+        fail(f"Only {total_ram / 1024**3:.1f} GB host RAM; this setup requires at least 11 GB.")
+        raise RuntimeError("This runtime does not have enough host RAM for the selected image engines.")
     done(
         "Host RAM",
         f"{available_ram / 1024**3:.1f} GB available / {total_ram / 1024**3:.1f} GB total",
@@ -1831,4 +1862,11 @@ except Exception as exc:
         print(f"\nFull debug report written to: {error_report}\n")
         print((DIAGNOSTICS / "latest.json").read_text(encoding="utf-8")[-4000:])
     fail(str(exc)[:240])
+    if provider() == "kaggle":
+        try:
+            from drive_store import DriveStore
+            DriveStore.from_environment().sync(("diagnostics", "manifests", "config"))
+            print("Setup diagnostics saved to Drive.", flush=True)
+        except Exception:
+            print("Could not sync setup diagnostics; retain the notebook output before stopping this runtime.", flush=True)
     raise

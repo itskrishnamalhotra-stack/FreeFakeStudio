@@ -51,6 +51,22 @@ class AvatarLogicTests(unittest.TestCase):
         }
         return app_function("do_generate", namespace), namespace, engine
 
+    def test_switching_steps_keeps_console_draft_and_attachments(self):
+        preserved = object()
+        components = ("avatar_prompt", "avatar_extra_1", "avatar_extra_2", "avatar_extra_panel")
+        namespace = {name: name for name in components}
+        namespace.update({
+            "avatar_studio": studio, "SAVE_DIR": self.root,
+            "_avatar_step_state": lambda avatar, step: (step, None),
+            "_avatar_ui_payload": lambda *args: {**dict.fromkeys(components), "navigation": "updated"},
+            "gr": SimpleNamespace(skip=lambda: preserved),
+        })
+        handler = app_function("change_avatar_step", namespace)
+        payload = handler(self.avatar["id"], "Gallery")
+        self.assertTrue(all(payload[name] is preserved for name in components))
+        self.assertEqual(payload["navigation"], "updated")
+        self.assertEqual(studio.load_avatar(self.root, self.avatar["id"])["current_step"], "gallery")
+
     def run_generation(self, generate, images, canvas_index, **kwargs):
         return list(generate("FLUX.2-klein 4B", "edit", "", "square", 1, 1.0, 1.0, 1, 4,
                              input_image=images, canvas_index=canvas_index, **kwargs))
@@ -191,7 +207,7 @@ class AvatarLogicTests(unittest.TestCase):
                     "avatar_selector", "avatar_step", "avatar_back_library", "avatar_rename_btn",
                     "gallery_require_face", "gallery_quantity", "gallery_aspect", "gallery_theme", "gallery_new_search",
                     "enhance_gallery_btn", "enhance_start", "enhance_stop", "enhance_close", "enhance_scale",
-                    "enhance_strength", "enhance_steps", "enhance_action_run", "enhance_method")
+                    "enhance_strength", "enhance_steps", "enhance_action_run", "enhance_method", "gallery_prev", "gallery_next")
         namespace = {name: name for name in controls}
         namespace.update({"avatar_studio": studio, "SAVE_DIR": self.root, "DEV_MODE": True,
                           "gr": SimpleNamespace(update=lambda **kwargs: kwargs)})

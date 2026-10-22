@@ -3025,9 +3025,11 @@ function ensureLightbox() {
     return lightbox;
 }
 
+var lightboxReturnFocus = null;
 function openLightbox(src, alt) {
     if (!src) return;
     var lightbox = ensureLightbox();
+    lightboxReturnFocus = document.activeElement;
     var image = lightbox.querySelector('img');
     image.src = src;
     image.alt = alt || 'Full-screen preview';
@@ -3039,8 +3041,10 @@ function openLightbox(src, alt) {
 function closeLightbox() {
     var lightbox = document.querySelector('#ffs-lightbox');
     if (!lightbox) return;
+    if (!lightbox.classList.contains('ffs-open')) return;
     lightbox.classList.remove('ffs-open');
-    document.documentElement.style.overflow = '';
+    document.documentElement.style.overflow = galleryViewerActive ? 'hidden' : '';
+    if (lightboxReturnFocus && lightboxReturnFocus.isConnected) lightboxReturnFocus.focus({preventScroll:true});
 }
 
 function makeAttachmentAction(label, title, index, action, disabled) {
@@ -3107,14 +3111,14 @@ function prepareAttachmentCards() {
 }
 
 function prepareImagePreviews() {
-    document.querySelectorAll('.ffs-chat-image img, .ffs-request-attachment img, .ffs-avatar-gallery-tile img').forEach(function(image) {
+    document.querySelectorAll('.ffs-chat-image img, .ffs-request-attachment img, .ffs-avatar-gallery-tile img, .av-image-canvas img').forEach(function(image) {
         image.setAttribute('title', 'Open full-screen preview');
     });
     if (document.documentElement.dataset.ffsPreviewDelegated) return;
     document.documentElement.dataset.ffsPreviewDelegated = 'true';
     document.addEventListener('click', function(event) {
         var image = event.target.closest(
-            '#ffs-attachment-preview .gallery-item img, .ffs-chat-image img, .ffs-request-attachment img, .ffs-avatar-gallery-tile img'
+            '#ffs-attachment-preview .gallery-item img, .ffs-chat-image img, .ffs-request-attachment img, .ffs-avatar-gallery-tile img, .av-image-canvas img'
         );
         if (!image) return;
         event.preventDefault();
@@ -3165,6 +3169,162 @@ document.addEventListener('change', function(event) {
     }
 }, true);
 
+var avatarConsoleLayoutQueued = false;
+function layoutAvatarConsole() {
+    avatarConsoleLayoutQueued = false;
+    var chat = document.querySelector('#av-console-chat');
+    var compose = document.querySelector('#av-console-compose');
+    var active = !!(chat && compose && chat.getClientRects().length && compose.getClientRects().length);
+    if (!active) {
+        delete document.documentElement.dataset.ffsAvatarConsole;
+        return;
+    }
+    document.documentElement.dataset.ffsAvatarConsole = 'true';
+    var viewport = window.visualViewport;
+    var keyboardOffset = viewport ? Math.max(0, window.innerHeight - viewport.height - viewport.offsetTop) : 0;
+    var offset = Math.round(keyboardOffset) + 'px';
+    if (compose.style.getPropertyValue('--av-keyboard-offset') !== offset) {
+        compose.style.setProperty('--av-keyboard-offset', offset);
+    }
+    var height = Math.max(80, Math.floor(compose.getBoundingClientRect().top - chat.getBoundingClientRect().top - 16)) + 'px';
+    if (chat.style.getPropertyValue('--av-chat-height') !== height) {
+        chat.style.setProperty('--av-chat-height', height);
+    }
+}
+function scheduleAvatarConsoleLayout() {
+    if (avatarConsoleLayoutQueued) return;
+    avatarConsoleLayoutQueued = true;
+    window.requestAnimationFrame(layoutAvatarConsole);
+}
+function prepareAvatarConsole() {
+    var compose = document.querySelector('#av-console-compose');
+    var studio = document.querySelector('#ffs-avatar-studio');
+    if (compose && !compose.dataset.avLayoutObserved) {
+        compose.dataset.avLayoutObserved = 'true';
+        compose.setAttribute('role', 'region');
+        compose.setAttribute('aria-label', 'Avatar message composer');
+        new ResizeObserver(scheduleAvatarConsoleLayout).observe(compose);
+        compose.querySelectorAll('#av-console-input button').forEach(function(button) {
+            var label = button.textContent.trim();
+            button.setAttribute('aria-label', label);
+            button.setAttribute('title', label);
+        });
+    }
+    if (studio && !studio.dataset.avLayoutObserved) {
+        studio.dataset.avLayoutObserved = 'true';
+        new MutationObserver(function() {
+            scheduleAvatarConsoleLayout();
+            prepareGalleryViewer();
+        }).observe(studio, {
+            childList:true, subtree:true, attributes:true, attributeFilter:['style','class']
+        });
+    }
+    scheduleAvatarConsoleLayout();
+}
+window.addEventListener('resize', scheduleAvatarConsoleLayout);
+if (window.visualViewport) {
+    window.visualViewport.addEventListener('resize', scheduleAvatarConsoleLayout);
+    window.visualViewport.addEventListener('scroll', scheduleAvatarConsoleLayout);
+}
+document.addEventListener('click', function(event) {
+    var toggle = event.target.closest('#av-console-compose .gr-accordion > .label-wrap');
+    if (!toggle) {
+        if (!event.target.closest('#av-console-compose')) {
+            document.querySelectorAll('#av-console-compose .gr-accordion').forEach(function(accordion) {
+                var content = accordion.querySelector('[data-testid="accordion-content"]');
+                if (content && content.getClientRects().length) accordion.querySelector('.label-wrap').click();
+            });
+        }
+        return;
+    }
+    window.requestAnimationFrame(function() {
+        var accordion = toggle.parentElement;
+        var panel = accordion.querySelector('[data-testid="accordion-content"]');
+        if (!panel || !panel.getClientRects().length) return;
+        document.querySelectorAll('#av-console-compose .gr-accordion').forEach(function(other) {
+            var content = other.querySelector('[data-testid="accordion-content"]');
+            if (other !== accordion && content && content.getClientRects().length) {
+                other.querySelector('.label-wrap').click();
+            }
+        });
+    });
+});
+document.addEventListener('keydown', function(event) {
+    if (event.key !== 'Escape') return;
+    document.querySelectorAll('#av-console-compose .gr-accordion').forEach(function(accordion) {
+        var content = accordion.querySelector('[data-testid="accordion-content"]');
+        if (content && content.getClientRects().length) accordion.querySelector('.label-wrap').click();
+    });
+});
+
+var galleryViewerActive = false;
+var galleryViewerScroll = 0;
+var galleryViewerFocus = null;
+var galleryViewerOverflow = '';
+var galleryDisclosureState = new Map();
+function prepareGalleryViewer() {
+    document.querySelectorAll('details[data-av-disclosure]').forEach(function(details) {
+        if (details.dataset.avBound) return;
+        details.dataset.avBound = 'true';
+        if (galleryDisclosureState.has(details.dataset.avDisclosure)) details.open = galleryDisclosureState.get(details.dataset.avDisclosure);
+        details.addEventListener('toggle', function() { galleryDisclosureState.set(details.dataset.avDisclosure, details.open); });
+    });
+    var dialog = document.querySelector('#av-gallery-inspector');
+    var open = !!(dialog && dialog.getClientRects().length);
+    var shade = document.querySelector('#av-gallery-shade');
+    if (!shade) {
+        shade = document.createElement('div');
+        shade.id = 'av-gallery-shade';
+        shade.style.cssText = 'position:fixed;inset:0;z-index:3499;background:#101418a6;backdrop-filter:blur(4px)';
+        shade.hidden = true;
+        document.body.appendChild(shade);
+        shade.addEventListener('click', function() { var close = document.querySelector('#av-gallery-close'); if (close) close.click(); });
+    }
+    shade.hidden = !open;
+    if (open) {
+        dialog.setAttribute('role', 'dialog');
+        dialog.setAttribute('aria-modal', 'true');
+        dialog.setAttribute('aria-label', 'Gallery image');
+        [['av-gallery-prev','Previous image'],['av-gallery-next','Next image']].forEach(function(pair) {
+            var button = document.getElementById(pair[0]);
+            if (button) { button.setAttribute('aria-label', pair[1]); button.setAttribute('title', pair[1]); }
+        });
+        if (!galleryViewerActive) {
+            galleryViewerScroll = window.scrollY;
+            galleryViewerFocus = document.activeElement;
+            galleryViewerOverflow = document.documentElement.style.overflow;
+            document.documentElement.style.overflow = 'hidden';
+            var close = document.querySelector('#av-gallery-close');
+            if (close) close.focus({preventScroll:true});
+        }
+    } else if (galleryViewerActive) {
+        document.documentElement.style.overflow = galleryViewerOverflow;
+        if (galleryViewerFocus && galleryViewerFocus.isConnected) galleryViewerFocus.focus({preventScroll:true});
+        window.scrollTo({top:galleryViewerScroll, behavior:'instant'});
+    }
+    galleryViewerActive = open;
+}
+document.addEventListener('keydown', function(event) {
+    var dialog = document.querySelector('#av-gallery-inspector');
+    if (!dialog || !dialog.getClientRects().length) return;
+    var enhancement = document.querySelector('#av-enhancement');
+    if (enhancement && enhancement.getClientRects().length) return;
+    var lightbox = document.querySelector('#ffs-lightbox.ffs-open');
+    if (lightbox) return;
+    if (event.key === 'Escape') { event.preventDefault(); document.querySelector('#av-gallery-close').click(); }
+    if ((event.key === 'ArrowLeft' || event.key === 'ArrowRight') && !event.target.closest('textarea,input,select')) {
+        event.preventDefault();
+        var button = document.querySelector(event.key === 'ArrowLeft' ? '#av-gallery-prev' : '#av-gallery-next');
+        if (button && !button.disabled) button.click();
+    }
+    if (event.key === 'Tab') {
+        var controls = Array.from(dialog.querySelectorAll('button:not([disabled]),a[href],summary,textarea:not([disabled]),input:not([disabled])')).filter(function(node) { return node.getClientRects().length; });
+        var first = controls[0], last = controls[controls.length-1];
+        if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
+        else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
+    }
+});
+
 function enhanceStudioUI() {
     var attach = document.querySelector('#ffs-attach button, #ffs-attach');
     var generate = document.querySelector('#ffs-generate button, #ffs-generate');
@@ -3184,6 +3344,7 @@ function enhanceStudioUI() {
     prepareSettingsDrawer();
     prepareAttachmentCards();
     prepareImagePreviews();
+    prepareGalleryViewer();
     var enhancement = document.querySelector('#av-enhancement');
     var enhancementShade = document.querySelector('#av-enhance-shade');
     if (!enhancementShade) {
@@ -3232,10 +3393,15 @@ function enhanceStudioUI() {
         }
     }
     var avatarChat = document.querySelector('#av-console-chat');
+    prepareAvatarConsole();
     if (avatarChat && !avatarChat.dataset.ffsObserved) {
         avatarChat.dataset.ffsObserved = 'true';
+        var followLatest = true;
+        avatarChat.addEventListener('scroll', function() {
+            followLatest = avatarChat.scrollHeight - avatarChat.scrollTop - avatarChat.clientHeight < 72;
+        }, {passive:true});
         var scrollAvatarChat = function() {
-            window.requestAnimationFrame(function() { avatarChat.scrollTop = avatarChat.scrollHeight; });
+            if (followLatest) window.requestAnimationFrame(function() { avatarChat.scrollTop = avatarChat.scrollHeight; });
         };
         new MutationObserver(scrollAvatarChat).observe(avatarChat, {childList:true, subtree:true});
         new ResizeObserver(scrollAvatarChat).observe(avatarChat);
@@ -3261,7 +3427,10 @@ function enhanceStudioUI() {
     }
 }
 document.addEventListener('keydown', function(event) {
-    if (event.key === 'Escape') closeLightbox();
+    if (event.key === 'Escape' && document.querySelector('#ffs-lightbox.ffs-open')) {
+        event.stopImmediatePropagation();
+        closeLightbox();
+    }
 });
 setInterval(enhanceStudioUI, 1200);
 document.addEventListener('keydown', function(event) {
@@ -3371,7 +3540,7 @@ def _avatar_chat_html(avatar):
         image_path = item.get("image_path")
         image_html = ""
         references = []
-        for path in (item.get("metadata") or {}).get("extra_references", []):
+        for path in ((item.get("metadata") or {}).get("extra_references", []) if role == "user" else []):
             if os.path.isfile(path):
                 reference_src = "/gradio_api/file=" + quote(os.path.abspath(path).replace("\\", "/"))
                 references.append(f'<a class="ffs-chat-image" href="{reference_src}" target="_blank"><img src="{reference_src}" alt="Attached avatar reference"></a>')
@@ -3464,13 +3633,23 @@ def _avatar_gallery_details(avatar, index=None):
     validation = item.get("validation") or {}
     reasons = validation.get("reasons") or [validation.get("reason")] if validation else []
     reasons = [str(reason) for reason in reasons if reason]
+    source = "/gradio_api/file=" + quote(os.path.abspath(item["generated_path"]).replace("\\", "/"))
+    source = html.escape(source, quote=True)
+    total = len(avatar_studio.visible_gallery_items(SAVE_DIR, avatar["id"]))
+    position = f"{int(index) + 1} of {total}"
     return (
+        f'<div class="av-image-detail" data-image-id="{html.escape(str(item["id"]), quote=True)}">'
+        f'<a class="av-image-canvas" href="{source}" target="_blank" aria-label="Open full-size image">'
+        f'<img src="{source}" alt="Selected avatar image"></a>'
         '<div class="ffs-avatar-gallery-selection">'
+        f'<span class="av-image-position">{position}</span>'
         f'<strong>{html.escape(item.get("status", "saved").replace("_", " ").title())}</strong>'
         f'<span>Attempt {int(item.get("attempt", 1))} / Score {html.escape(str(validation.get("score", "not checked")))}</span>'
-        f'<p>{html.escape(item.get("prompt", ""))}</p>'
         f'<small>{html.escape("; ".join(reasons) or ("Not automatically checked." if not validation else "No validation problems recorded."))}</small>'
-        '</div>'
+        f'<a class="av-image-download" href="{source}" download>Download original</a>'
+        f'<details data-av-disclosure="prompt-{html.escape(str(item["id"]), quote=True)}">'
+        f'<summary>Generation prompt</summary><p>{html.escape(item.get("prompt", ""))}</p></details>'
+        '</div></div>'
     )
 
 
@@ -3558,7 +3737,7 @@ def _avatar_ui_payload(avatar_id=None, step=None, *, creating=False, library_vie
         avatar_rename_name: (avatar or {}).get("name", ""),
         avatar_extra_1: None,
         avatar_extra_2: None,
-        avatar_extra_panel: gr.update(label="Additional references (optional)"),
+        avatar_extra_panel: gr.update(label="References"),
         avatar_prompt: "",
         avatar_name_input: gr.update(),
         avatar_creation_mode: gr.update(),
@@ -4050,6 +4229,7 @@ with gr.Blocks(title="FreeFakeStudio") as demo:
 
                 with gr.Group(
                     visible=_initial_avatar_step == "Console",
+                    elem_id="av-console",
                     elem_classes="ffs-avatar-step",
                 ) as avatar_console_step:
                     gr.HTML(
@@ -4057,18 +4237,18 @@ with gr.Blocks(title="FreeFakeStudio") as demo:
                     )
                     avatar_chat_display = gr.HTML(_avatar_chat_html(avatar_studio.selected_or_first(SAVE_DIR)), elem_id="av-console-chat")
                     with gr.Column(elem_id="av-console-compose"):
-                        with gr.Accordion("Generation settings", open=False):
+                        with gr.Accordion("Settings", open=False, elem_id="av-console-settings"):
                             with gr.Row(elem_classes="ffs-avatar-control-row"):
                                 avatar_mode = gr.Dropdown(choices=["Identity Strict", "Outfit Focus", "Pose Focus", "Scene Focus", "Group Image"], value="Identity Strict", label="Mode")
                                 avatar_aspect = gr.Dropdown(ASPECTS, value="1024x1024 (1:1)", label="Aspect")
                                 avatar_steps = gr.Slider(1, 8, value=4, step=1, label="Steps")
-                        with gr.Accordion("Additional references (optional)", open=False) as avatar_extra_panel:
+                        with gr.Accordion("References", open=False, elem_id="av-console-references") as avatar_extra_panel:
                             with gr.Row(elem_classes="ffs-avatar-extra-row"):
                                 avatar_extra_1 = gr.Image(label="Extra reference 1", type="pil", sources=["upload"], height=180, elem_id="av-console-extra-1")
                                 avatar_extra_2 = gr.Image(label="Extra reference 2", type="pil", sources=["upload"], height=180, elem_id="av-console-extra-2")
                             avatar_extra_ready_1 = gr.HTML('<span data-token="initial"></span>', elem_id="av-extra-ready-1", elem_classes="av-internal")
                             avatar_extra_ready_2 = gr.HTML('<span data-token="initial"></span>', elem_id="av-extra-ready-2", elem_classes="av-internal")
-                        avatar_console_status = gr.HTML("")
+                        avatar_console_status = gr.HTML("", elem_id="av-console-status")
                         with gr.Row(elem_id="av-console-input"):
                             avatar_prompt = gr.Textbox(label="Prompt", show_label=False, container=False, placeholder="Describe the scene, outfit, pose, or action...", lines=2, max_lines=5, scale=8)
                             avatar_generate_btn = gr.Button("Generate image", icon=avatar_design.icon("sparkles"), variant="primary", scale=0)
@@ -4076,20 +4256,21 @@ with gr.Blocks(title="FreeFakeStudio") as demo:
 
                 with gr.Group(
                     visible=_initial_avatar_step == "Gallery",
+                    elem_id="av-gallery",
                     elem_classes="ffs-avatar-step",
                 ) as avatar_gallery_step:
-                    gr.HTML(
-                        '<div class="ffs-avatar-step-title"><strong>Auto Gallery</strong></div>'
-                    )
-                    with gr.Row(elem_classes="ffs-avatar-gallery-controls"):
-                        gallery_quantity = gr.Slider(1, 20, value=6, step=1, label="Quantity")
-                        gallery_aspect = gr.Dropdown(ASPECTS, value="864x1152 (3:4)", label="Aspect")
-                        gallery_theme = gr.Textbox(label="Gallery theme", placeholder="Street fashion in daylight")
                     with gr.Row(elem_id="av-gallery-actions"):
+                        gr.HTML('<h2 class="av-gallery-heading">Gallery</h2>')
                         gallery_plan_btn = gr.Button("Generate gallery", icon=avatar_design.icon("sparkles"), variant="primary", scale=0, min_width=176)
                         gallery_stop_btn = gr.Button("Stop", variant="stop", scale=0, visible=False)
-                        gallery_new_search = gr.Button("New search", variant="secondary", scale=0, interactive=False)
-                    gallery_require_face = gr.Checkbox(value=False, label="Require visible face")
+                    with gr.Accordion("Batch settings", open=False, elem_id="av-gallery-batch-settings"):
+                        with gr.Row(elem_classes="ffs-avatar-gallery-controls"):
+                            gallery_quantity = gr.Slider(1, 20, value=6, step=1, label="Quantity")
+                            gallery_aspect = gr.Dropdown(ASPECTS, value="864x1152 (3:4)", label="Aspect")
+                            gallery_theme = gr.Textbox(label="Gallery theme", placeholder="Street fashion in daylight")
+                        with gr.Row():
+                            gallery_require_face = gr.Checkbox(value=False, label="Require visible face")
+                            gallery_new_search = gr.Button("New search", variant="secondary", scale=0, interactive=False)
                     gallery_status = gr.HTML("" if DEV_MODE or avatar_gallery.configuration_status()["ready"] else _status_html("error", avatar_gallery.configuration_status()["message"]))
                     gallery_pipeline_status = gr.HTML("")
                     with gr.Tabs(selected="gallery-results") as gallery_views:
@@ -4099,16 +4280,23 @@ with gr.Blocks(title="FreeFakeStudio") as demo:
                                     avatar_gallery_display = gr.Gallery(
                                         value=_avatar_gallery_value(_initial_avatar), show_label=False,
                                         columns=4, height="auto", object_fit="cover", preview=False,
-                                        allow_preview=True, buttons=["download", "fullscreen"], elem_id="ffs-avatar-gallery",
+                                        allow_preview=False, elem_id="ffs-avatar-gallery",
                                     )
                                 with gr.Column(scale=1, visible=False, elem_id="av-gallery-inspector") as gallery_selected_panel:
+                                    with gr.Row(elem_id="av-gallery-viewer-tools"):
+                                        gr.Markdown("### Image")
+                                        gallery_prev = gr.Button("", icon=avatar_design.icon("arrow-left"), scale=0, min_width=40, elem_id="av-gallery-prev")
+                                        gallery_next = gr.Button("", icon=avatar_design.icon("arrow-right"), scale=0, min_width=40, elem_id="av-gallery-next")
+                                        gallery_close = gr.Button("Close", scale=0, min_width=64, elem_id="av-gallery-close")
                                     avatar_gallery_details = gr.HTML(_avatar_gallery_details(_initial_avatar))
-                                    gallery_rejection_reason = gr.Textbox(
-                                        label="What should change?", placeholder="Wrong face, outfit, pose, or another issue",
-                                        lines=2, max_lines=4,
-                                    )
-                                    regenerate_gallery_btn = gr.Button("Mark Selected Failed and Regenerate", variant="secondary", interactive=False)
-                                    enhance_gallery_btn = gr.Button("Enhance realism", icon=avatar_design.icon("sparkles"), interactive=False)
+                                    with gr.Row(elem_id="av-gallery-viewer-actions"):
+                                        enhance_gallery_btn = gr.Button("Enhance realism", icon=avatar_design.icon("sparkles"), interactive=False, scale=0)
+                                        with gr.Accordion("Request a correction", open=False, elem_id="av-gallery-correction"):
+                                            gallery_rejection_reason = gr.Textbox(
+                                                label="What should change?", placeholder="Wrong face, outfit, pose, or another issue",
+                                                lines=2, max_lines=4,
+                                            )
+                                            regenerate_gallery_btn = gr.Button("Regenerate image", variant="secondary", interactive=False)
                         with gr.Tab("References", id="gallery-references"):
                             gallery_reference_filter = gr.Radio(
                                 ["All findings", "Approved", "Rejected", "Awaiting checks"],
@@ -4198,7 +4386,7 @@ with gr.Blocks(title="FreeFakeStudio") as demo:
 
     def avatar_reference_ready(image, other_image):
         count = int(image is not None) + int(other_image is not None)
-        label = f"Additional references ({count}/2)" if count else "Additional references (optional)"
+        label = f"References ({count}/2)" if count else "References"
         return f'<span data-token="{uuid.uuid4().hex}"></span>', gr.update(label=label)
 
     avatar_extra_1.change(avatar_reference_ready, inputs=[avatar_extra_1, avatar_extra_2], outputs=[avatar_extra_ready_1, avatar_extra_panel], show_progress="hidden")
@@ -4220,7 +4408,10 @@ with gr.Blocks(title="FreeFakeStudio") as demo:
         if avatar and current.lower() != avatar.get("current_step"):
             avatar["current_step"] = current.lower()
             avatar_studio.save_avatar(SAVE_DIR, avatar)
-        return _avatar_ui_payload(avatar_id, current)
+        payload = _avatar_ui_payload(avatar_id, current)
+        for component in (avatar_prompt, avatar_extra_1, avatar_extra_2, avatar_extra_panel):
+            payload[component] = gr.skip()
+        return payload
 
     avatar_step.input(change_avatar_step, inputs=[selected_avatar_id, avatar_step], outputs=avatar_outputs, show_progress="hidden")
 
@@ -4549,7 +4740,8 @@ with gr.Blocks(title="FreeFakeStudio") as demo:
                             avatar_extra_1, avatar_extra_2, gallery_rejection_reason,
                             gallery_require_face, gallery_quantity, gallery_aspect, gallery_theme, gallery_new_search,
                             enhance_gallery_btn, enhance_start, enhance_stop, enhance_close,
-                            enhance_scale, enhance_strength, enhance_steps, enhance_action_run, enhance_method]
+                            enhance_scale, enhance_strength, enhance_steps, enhance_action_run, enhance_method,
+                            gallery_prev, gallery_next]
 
     def avatar_task_state(avatar_id, busy, kind, selected_index=None):
         avatar = avatar_studio.selected_or_first(SAVE_DIR, avatar_id)
@@ -4568,6 +4760,8 @@ with gr.Blocks(title="FreeFakeStudio") as demo:
             enhance_stop: gr.update(visible=busy and kind == "enhancement", interactive=False),
             enhance_close: gr.update(interactive=not busy),
             enhance_action_run: gr.update(interactive=not busy),
+            gallery_prev: gr.update(interactive=not busy),
+            gallery_next: gr.update(interactive=not busy),
             **{component: gr.update(interactive=not busy) for component in (enhance_scale, enhance_strength, enhance_steps, enhance_method)},
             gallery_rejection_reason: gr.update(interactive=not busy),
             gallery_new_search: gr.update(interactive=False),
@@ -4744,19 +4938,36 @@ with gr.Blocks(title="FreeFakeStudio") as demo:
     )
     avatar_gallery_event.then(refresh_avatar_overview, inputs=[selected_avatar_id, avatar_search], outputs=[avatar_dashboard, avatar_library, avatar_library_ids], show_progress="hidden")
 
-    def select_avatar_gallery_item(avatar_id, evt: gr.SelectData):
+    def gallery_selection_payload(avatar_id, index):
         avatar = avatar_studio.selected_or_first(SAVE_DIR, avatar_id)
-        index = int(evt.index) if evt.index is not None else None
         item = avatar_studio.gallery_item_by_index(SAVE_DIR, avatar_id, index) if avatar else None
         regenerable = bool(item and item.get("prompt") and item.get("origin") not in {"enhancement", "legacy"})
         return index, _avatar_gallery_details(avatar, index), gr.update(interactive=regenerable), gr.update(visible=bool(item)), gr.update(value=""), gr.update(interactive=bool(item and item.get("id")))
 
+    def select_avatar_gallery_item(avatar_id, evt: gr.SelectData):
+        index = int(evt.index) if evt.index is not None else None
+        return gallery_selection_payload(avatar_id, index)
+
+    gallery_selection_outputs = [selected_avatar_gallery_index, avatar_gallery_details, regenerate_gallery_btn,
+                                 gallery_selected_panel, gallery_rejection_reason, enhance_gallery_btn]
     avatar_gallery_display.select(
         select_avatar_gallery_item,
         inputs=[selected_avatar_id],
-        outputs=[selected_avatar_gallery_index, avatar_gallery_details, regenerate_gallery_btn, gallery_selected_panel, gallery_rejection_reason, enhance_gallery_btn],
+        outputs=gallery_selection_outputs,
         show_progress="hidden",
     )
+
+    def move_gallery_selection(avatar_id, index, direction):
+        items = avatar_studio.visible_gallery_items(SAVE_DIR, avatar_id) if avatar_id else []
+        if not items:
+            return gallery_selection_payload(avatar_id, None)
+        return gallery_selection_payload(avatar_id, ((int(index) if index is not None else 0) + direction) % len(items))
+
+    gallery_prev.click(lambda avatar_id, index: move_gallery_selection(avatar_id, index, -1),
+                       inputs=[selected_avatar_id, selected_avatar_gallery_index], outputs=gallery_selection_outputs, show_progress="hidden")
+    gallery_next.click(lambda avatar_id, index: move_gallery_selection(avatar_id, index, 1),
+                       inputs=[selected_avatar_id, selected_avatar_gallery_index], outputs=gallery_selection_outputs, show_progress="hidden")
+    gallery_close.click(lambda: gr.update(visible=False), outputs=[gallery_selected_panel], queue=False, show_progress="hidden")
 
     def _regenerate_avatar_gallery_item(avatar_id, selected_index, rejection_reason=""):
         if not avatar_id or selected_index is None:

@@ -70,3 +70,7 @@ FreeFakeStudio.keys.txt
 # Local browser verification artifacts
 .playwright-cli/
 output/playwright/
+/frontend/node_modules/
+**/.drive-sync.json
+*oauth*.json
+*credentials*.json

@@ -5,6 +5,7 @@
 
 import os
 import sys
+from runtime_environment import cloud_runtime
 
 
 def running_in_colab():
@@ -34,7 +35,9 @@ def configure_workspace(workspace_dir=None, comfyui_root=None):
 
 def get_save_dir():
     """Return the persistent results directory."""
-    if running_in_colab():
+    if os.environ.get("FREEFAKESTUDIO_SAVE_DIR"):
+        save_dir = os.environ["FREEFAKESTUDIO_SAVE_DIR"]
+    elif cloud_runtime():
         save_dir = os.path.join(WORKSPACE_DIR, "results")
     else:
         save_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "results")

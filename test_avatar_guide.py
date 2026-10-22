@@ -304,11 +304,11 @@ class AvatarGuideTests(unittest.TestCase):
         exec(compile(ast.Module(body=[function], type_ignores=[]), "app.py", "exec"), namespace)
         ready = namespace["avatar_reference_ready"]
         first, state = ready(Image.new("RGB", (10, 10)), None)
-        self.assertEqual(state["label"], "Additional references (1/2)")
+        self.assertEqual(state["label"], "References (1/2)")
         second, state = ready(Image.new("RGB", (10, 10)), Image.new("RGB", (10, 10)))
-        self.assertEqual(state["label"], "Additional references (2/2)")
+        self.assertEqual(state["label"], "References (2/2)")
         self.assertNotEqual(first, second)
-        self.assertEqual(ready(None, None)[1]["label"], "Additional references (optional)")
+        self.assertEqual(ready(None, None)[1]["label"], "References")
 
 
 if __name__ == "__main__":

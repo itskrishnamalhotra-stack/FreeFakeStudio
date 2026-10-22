@@ -69,6 +69,7 @@ def _command_output(command):
 
 def detect_runtime_fingerprint():
     """Return the compatibility boundary for binary packages and GPU caches."""
+    from runtime_environment import provider
     try:
         import torch
 
@@ -97,6 +98,7 @@ def detect_runtime_fingerprint():
     ).splitlines()
     payload = {
         "schema": SCHEMA_VERSION,
+        "provider": provider(),
         "python": platform.python_version(),
         "python_abi": getattr(sys.implementation, "cache_tag", "unknown"),
         "platform": platform.platform(),
@@ -117,6 +119,7 @@ def fingerprints_match(expected, current):
         return False
     keys = (
         "schema",
+        "provider",
         "python",
         "python_abi",
         "platform",
@@ -176,6 +179,8 @@ def tree_signature(source, exclude_names=(), exclude_prefixes=()):
 
 
 def _excluded(relative, exclude_names, exclude_prefixes):
+    if "node_modules" in relative.parts:
+        return True
     parts = relative.parts
     if any(part in exclude_names for part in parts):
         return True

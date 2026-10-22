@@ -1,0 +1,38 @@
+async (page) => {
+  await page.setViewportSize({width:1440,height:960});
+  await page.reload();
+  const name = 'Browser Guided ' + Date.now();
+  await page.getByRole('button',{name:'New avatar',exact:true}).click();
+  await page.getByRole('textbox',{name:'Name',exact:true}).fill(name);
+  await page.getByRole('button',{name:'Create avatar',exact:true}).click();
+  await page.getByRole('button',{name:'Generate face',exact:true}).click();
+  await page.getByRole('button',{name:'Use this face & next',exact:true}).waitFor();
+  await page.getByRole('button',{name:'Use this face & next',exact:true}).click();
+  await page.getByRole('button',{name:'Use this body & create 2 images',exact:true}).waitFor();
+  await page.getByRole('button',{name:'Use this body & create 2 images',exact:true}).click();
+  await page.getByRole('tab',{name:'Console',exact:true}).waitFor();
+  await page.waitForFunction(()=>document.querySelector('[role=tab][aria-selected=true]')?.textContent==='Console');
+  await page.getByRole('textbox',{name:'Image prompt',exact:true}).fill('A casual cafe photograph, mock workflow only');
+  await page.getByRole('button',{name:'Generate image',exact:true}).click();
+  await page.getByAltText('Generated image',{exact:true}).first().waitFor();
+  await page.getByRole('tab',{name:'Gallery',exact:true}).click();
+  await page.waitForFunction(()=>document.querySelectorAll('.gallery-image').length===3);
+  await page.locator('.gallery-image').first().click();
+  await page.getByRole('button',{name:'Reconstruct',exact:true}).click();
+  await page.getByRole('button',{name:'Reconstruct image',exact:true}).click();
+  await page.waitForFunction(()=>document.querySelectorAll('.gallery-image').length===4);
+  await page.reload();
+  await page.getByRole('button',{name:name+' Ready',exact:true}).click();
+  await page.getByRole('tab',{name:'Gallery',exact:true}).click();
+  await page.waitForFunction(()=>document.querySelectorAll('.gallery-image').length===4);
+  await page.getByRole('button',{name:'Create batch',exact:true}).click();
+  await page.getByRole('slider',{name:'Photographs',exact:true}).fill('2');
+  await page.getByRole('textbox',{name:'Theme',exact:true}).fill('Casual studio mock batch');
+  await page.getByRole('button',{name:'Start batch',exact:true}).click();
+  await page.getByRole('dialog',{name:'Reference pipeline',exact:true}).waitFor();
+  await page.waitForFunction(()=>!document.querySelector('.operation-bar'),{timeout:30000});
+  await page.keyboard.press('Escape');
+  await page.waitForFunction(()=>document.querySelectorAll('.gallery-image').length===6);
+  await page.screenshot({path:'output/playwright/react-guided-complete.png'});
+  return {passed:true,checks:['guided face and body','two starter images','console output saved to gallery','one-pass reconstruction saves one variant','reload preserves avatar and gallery','two-reference gallery batch']};
+}

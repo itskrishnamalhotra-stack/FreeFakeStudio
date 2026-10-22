@@ -1,8 +1,22 @@
 # FreeFakeStudio
 
-FreeFakeStudio is a Google Colab-first AI image generation and editing studio built around the existing Python, Gradio, and ComfyUI engines.
+FreeFakeStudio is a Colab/Kaggle AI image studio with a React/TypeScript interface,
+FastAPI job server, and the existing Python/ComfyUI image engines.
 
 [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/itskrishnamalhotra-stack/FreeFakeStudio/blob/main/FreeFakeStudio.ipynb)
+
+**New interface and Kaggle support:** follow [CLOUD_SETUP.md](CLOUD_SETUP.md) for
+the complete current setup, Google Drive OAuth instructions, recovery behavior,
+UI acceptance checks and hosting limitations. Import this same notebook into
+Kaggle; enable Internet/GPU and supply private credentials. Colab still uses its
+normal Drive login. Kaggle uses Drive API synchronization, not Colab's mount.
+
+The notebook now launches `web_server.py`, not Gradio. The frontend is prebuilt:
+Node is not needed in the notebook. Chat, avatar setup, console, reference
+pipeline, reconstruction, settings, jobs and image viewing are native web UI.
+The default model download set is FLUX-only; choose `MODEL_SET=all` for optional
+Z-Image/ERNIE. Existing files are never deleted. Historical Gradio-specific
+sections below describe the retained legacy UI, not the new default interface.
 
 This version is designed for:
 

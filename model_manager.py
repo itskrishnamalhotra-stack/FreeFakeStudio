@@ -10,6 +10,7 @@ import sys
 import threading
 import time
 import random
+from runtime_environment import mock_mode
 
 # ── Environment Detection ──────────────────────────────────
 def running_in_colab():
@@ -21,7 +22,7 @@ def running_in_colab():
         return False
 
 # Dev mode: enabled when NOT in Colab, or forced via environment variable
-DEV_MODE = os.environ.get("FREEFAKESTUDIO_DEV", "").lower() in ("1", "true", "yes") or not running_in_colab()
+DEV_MODE = mock_mode()
 
 # ── Model Registry ─────────────────────────────────────────
 # Only the 3 required models

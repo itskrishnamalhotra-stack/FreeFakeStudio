@@ -341,7 +341,7 @@ def reject_gallery_item(save_dir, avatar_id, item_id, reason=""):
     )
 
 
-def visible_gallery_items(save_dir, avatar_id):
+def visible_gallery_items(save_dir, avatar_id, limit=100):
     sync_console_gallery(save_dir, avatar_id)
     items = load_gallery_items(save_dir, avatar_id)
     visible = [item for item in items if os.path.isfile(item.get("generated_path") or "")]
@@ -351,7 +351,7 @@ def visible_gallery_items(save_dir, avatar_id):
         if os.path.abspath(path) not in recorded and not path.name.startswith(prefixes):
             identifier = hashlib.sha256(os.path.abspath(path).encode("utf-8")).hexdigest()[:20]
             visible.append({"id": "legacy-" + identifier, "origin": "legacy", "generated_path": str(path), "status": "saved"})
-    return visible[-100:]
+    return visible[-limit:] if limit else visible
 
 
 def sync_console_gallery(save_dir, avatar_id):
