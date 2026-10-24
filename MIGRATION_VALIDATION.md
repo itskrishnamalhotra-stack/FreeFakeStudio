@@ -2,7 +2,7 @@
 
 ## Completed Locally
 
-- `python -m unittest discover`: 275 tests passed. Includes legacy engine/memory
+- `python -m unittest discover`: 280 tests passed. Includes legacy engine/memory
   contracts and new HTTP, authentication, traversal, upload, idempotency,
   checkpoint, recovery, guided avatar, console, gallery and reconstruction tests.
 - Release regressions cover anchor-change invalidation without losing snapshots,
@@ -10,6 +10,13 @@
   Explicit reference views, matched lossless detail crops, provisional versus
   held-out face calibration, persona-aware offline caption styles, and opt-in
   runtime scheduling are covered without live model or publishing calls.
+- App-wide memory management defaults off, persists across app recreation,
+  ignores legacy per-avatar flags, and gates both image/vision forced unloads,
+  including reference analysis. Strict settings validation and busy-job locking
+  are covered. Explicit unload and out-of-memory recovery remain available.
+- `test_web_memory_browser.js` passes for the shared main/avatar switch, removal
+  of the old avatar checkbox, saved On/Off state after reload, and 1366px, 390px
+  and 320px layouts. Background refresh cannot overwrite a pending/saved toggle.
 - Drive protocol tests use mocked HTTP responses: pagination, expired upload
   sessions, resumable status probes, checksum rejection, create-ID reuse,
   conflict preservation, safe auth errors and cached directory enumeration.
@@ -76,7 +83,8 @@
 Browser scripts are replayable through Playwright CLI `run-code --filename`:
 `test_web_browser.js`, `test_web_guide_browser.js` and
 `test_web_gallery_browser.js`, `test_web_routes_browser.js` and
-`test_web_drafts_browser.js` and `test_web_influencer_browser.js`. The first,
+`test_web_drafts_browser.js`, `test_web_influencer_browser.js` and
+`test_web_memory_browser.js`. The first,
 gallery, routing and draft scripts use a local
 fixture at `results/qa/supplied-preview.png` and a prepared avatar named
 `Enhancement QA` with a populated gallery. These private preview fixtures are

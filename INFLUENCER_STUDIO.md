@@ -51,9 +51,15 @@ training, video generation, voice/TTS service or mandatory paid generation API.
    Important visible attributes are checked with the local vision model.
    Flexible attributes are not repeatedly queried. Uncertain baseline attributes
    are not treated as known facts.
-4. Leave Sequential GPU memory mode enabled on free Colab. FLUX is released
-   before vision validation and the vision model is released before avatar
-   generation. This reduces concurrent memory use at the cost of reload time.
+4. Header Settings > App-wide memory > GPU memory management applies to every
+   avatar and chat and defaults to Off. Off avoids forced FLUX/vision unloads
+   between stages; ComfyUI may still offload internally when needed. On releases
+   FLUX before vision checks/reference analysis and vision before generation,
+   reducing concurrent memory use at the cost of reload time. Turn it on if your
+   runtime cannot keep both resident. The choice saves automatically with the
+   workspace in `results/_settings/app.json`, not in an avatar's policy. Existing
+   per-avatar Sequential preferences are ignored. Manual unload, image-model
+   switching and out-of-memory cleanup remain active in either mode.
 5. Run the explicit 12-image consistency test. It covers angles, lighting, body
    framing, two-person composition and a hidden-face case. This consumes GPU
    time; it is not run automatically at startup. Stop through Job activity and

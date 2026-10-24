@@ -108,6 +108,7 @@ export type Job = {
   cancel_requested?: boolean;
 };
 export type Config = {
+  app_settings: { gpu_memory_management: boolean };
   mock: boolean;
   provider: string;
   models: {

@@ -294,14 +294,11 @@ def _ensure_model_locked(model_name, status_callback=None):
 
     engine = _get_engine(model_name)
 
-    # The small Avatar analyzer may coexist with FLUX, but Z-Image and ERNIE
-    # need every available T4 allocation. It will reload lazily when Avatar
-    # Studio next needs validation.
+    # Optional app-wide model swapping also applies to the legacy entry point.
     if model_name != FLUX_MODEL_NAME and not DEV_MODE:
         try:
-            import avatar_vision
-
-            avatar_vision.unload()
+            import app_settings
+            app_settings.prepare_generation()
         except Exception as exc:
             print(f"Warning: could not release Avatar Studio analyzer: {exc}")
 

@@ -39,7 +39,6 @@ type Identity = {
   attribute_keys: string[];
   profile: {
     policies?: Record<string, Policy>;
-    sequential?: boolean;
     face?: {
       calibrated?: boolean;
       threshold?: number;
@@ -195,8 +194,7 @@ export function InfluencerWorkspace({
   const [candidateView, setCandidateView] = useState("front"),
     [details, setDetails] = useState(""),
     [version, setVersion] = useState("");
-  const [policies, setPolicies] = useState<Record<string, Policy>>({}),
-    [sequential, setSequential] = useState(true);
+  const [policies, setPolicies] = useState<Record<string, Policy>>({});
   const [positive, setPositive] = useState<Picture[]>([]),
     [negative, setNegative] = useState<Picture[]>([]);
   const [persona, setPersona] = useState<Record<string, string>>({}),
@@ -244,7 +242,6 @@ export function InfluencerWorkspace({
         setVersion(id.version);
         if (!policyDirty.current) {
           setPolicies(id.profile.policies || {});
-          setSequential(id.profile.sequential ?? true);
         }
         setContent(data);
         if (!personaDirty.current) setPersona(data.persona);
@@ -601,25 +598,12 @@ export function InfluencerWorkspace({
               <h2>Consistency policy</h2>
               <button
                 disabled={disabled}
-                onClick={() =>
-                  mutate("/quality", { policies, sequential }, "PATCH")
-                }
+                onClick={() => mutate("/quality", { policies }, "PATCH")}
               >
                 <Save size={15} />
                 Save policy
               </button>
             </div>
-            <label className="check">
-              <input
-                type="checkbox"
-                checked={sequential}
-                onChange={(e) => {
-                  policyDirty.current = true;
-                  setSequential(e.target.checked);
-                }}
-              />
-              Sequential GPU memory mode
-            </label>
             <div className="policy-grid">
               {identity.attribute_keys.map((key) => (
                 <Field key={key} label={key.replaceAll("_", " ")}>

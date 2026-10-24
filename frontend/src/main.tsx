@@ -295,10 +295,13 @@ function App() {
     [faceView, setFaceView] = useState("auto"),
     [bodyView, setBodyView] = useState("auto");
   const [settings, setSettings] = useState(false),
+    [savingAppSettings, setSavingAppSettings] = useState(false),
     [jobsOpen, setJobsOpen] = useState(false),
     [jobs, setJobs] = useState<Job[]>([]),
     [sending, setSending] = useState(false),
     [newAvatar, setNewAvatar] = useState(false);
+  const appSettingsEpoch = useRef(0),
+    appSettingsPending = useRef(false);
   const [name, setName] = useState(""),
     [creation, setCreation] = useState("Guided"),
     [preset, setPreset] = useState("Studio creator"),
@@ -640,12 +643,18 @@ function App() {
     localStorage.setItem("ffs-theme", theme);
   }, [theme]);
   async function refresh() {
+    const settingsEpoch = appSettingsEpoch.current;
     const [c, a, j] = await Promise.all([
       api<Config>("/config"),
       api<Avatar[]>("/avatars"),
       api<Job[]>("/jobs"),
     ]);
-    setConfig(c);
+    setConfig((current) =>
+      current &&
+      (appSettingsPending.current || settingsEpoch !== appSettingsEpoch.current)
+        ? { ...c, app_settings: current.app_settings }
+        : c,
+    );
     setAvatars(a);
     setJobs(j);
     await refreshConversations();
@@ -2599,6 +2608,76 @@ function App() {
             onClose={() => setSettings(false)}
           >
             <div className="settings-content">
+              <div className="app-memory-setting">
+                <h3>App-wide memory</h3>
+                <label
+                  className="check"
+                  title="On releases FLUX and vision between stages to reduce memory use. Off keeps them loaded when possible. Manual unload and out-of-memory cleanup remain active."
+                >
+                  <input
+                    type="checkbox"
+                    role="switch"
+                    aria-label="GPU memory management"
+                    checked={config.app_settings.gpu_memory_management}
+                    disabled={busy || savingAppSettings}
+                    onChange={(e) => {
+                      const enabled = e.target.checked;
+                      const previous = config.app_settings;
+                      appSettingsEpoch.current++;
+                      appSettingsPending.current = true;
+                      setConfig((current) =>
+                        current
+                          ? {
+                              ...current,
+                              app_settings: { gpu_memory_management: enabled },
+                            }
+                          : current,
+                      );
+                      setSavingAppSettings(true);
+                      api<Config["app_settings"]>("/settings", {
+                        method: "PATCH",
+                        body: JSON.stringify({
+                          gpu_memory_management: enabled,
+                        }),
+                      })
+                        .then((value) =>
+                          setConfig((current) =>
+                            current
+                              ? { ...current, app_settings: value }
+                              : current,
+                          ),
+                        )
+                        .catch((error) => {
+                          setConfig((current) =>
+                            current
+                              ? { ...current, app_settings: previous }
+                              : current,
+                          );
+                          fail(error);
+                        })
+                        .finally(() => {
+                          appSettingsEpoch.current++;
+                          appSettingsPending.current = false;
+                          setSavingAppSettings(false);
+                        });
+                    }}
+                  />
+                  GPU memory management
+                  <span>
+                    {savingAppSettings
+                      ? "Saving"
+                      : config.app_settings.gpu_memory_management
+                        ? "On"
+                        : "Off"}
+                  </span>
+                </label>
+                {!config.app_settings.gpu_memory_management && (
+                  <p className="memory-warning">
+                    Higher memory use; a large workload can run out of RAM or
+                    VRAM.
+                  </p>
+                )}
+              </div>
               <Field label="Aspect ratio">
                 <select
                   value={aspect}

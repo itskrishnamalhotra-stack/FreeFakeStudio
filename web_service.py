@@ -7,6 +7,7 @@ import uuid
 from PIL import Image
 
 import avatar_enhance
+import app_settings
 import avatar_gallery
 import avatar_gallery_jobs
 import avatar_guide
@@ -50,8 +51,7 @@ class StudioService:
         if model_manager.DEV_MODE:
             result = studio.validate_generated_image(image, avatar, prompt, dev_mode=True)
             return {**result, "identity_version": avatar.get("identity_version"), "mock_not_quality_evidence": True}
-        if avatar.get("_quality_profile", quality.profile(str(self.root), avatar)).get("sequential", True):
-            model_manager.unload_current()
+        app_settings.prepare_vision(self.root)
         return quality.validate(str(self.root), image, avatar, prompt, source=source)
 
     def ready_avatar(self, avatar_id):
@@ -78,8 +78,7 @@ class StudioService:
 
     def prepare_generation(self):
         if not model_manager.DEV_MODE:
-            import avatar_vision
-            avatar_vision.unload()
+            app_settings.prepare_generation(self.root)
 
     def _native(self, prompt, refs, aspect, context):
         context.check()
@@ -157,6 +156,7 @@ class StudioService:
         refs = self.images(args.get("images", []))
         for index in range(len(saved), args.get("quantity", 1)):
             context.emit(f"Generating image {index + 1}/{args.get('quantity', 1)}", image=index + 1, total=args.get("quantity", 1))
+            self.prepare_generation()
             image, actual = generation.generate(args["model"], args["prompt"], args.get("negative", generation.DEFAULT_NEGATIVE),
                 args["aspect"], seed + index, args.get("cfg", 1), args.get("denoise", 1), args["steps"],
                 refs, args.get("canvas"), args.get("mask_mode", "None"), self.file(args["mask"]) if args.get("mask") else None, context.emit)

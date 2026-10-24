@@ -2383,3 +2383,34 @@ details p {
     display: none;
   }
 }
+.app-memory-setting {
+  border-bottom: 1px solid var(--border, #343a3d);
+  padding-bottom: 16px;
+}
+.app-memory-setting h3 {
+  font-size: 14px;
+  margin: 0 0 12px;
+}
+.app-memory-setting .check {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.app-memory-setting .check span {
+  margin-left: auto;
+  font-size: 12px;
+}
+.app-memory-setting .check input {
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  padding: 0;
+  accent-color: var(--accent);
+  flex-shrink: 0;
+}
+.memory-warning {
+  font-size: 12px;
+  line-height: 1.5;
+  margin: 10px 0 0;
+}

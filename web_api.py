@@ -17,10 +17,11 @@ from urllib.parse import quote, urlparse
 from fastapi import FastAPI, File, Header, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse, Response
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, StrictBool
 from PIL import Image, ImageOps, UnidentifiedImageError
 
 import avatar_enhance
+import app_settings
 import avatar_resources
 import avatar_gallery
 import avatar_gallery_jobs
@@ -74,7 +75,10 @@ class IdentityUpdate(StrictModel):
 
 class QualitySettings(StrictModel):
     policies: dict[str, Literal["required", "important", "flexible"]] = Field(default_factory=dict)
-    sequential: bool = True
+
+
+class AppSettings(StrictModel):
+    gpu_memory_management: StrictBool
 
 
 class Persona(StrictModel):
@@ -376,7 +380,20 @@ def create_app(root=None, persist=None, token=None):
                 "presets": list(avatar_guide.PRESETS), "encoder_choices": model_manager.get_flux_encoder_choices(),
                 "encoder": model_manager.get_flux_encoder_config()["mode"].title(), "reconstruction_prompt": avatar_enhance.PHOTO_PROMPT,
                 "mock": model_manager.DEV_MODE, "provider": provider(), "gallery_api": avatar_gallery.configuration_status() if not model_manager.DEV_MODE else {"ready": True},
-                "active_model": model_manager.get_current_model(), "max_references": 4, "max_avatar_extras": 2}
+                "active_model": model_manager.get_current_model(), "max_references": 4, "max_avatar_extras": 2,
+                "app_settings": app_settings.load(root)}
+
+    @app.get("/api/settings")
+    def settings():
+        return app_settings.load(root)
+
+    @app.patch("/api/settings")
+    def update_settings(body: AppSettings):
+        with mutation_lock:
+            ensure_idle()
+            result = app_settings.save(root, body.gpu_memory_management)
+            jobs.flush()
+            return result
 
     @app.get("/api/avatars")
     def avatars():

@@ -128,6 +128,12 @@ is unavailable. The connector does not bypass platform policies or quotas.
 
 ## Persistence and Recovery
 
+- Header Settings includes the app-wide GPU memory management switch, Off by
+  default. It saves automatically to `results/_settings/app.json` and syncs with
+  results. On trades repeated FLUX/vision loading for lower concurrent memory
+  use; Off does not force these unloads but can exhaust host/GPU memory. Old
+  per-avatar Sequential settings no longer control residency.
+
 - Models persist in the existing Drive `ComfyUI/models` tree. Every new Kaggle
   machine still needs a Drive-to-local-disk transfer; persistent storage is not
   persistent RAM. Files with matching sizes/checksums are reused within a session.

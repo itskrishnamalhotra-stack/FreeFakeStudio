@@ -214,10 +214,17 @@ class AvatarStudioTests(unittest.TestCase):
         clear.assert_called_once_with()
         cleanup.assert_called_once_with()
 
-    def test_non_flux_model_load_releases_avatar_analyzer(self):
-        source = Path("model_manager.py").read_text(encoding="utf-8")
-        self.assertIn("if model_name != FLUX_MODEL_NAME and not DEV_MODE", source)
-        self.assertIn("avatar_vision.unload()", source)
+    def test_non_flux_model_load_releases_analyzer_only_when_opted_in(self):
+        import app_settings
+        with tempfile.TemporaryDirectory() as root:
+            engine = mock.Mock()
+            engine.is_loaded.return_value = True
+            with mock.patch.object(model_manager, "DEV_MODE", False), mock.patch.object(model_manager, "_get_engine", return_value=engine), mock.patch.object(model_manager, "_current_model", "Z-Image Turbo"), mock.patch("workspace.get_save_dir", return_value=root), mock.patch.object(avatar_vision, "unload") as unload:
+                model_manager._ensure_model_locked("Z-Image Turbo")
+                unload.assert_not_called()
+                app_settings.save(root, True)
+                model_manager._ensure_model_locked("Z-Image Turbo")
+                unload.assert_called_once()
 
     def test_avatar_create_lock_and_restore_specs(self):
         with tempfile.TemporaryDirectory() as temp_dir:

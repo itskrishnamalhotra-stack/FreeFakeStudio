@@ -15,11 +15,12 @@ import image_review
 
 def profile(root, avatar):
     version = avatar.get("identity_version")
-    return identity._read(identity._folder(root, avatar["id"]) / "profiles" / f"{version}.json", {})
+    data = identity._read(identity._folder(root, avatar["id"]) / "profiles" / f"{version}.json", {})
+    return {key: value for key, value in data.items() if key != "sequential"}
 
 
 def save_profile(root, avatar, changes):
-    if set(changes) - {"policies", "sequential", "face", "caption_mode"}:
+    if set(changes) - {"policies", "face", "caption_mode"}:
         raise ValueError("Unknown quality setting.")
     if "policies" in changes:
         if any(key not in studio.IDENTITY_SPEC_KEYS or value not in {"required", "important", "flexible"} for key, value in changes["policies"].items()):

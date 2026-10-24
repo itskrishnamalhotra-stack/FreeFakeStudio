@@ -18,6 +18,7 @@ import avatar_identity as identity
 import avatar_quality as quality
 import avatar_face as face
 import avatar_content as content
+import app_settings
 from web_api import create_app
 from notebook_bootstrap import parse_keys
 
@@ -123,10 +124,68 @@ class InfluencerTests(unittest.TestCase):
             identity.pin(self.root, studio.load_avatar(self.root, self.avatar_id), avatar["identity_version"])
 
     def test_policy_validation_and_persistence(self):
-        response = self.client.patch(self.base + "/quality", json={"policies": {"hair_color": "required"}, "sequential": True})
+        response = self.client.patch(self.base + "/quality", json={"policies": {"hair_color": "required"}})
         self.assertEqual(response.status_code, 200, response.text)
         self.assertEqual(self.client.get(self.base + "/identity").json()["profile"]["policies"]["hair_color"], "required")
         self.assertEqual(self.client.patch(self.base + "/quality", json={"policies": {"random_key": "required"}}).status_code, 400)
+
+    def test_app_memory_default_off_persists_independent_of_avatars(self):
+        self.assertEqual(self.client.get("/api/settings").json(), {"gpu_memory_management": False})
+        self.assertFalse(self.client.get("/api/config").json()["app_settings"]["gpu_memory_management"])
+        response = self.client.patch("/api/settings", json={"gpu_memory_management": True})
+        self.assertEqual(response.status_code, 200, response.text)
+        self.client.post("/api/avatars", json={"name": "Second avatar"})
+        self.assertTrue(self.client.get("/api/settings").json()["gpu_memory_management"])
+        restarted = create_app(self.root)
+        try:
+            self.assertTrue(TestClient(restarted).get("/api/config").json()["app_settings"]["gpu_memory_management"])
+        finally:
+            restarted.state.jobs.shutdown()
+        self.client.patch("/api/settings", json={"gpu_memory_management": False})
+        self.assertFalse(app_settings.memory_management_enabled(self.root))
+
+    def test_memory_switch_controls_both_models_and_ignores_legacy_avatar_setting(self):
+        service = self.app.state.service
+        avatar = {**service.ready_avatar(self.avatar_id), "_quality_profile": {"sequential": True}}
+        with patch("model_manager.DEV_MODE", False), patch("model_manager.unload_current") as unload_flux, patch("avatar_vision.unload") as unload_vision, patch("avatar_quality.validate", return_value={"pass": True}):
+            service.prepare_generation()
+            service.validate(Image.new("RGB", (128, 160)), avatar, "Portrait")
+            unload_flux.assert_not_called()
+            unload_vision.assert_not_called()
+            app_settings.save(self.root, True)
+            service.prepare_generation()
+            avatar["_quality_profile"]["sequential"] = False
+            service.validate(Image.new("RGB", (128, 160)), avatar, "Portrait")
+            unload_flux.assert_called_once()
+            unload_vision.assert_called_once()
+
+    def test_reference_analysis_obeys_app_memory_switch(self):
+        image = Image.new("RGB", (128, 160))
+        with patch("model_manager.unload_current") as unload, patch("avatar_vision.analyze_reference_image", return_value={}):
+            studio.analyze_reference_image("face", image, dev_mode=False, save_dir=self.root)
+            unload.assert_not_called()
+            app_settings.save(self.root, True)
+            studio.analyze_reference_image("body", image, dev_mode=False, save_dir=self.root)
+            unload.assert_called_once()
+
+    def test_memory_settings_reject_invalid_values_and_busy_changes(self):
+        for body in ({"gpu_memory_management": "false"}, {"gpu_memory_management": 1}, {"gpu_memory_management": False, "unknown": 1}):
+            self.assertEqual(self.client.patch("/api/settings", json=body).status_code, 422)
+        self.assertEqual(self.client.patch(self.base + "/quality", json={"sequential": True}).status_code, 422)
+        with patch.object(self.app.state.jobs, "list", return_value=[{"status": "running"}]):
+            self.assertEqual(self.client.patch("/api/settings", json={"gpu_memory_management": True}).status_code, 409)
+        self.assertFalse(app_settings.memory_management_enabled(self.root))
+
+    def test_legacy_image_model_path_respects_app_memory_setting(self):
+        import model_manager
+        engine = Mock()
+        engine.is_loaded.return_value = True
+        with patch("model_manager.DEV_MODE", False), patch("model_manager._get_engine", return_value=engine), patch("model_manager._current_model", "Z-Image Turbo"), patch("workspace.get_save_dir", return_value=str(self.root)), patch("avatar_vision.unload") as unload:
+            model_manager._ensure_model_locked("Z-Image Turbo")
+            unload.assert_not_called()
+            app_settings.save(self.root, True)
+            model_manager._ensure_model_locked("Z-Image Turbo")
+            unload.assert_called_once()
 
     def test_mock_reference_generation_never_loads_face_or_vision_model(self):
         with patch.object(face, "_load", side_effect=AssertionError("No inference")):

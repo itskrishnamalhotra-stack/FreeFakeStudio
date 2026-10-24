@@ -538,7 +538,7 @@ def _mock_specs(kind, image):
     }
 
 
-def analyze_reference_image(kind, image, dev_mode=True):
+def analyze_reference_image(kind, image, dev_mode=True, save_dir=None):
     pil_image = _coerce_image(image)
     if pil_image is None:
         raise ValueError(f"Add or generate a {kind} image first.")
@@ -546,8 +546,8 @@ def analyze_reference_image(kind, image, dev_mode=True):
         return _mock_specs(kind, pil_image)
     questions = FACE_SPEC_QUESTIONS if kind == "face" else BODY_SPEC_QUESTIONS
     import avatar_vision
-    import model_manager
-    model_manager.unload_current()
+    import app_settings
+    app_settings.prepare_vision(save_dir)
 
     specs = avatar_vision.analyze_reference_image(kind, pil_image, questions)
     specs["created_at"] = _now()
@@ -563,7 +563,7 @@ def lock_reference(save_dir, avatar_id, kind, image, dev_mode=True):
     if candidate is None:
         raise ValueError(f"Add or generate a {kind} image first.")
     changed = previous is not None and (previous.size != candidate.size or previous.tobytes() != candidate.tobytes())
-    specs = analyze_reference_image(kind, image, dev_mode=dev_mode)
+    specs = analyze_reference_image(kind, image, dev_mode=dev_mode, save_dir=save_dir)
     if specs.get("usable_reference") is not True:
         reasons = specs.get("rejection_reasons") or ["The analyzer could not confirm a usable reference."]
         detail = "; ".join(str(reason) for reason in reasons) if isinstance(reasons, list) else str(reasons)
