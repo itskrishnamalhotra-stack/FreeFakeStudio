@@ -8,26 +8,23 @@ import image_review
 
 
 REALISM_PROMPT = (
-    "Reconstruct the supplied image as a real professional photograph, not an illustration or CGI render. "
-    "Preserve the exact subjects, facial identity, facial structure, "
-    "pose, expression, anatomy, clothing, framing, camera angle, background and overall lighting. "
-    "Reconstruct natural human skin microtexture: fine irregular pores, tiny vellus hairs, realistic "
-    "hair follicles, subtle skin creases, natural variation in skin tone, realistic highlights and "
-    "nonuniform skin reflectance. Add believable individual hair strands, eyebrow hairs, fabric "
-    "fibres and fine environmental textures where appropriate. Correct obvious rendering artifacts where "
-    "the intended structure is clear, but do not redesign the person, change their pose, or add or remove "
-    "objects. The details must be subtle, physically "
-    "plausible and consistent with the existing image. Do not beautify, airbrush or smooth the skin. "
-    "Maintain realistic photographic "
-    "detail instead of CGI or waxy smoothness."
+    "Enhance the supplied image with restrained, source-faithful photographic clarity. "
+    "Preserve the exact subjects, identity, apparent age, expression, pose, anatomy, clothing, objects, "
+    "composition, colors and lighting. Restore only subtle detail supported by visible forms and "
+    "materials. Preserve the existing complexion, skin markings and degree of skin smoothness. "
+    "Keep naturally soft areas soft and preserve the original depth of field and background blur. "
+    "Correct only clear compression or rendering defects whose intended structure is unambiguous. "
+    "Return the same photograph with a modest improvement in clarity, not a redesigned or heavily textured version."
 )
 TILE_PROMPT = (
     "Image 1 is a cropped detail tile and is the exact editing canvas. Image 2 shows the whole "
     "original photograph for context only. Return only the same crop as image 1, with unchanged "
     "geometry. Never draw the whole photograph, a new face, a collage, or a border inside this tile. "
+    "Apply detail instructions only to materials actually visible in this crop; preserve intentional blur. "
 )
 PHOTO_PROMPT = REALISM_PROMPT
 METHODS = ("photo", "hd_tiles")
+DEFAULT_STRENGTH = 0.65
 MAX_EDGE = 2048
 TILE_EDGE = 768
 OVERLAP = 128
@@ -93,7 +90,7 @@ def change_metrics(baseline, result):
             "meaning": "pixel change only; not a realism, identity or quality score"}
 
 
-def reconstruct(image, edit_tile, scale=1, strength=1.0, seed=0, cancelled=None, method="photo", prompt=None):
+def reconstruct(image, edit_tile, scale=1, strength=DEFAULT_STRENGTH, seed=0, cancelled=None, method="photo", prompt=None):
     prompt = PHOTO_PROMPT if prompt is None else str(prompt).strip()
     if not prompt:
         raise ValueError("Write a reconstruction prompt first")
@@ -131,7 +128,7 @@ def reconstruct(image, edit_tile, scale=1, strength=1.0, seed=0, cancelled=None,
     if not boxes:
         yield {**progress(1, "complete"), "image": base, "diagnostics": change_metrics(baseline, base)}
         return
-    context = rebuilt.copy()
+    context = source.copy()
     context.thumbnail((768, 768), Image.Resampling.LANCZOS)
     accum = np.zeros((size[1], size[0], 3), dtype=np.float32)
     weights = np.zeros((size[1], size[0]), dtype=np.float32)

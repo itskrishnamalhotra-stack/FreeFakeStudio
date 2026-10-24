@@ -23,21 +23,12 @@ def fixture(size=(180, 240)):
 
 
 class ReconstructionTests(unittest.TestCase):
-    def test_reconstruction_uses_exact_requested_prompt(self):
-        expected = (
-            "Reconstruct the supplied image as a real professional photograph, not an illustration or CGI render. "
-            "Preserve the exact subjects, facial identity, facial structure, pose, expression, anatomy, clothing, "
-            "framing, camera angle, background and overall lighting. Reconstruct natural human skin microtexture: "
-            "fine irregular pores, tiny vellus hairs, realistic hair follicles, subtle skin creases, natural variation "
-            "in skin tone, realistic highlights and nonuniform skin reflectance. Add believable individual hair "
-            "strands, eyebrow hairs, fabric fibres and fine environmental textures where appropriate. Correct obvious "
-            "rendering artifacts where the intended structure is clear, but do not redesign the person, change their "
-            "pose, or add or remove objects. The details must be subtle, physically plausible and consistent with the "
-            "existing image. Do not beautify, airbrush or smooth the skin. Maintain realistic photographic detail "
-            "instead of CGI or waxy smoothness."
-        )
-        self.assertEqual(enhance.PHOTO_PROMPT, expected)
+    def test_reconstruction_uses_conservative_source_preserving_prompt(self):
+        expected = enhance.PHOTO_PROMPT
         self.assertEqual(enhance.REALISM_PROMPT, expected)
+        self.assertIn("degree of skin smoothness", expected)
+        self.assertIn("background blur", expected)
+        self.assertNotIn("fine irregular pores", expected)
         editor = mock.Mock(side_effect=lambda tile, *args: tile.copy())
         list(enhance.reconstruct(fixture(), editor, method="hd_tiles"))
         self.assertEqual(editor.call_args_list[0].args[2], expected)
@@ -138,10 +129,20 @@ class ReconstructionTests(unittest.TestCase):
         rows = list(enhance.reconstruct(fixture(), callback))
         callback.assert_called_once()
         self.assertIsNone(callback.call_args.args[1])
-        self.assertEqual(callback.call_args.args[4], 1.0)
+        self.assertEqual(callback.call_args.args[4], enhance.DEFAULT_STRENGTH)
         self.assertEqual(rows[-1]["total"], 1)
         self.assertEqual(rows[-1]["output_images"], 1)
         self.assertTrue(rows[-1]["diagnostics"]["near_noop"])
+
+    def test_hd_context_anchors_to_original_not_first_reconstruction(self):
+        contexts = []
+        source = Image.new("RGB", (128, 128), "blue")
+        def editor(tile, whole, *args):
+            if whole is not None:
+                contexts.append(whole.getpixel((0, 0)))
+            return Image.new("RGB", tile.size, "red")
+        list(enhance.reconstruct(source, editor, method="hd_tiles"))
+        self.assertEqual(contexts, [(0, 0, 255)])
 
     def test_photo_2x_is_explicitly_one_edit_then_resize_not_extra_sampling(self):
         callback = mock.Mock(side_effect=lambda tile, *args: tile.copy())

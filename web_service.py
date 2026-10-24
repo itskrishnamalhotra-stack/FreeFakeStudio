@@ -17,6 +17,7 @@ import avatar_benchmark as benchmark
 import avatar_content as content
 import avatar_face
 import image_review
+import enhancement_analysis
 import avatar_studio as studio
 import generation_service as generation
 import model_manager
@@ -341,6 +342,45 @@ class StudioService:
                 raise ValueError("The selected image no longer exists")
             source_path = item["generated_path"]
         item_id = f"enhance-{context.id}"
+        with Image.open(source_path) as original:
+            source = original.convert("RGB")
+        source, source_hash = enhancement_analysis.fingerprint(source)
+        plan = context.saved.get("enhancement_plan")
+        if plan and plan.get("source_sha256") != source_hash:
+            raise ValueError("The source image changed since this enhancement started. Start a new enhancement.")
+        if not plan:
+            if args.get("adaptive_prompt", True) and not context.saved.get("image"):
+                context.emit("Analyzing source for an image-aware reconstruction prompt")
+                if not model_manager.DEV_MODE:
+                    app_settings.prepare_vision(self.root)
+                analysis = enhancement_analysis.analyze(source, self.root, mock=model_manager.DEV_MODE,
+                    check=context.check, emit=context.emit)
+                plan = enhancement_analysis.plan(analysis, args["reconstruction_prompt"])
+            else:
+                plan = {"automatic": False, "analysis": {"status": "legacy_unrecorded" if context.saved.get("image") else "disabled"}, "prompt": args["reconstruction_prompt"]}
+            plan.update(source_sha256=source_hash, requested_prompt=args["reconstruction_prompt"])
+            context.checkpoint(enhancement_plan=plan)
+        args = {**args, "reconstruction_prompt": plan["prompt"]}
+
+        def review_output():
+            if context.saved.get("texture_done"):
+                return
+            diagnostics = dict(context.saved.get("diagnostics") or {})
+            diagnostics["enhancement_plan"] = plan
+            if plan["automatic"]:
+                context.emit("Checking reconstruction for added skin texture and markings")
+                if not model_manager.DEV_MODE:
+                    app_settings.prepare_vision(self.root)
+                result = self.images([context.saved["image"]])[0]
+                diagnostics["texture_review"] = enhancement_analysis.review_texture(result, plan["analysis"],
+                    mock=model_manager.DEV_MODE, check=context.check)
+            else:
+                diagnostics["texture_review"] = {"status": "disabled", "reasons": []}
+            context.checkpoint(diagnostics=diagnostics, texture_done=True)
+            if avatar_id:
+                studio.update_gallery_item(str(self.root), avatar_id, item_id, diagnostics=diagnostics,
+                    status=enhancement_analysis.output_status(diagnostics))
+
         def check_output():
             if not avatar_id or context.saved.get("quality_done"):
                 return
@@ -353,23 +393,22 @@ class StudioService:
             original = self.images([self.relative(source_path)])[0]
             validation = self.validate(image, avatar, args["reconstruction_prompt"], original)
             current = studio.gallery_item_by_id(str(self.root), avatar_id, item_id)
-            status = "no_change" if (current.get("diagnostics") or {}).get("near_noop") else "passed" if validation.get("pass") else "needs_review"
+            status = enhancement_analysis.output_status(current.get("diagnostics"), validation.get("pass"))
             studio.update_gallery_item(str(self.root), avatar_id, item_id, validation=validation, status=status,
                 identity_version=avatar["identity_version"], recipe=identity.recipe(avatar))
             context.checkpoint(quality_done=True)
         def save_turn(image):
             if chat_id:
                 self.chats.append(chat_id, avatar_id, {"id": context.id + "-assistant", "role": "assistant",
-                    "text": "Enhanced image", "images": [image], "source": self.relative(source_path),
+                    "text": "Enhanced image: needs review" if enhancement_analysis.needs_review(context.saved.get("diagnostics")) else "Enhanced image", "images": [image], "source": self.relative(source_path),
                     "reconstruction_prompt": args["reconstruction_prompt"],
                     "diagnostics": context.saved.get("diagnostics"),
                     "seed": str(context.saved.get("seed", "")), "processing_passes": context.saved.get("processing_passes")})
         if context.saved.get("image"):
+            review_output()
             check_output()
             save_turn(context.saved["image"])
             return {"avatar_id": avatar_id, "item_id": item_id, "image": context.saved["image"]}
-        with Image.open(source_path) as original:
-            source = original.convert("RGB")
         seed = context.saved.get("seed") or secrets.randbelow(2**63)
         context.checkpoint(seed=seed)
         if avatar_id:
@@ -401,6 +440,7 @@ class StudioService:
                         path = self.root / (item_id + ".png")
                         row["image"].save(path)
                     context.checkpoint(image=self.relative(path), processing_passes=row["total"], diagnostics=row["diagnostics"])
+                    review_output()
                     check_output()
                     save_turn(self.relative(path))
         except avatar_enhance.EnhancementCancelled as exc:
@@ -448,7 +488,8 @@ class StudioService:
             image = self.images([self.relative(item["generated_path"])])[0]
             source = self.images([self.relative(item["source_path"])])[0] if item.get("source_path") else None
             validation = self.validate(image, avatar, item.get("prompt", ""), source)
-            status = "no_change" if item.get("origin") == "enhancement" and (item.get("diagnostics") or {}).get("near_noop") else "passed" if validation.get("pass") else "needs_review"
+            status = (enhancement_analysis.output_status(item.get("diagnostics"), validation.get("pass"))
+                      if item.get("origin") == "enhancement" else "passed" if validation.get("pass") else "needs_review")
             studio.update_gallery_item(root, avatar_id, item["id"], validation=validation,
                 identity_version=avatar["identity_version"], status=status)
             return {"item_id": item["id"], "validation": validation}

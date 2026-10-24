@@ -345,8 +345,9 @@ function App() {
     [comparisonRegion, setComparisonRegion] = useState("full"),
     [enhanceMethod, setEnhanceMethod] = useState("photo"),
     [enhancementPrompt, setEnhancementPrompt] = useState<string | null>(null),
+    [adaptivePrompt, setAdaptivePrompt] = useState(true),
     [scale, setScale] = useState(1),
-    [strength, setStrength] = useState(1),
+    [strength, setStrength] = useState(0.65),
     [correction, setCorrection] = useState<GalleryItem | null>(null),
     [reason, setReason] = useState(""),
     [diagnostics, setDiagnostics] = useState<unknown>(null),
@@ -418,6 +419,11 @@ function App() {
         result_detail_energy?: number;
       }
     | undefined;
+  const viewerPlan = viewerDiagnostics?.enhancement_plan as
+    | { automatic: boolean; prompt: string; analysis: Record<string, unknown> }
+    | undefined;
+  const textureReview = viewerDiagnostics?.texture_review as
+    { status: string; reasons?: string[] } | undefined;
   function comparisonUrl(pic: Picture) {
     const region =
       comparisonRegion === "full"
@@ -3191,6 +3197,55 @@ function App() {
                   )}
                 </div>
               </div>
+              {viewerPlan && (
+                <details className="image-details enhancement-analysis">
+                  <summary>Enhancement analysis</summary>
+                  <p>
+                    {viewerPlan.analysis.mock_not_quality_evidence
+                      ? "Local preview simulation"
+                      : `Source analysis: ${viewerPlan.analysis.status}${viewerPlan.analysis.cache_hit ? " (reused)" : ""}`}
+                  </p>
+                  {viewerPlan.automatic && (
+                    <dl>
+                      {[
+                        "scene",
+                        "materials",
+                        "lighting",
+                        "condition",
+                        "skin_texture",
+                        "skin_marks",
+                      ].map((key) => (
+                        <div key={key}>
+                          <dt>{key.replaceAll("_", " ")}</dt>
+                          <dd>
+                            {(Array.isArray(viewerPlan.analysis[key])
+                              ? (viewerPlan.analysis[key] as string[]).join(
+                                  ", ",
+                                ) || "uncertain"
+                              : String(viewerPlan.analysis[key] || "uncertain")
+                            ).replaceAll("_", " ")}
+                          </dd>
+                        </div>
+                      ))}
+                    </dl>
+                  )}
+                  {textureReview && (
+                    <p>
+                      Texture review:{" "}
+                      {textureReview.status.replaceAll("_", " ")}
+                    </p>
+                  )}
+                  {textureReview?.reasons?.map((reason) => (
+                    <p className="memory-warning" key={reason}>
+                      {reason}
+                    </p>
+                  ))}
+                  <details>
+                    <summary>Applied reconstruction prompt</summary>
+                    <p>{viewerPlan.prompt}</p>
+                  </details>
+                </details>
+              )}
               {viewer.item && (
                 <details className="image-details">
                   <summary>Generation details</summary>
@@ -3271,6 +3326,14 @@ function App() {
                 />
               </div>
               <div className="enhancement-prompt">
+                <label className="check-field">
+                  <input
+                    type="checkbox"
+                    checked={adaptivePrompt}
+                    onChange={(e) => setAdaptivePrompt(e.target.checked)}
+                  />
+                  Automatic image-aware prompt
+                </label>
                 <Field label="Reconstruction prompt">
                   <textarea
                     rows={8}
@@ -3303,6 +3366,7 @@ function App() {
                         scale,
                         strength,
                         reconstruction_prompt: reconstructionPrompt,
+                        adaptive_prompt: adaptivePrompt,
                         steps: 4,
                       },
                       () => setEnhance(null),

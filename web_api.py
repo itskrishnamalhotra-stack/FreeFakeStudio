@@ -128,7 +128,8 @@ class JobRequest(StrictModel):
     reason: str = Field(default="", max_length=4000)
     method: Literal["photo", "hd_tiles"] = "photo"
     scale: Literal[1, 2] = 1
-    strength: float = Field(default=1, ge=.35, le=1)
+    strength: float = Field(default=avatar_enhance.DEFAULT_STRENGTH, ge=.35, le=1)
+    adaptive_prompt: StrictBool = True
     reconstruction_prompt: str = Field(default=avatar_enhance.PHOTO_PROMPT, min_length=1, max_length=16000)
     encoder: Literal["Official", "Custom"] = "Official"
     roles: list[Literal["Outfit", "Pose", "Scene", "Other person"]] = Field(default_factory=list, max_length=2)

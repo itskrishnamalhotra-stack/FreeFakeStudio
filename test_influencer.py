@@ -381,7 +381,8 @@ class InfluencerTests(unittest.TestCase):
         with patch.object(service, "validate", side_effect=RuntimeError("Vision temporarily unavailable")):
             job = self.job("enhance", expect="failed", item_id=item["id"])
         self.assertTrue(job["checkpoint"]["image"])
-        with patch("avatar_enhance.reconstruct", side_effect=AssertionError("Do not reconstruct again")):
+        self.assertTrue(job["checkpoint"]["enhancement_plan"]["automatic"])
+        with patch("avatar_enhance.reconstruct", side_effect=AssertionError("Do not reconstruct again")), patch("enhancement_analysis.analyze", side_effect=AssertionError("Do not analyze again")):
             self.app.state.jobs.resume(job["id"])
             for _ in range(400):
                 row = self.app.state.jobs.get(job["id"])
@@ -390,6 +391,38 @@ class InfluencerTests(unittest.TestCase):
                 time.sleep(.01)
             self.assertEqual(row["status"], "completed", row)
         self.assertEqual(self.client.get(self.base + "/gallery?category=enhancements").json()["total"], 1)
+
+    def test_automatic_enhancement_records_features_prompt_and_reuses_source_cache(self):
+        item = self.saved_item()
+        first = self.job("enhance", item_id=item["id"])
+        plan = first["checkpoint"]["enhancement_plan"]
+        self.assertTrue(plan["automatic"])
+        self.assertIn("Do not invent freckles", plan["prompt"])
+        self.assertEqual(first["payload"]["strength"], .65)
+        saved = self.client.get(self.base + "/gallery?category=enhancements").json()["items"][0]
+        self.assertEqual(saved["prompt"], plan["prompt"])
+        self.assertEqual(saved["diagnostics"]["enhancement_plan"], plan)
+        second = self.job("enhance", item_id=item["id"])
+        self.assertTrue(second["checkpoint"]["enhancement_plan"]["analysis"]["cache_hit"])
+        self.assertEqual(self.client.get(self.base + "/gallery?category=enhancements").json()["total"], 2)
+
+    def test_enhancement_skin_warning_survives_identity_recheck(self):
+        item = self.saved_item()
+        review = {"status": "needs_review", "reasons": ["New dense skin markings"]}
+        with patch("enhancement_analysis.review_texture", return_value=review), patch.object(self.app.state.service, "validate", return_value={"pass": True}):
+            self.job("enhance", item_id=item["id"])
+            enhanced = self.client.get(self.base + "/gallery?category=enhancements").json()["items"][0]
+            self.assertEqual(enhanced["status"], "needs_review")
+            self.job("quality_check", item_id=enhanced["id"])
+        self.assertEqual(studio.gallery_item_by_id(self.root, self.avatar_id, enhanced["id"])["status"], "needs_review")
+
+    def test_unavailable_enhancement_analysis_stays_explicit_and_requires_review(self):
+        item = self.saved_item()
+        with patch("enhancement_analysis.analyze", return_value={"status": "unavailable", "materials": []}), patch.object(self.app.state.service, "validate", return_value={"pass": True}):
+            job = self.job("enhance", item_id=item["id"])
+        self.assertEqual(job["checkpoint"]["diagnostics"]["texture_review"]["status"], "uncertain")
+        enhanced = self.client.get(self.base + "/gallery?category=enhancements").json()["items"][0]
+        self.assertEqual(enhanced["status"], "needs_review")
 
     def test_new_keys_are_allowed_but_arbitrary_env_is_not(self):
         values = parse_keys("INSTAGRAM_ACCESS_TOKEN=sample\nINSTAGRAM_USER_ID=123\nINSTAGRAM_GRAPH_VERSION=v25.0\nPYTHONPATH=bad")

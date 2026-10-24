@@ -85,6 +85,32 @@ available. Both sides use the same normalized region, and cropped previews are
 lossless. Detail-energy measurements can flag smoothing/no change, but noise or
 sharpening can raise them: they are explicitly not a realism or quality score.
 
+Enhancement now defaults to Automatic image-aware prompt and reconstruction
+strength 0.65, rather than full-strength editing with a universal pore/follicle
+checklist. After Enhance is clicked, SmolVLM observes the source category,
+materials, lighting, technical condition and visible skin appearance. Only
+validated enum answers select predefined prompt clauses; model prose cannot
+inject editing instructions. The source's identity, age, markings, texture
+scale, colors and intentional blur take priority. You can still edit the base
+instructions or explicitly disable automatic tailoring for a manual prompt.
+
+Source observations cache by RGB pixels, size, analyzer identity, analysis
+version and mock/real mode under `results/_enhancement_analysis`. They persist
+with results. The prompt plan is checkpointed before generation; retries reuse
+the same plan and any saved output. HD tile context uses the original source,
+not a previous reconstructed image that might already contain invented traits.
+
+After reconstruction, a short vision-category review checks for newly strong
+skin texture or many new markings. An uncertain/unavailable review or flagged
+change remains Needs Review even if the identity recheck passes. This is a
+heuristic, not proof that every freckle or pore is correct. No extra automatic
+FLUX repair pass is hidden inside this check. Analysis failures use conservative
+instructions and a visible review status instead of pretending analysis passed.
+Image viewer > Enhancement analysis shows the observations, texture verdict
+and applied prompt for both chat and gallery output. Originals remain untouched.
+One reconstruction pass with 2x output is still one generative edit followed by
+resize; HD tiled mode is the explicit multi-pass option for larger outputs.
+
 Replacing confirmed face/body anchors deactivates the old pack's approvals;
 old versions remain restorable. Historical rechecks, repairs and enhancement
 select the source image's policy before snapshotting it. Benchmark images can

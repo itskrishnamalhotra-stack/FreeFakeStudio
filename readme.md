@@ -638,3 +638,12 @@ engine_ernie_image_turbo.py
 18. Disconnect the runtime, reconnect to a fresh T4, run with update/repair/force
     switches off, and confirm `Prepared environment=restored`, source bundles are
     restored, downloads are skipped, warmup completes, and history/avatars return.
+## Automatic Enhancement
+
+Enhance now analyzes the source with the existing local vision model and builds
+a material-aware, preservation-first prompt automatically. The default strength
+is 0.65. It no longer universally requests pores, follicles and creases. Source
+observations are cached; the viewer retains the actual prompt and texture review.
+Unexpected new skin markings or heavy texture require review. These checks are
+heuristics, not a guarantee of photographic quality. Start from the original image,
+not a previous over-textured enhancement. See [the workflow](INFLUENCER_STUDIO.md).

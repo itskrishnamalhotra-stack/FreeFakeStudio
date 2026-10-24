@@ -2414,3 +2414,23 @@ details p {
   line-height: 1.5;
   margin: 10px 0 0;
 }
+.enhancement-analysis dl {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(180px, 100%), 1fr));
+  gap: 12px;
+  margin: 12px 0;
+}
+.enhancement-analysis dt {
+  font-size: 12px;
+  text-transform: capitalize;
+  color: var(--muted);
+}
+.enhancement-analysis dd {
+  margin: 4px 0 0;
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+.enhancement-analysis p {
+  margin: 8px 0;
+  overflow-wrap: anywhere;
+}

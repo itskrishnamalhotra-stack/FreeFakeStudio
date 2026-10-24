@@ -230,7 +230,7 @@ class StudioTests(unittest.TestCase):
         import avatar_enhance
         custom_prompt = "Restore realistic photographic texture without changing the subject."
         with patch.object(avatar_enhance, "reconstruct", wraps=avatar_enhance.reconstruct) as reconstruct:
-            enhanced = self.job("enhance", chat_id=chat["id"], image=source, scale=1, reconstruction_prompt=custom_prompt)
+            enhanced = self.job("enhance", chat_id=chat["id"], image=source, scale=1, reconstruction_prompt=custom_prompt, adaptive_prompt=False)
             self.assertEqual(reconstruct.call_args.args[-1], custom_prompt)
         turns = self.client.get("/api/chats/" + chat["id"]).json()["turns"]
         self.assertEqual(len(turns), 3)
