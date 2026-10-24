@@ -374,10 +374,12 @@ def sync_console_gallery(save_dir, avatar_id):
         if identifier in identifiers:
             identifier += "-" + uuid.uuid4().hex[:8]
         items.append({"id": identifier,
-                      "origin": "console", "generated_path": path, "status": "saved", "attempt": 1,
+                      "origin": "console", "generated_path": path,
+                      "status": ("passed" if metadata["validation"].get("pass") else "needs_review") if metadata.get("validation") else "saved", "attempt": 1,
                       "prompt": metadata.get("prompt", ""), "seed": metadata.get("seed"),
                       "aspect": metadata.get("aspect"), "mode": metadata.get("mode"),
                       "extra_references": metadata.get("extra_references", []),
+                      "identity_version": metadata.get("identity_version"), "recipe": metadata.get("recipe"), "validation": metadata.get("validation"),
                       "created_at": turn.get("created_at") or turn.get("time") or _now(), "updated_at": _now()})
         recorded.add(canonical)
         identifiers.add(identifier)
@@ -544,6 +546,8 @@ def analyze_reference_image(kind, image, dev_mode=True):
         return _mock_specs(kind, pil_image)
     questions = FACE_SPEC_QUESTIONS if kind == "face" else BODY_SPEC_QUESTIONS
     import avatar_vision
+    import model_manager
+    model_manager.unload_current()
 
     specs = avatar_vision.analyze_reference_image(kind, pil_image, questions)
     specs["created_at"] = _now()
@@ -564,6 +568,10 @@ def lock_reference(save_dir, avatar_id, kind, image, dev_mode=True):
         reasons = specs.get("rejection_reasons") or ["The analyzer could not confirm a usable reference."]
         detail = "; ".join(str(reason) for reason in reasons) if isinstance(reasons, list) else str(reasons)
         raise ValueError(f"Cannot confirm this {kind} reference: {detail} Upload or generate another image.")
+    if changed:
+        import avatar_identity
+        avatar_identity.freeze(save_dir, avatar)
+        avatar_identity.invalidate_candidates(save_dir, avatar_id)
     image_path = save_reference_image(save_dir, avatar_id, kind, image)
     spec_path = avatar_path(save_dir, avatar_id) / kind / f"{kind}_specs.json"
     _atomic_json(spec_path, specs)

@@ -309,6 +309,16 @@ def _run(save_dir, avatar_id, quantity, aspect, theme, require_face, make_prompt
             job = _create_batch(save_dir, avatar_id, quantity, aspect, theme, require_face)
         elif job["identity_fingerprint"] != studio.identity_fingerprint(avatar):
             raise ValueError("This batch belongs to a different confirmed identity. Restore its references before resuming.")
+        import avatar_identity as identity
+        if job.get("identity_version"):
+            avatar = identity.pin(save_dir, avatar, job["identity_version"])
+        else:
+            avatar = identity.freeze(save_dir, avatar)
+            job = update_batch(save_dir, avatar_id, identity_version=avatar["identity_version"])
+        import avatar_quality
+        if "quality_profile" not in job:
+            job = update_batch(save_dir, avatar_id, quality_profile=avatar_quality.profile(save_dir, avatar))
+        avatar = {**avatar, "_quality_profile": job["quality_profile"]}
         job = update_batch(save_dir, avatar_id, status="running", stop_requested=False, last_error=None)
 
         def cancelled():
@@ -368,7 +378,7 @@ def _run(save_dir, avatar_id, quantity, aspect, theme, require_face, make_prompt
                 yield note(save_dir, avatar_id, f"Checking image {index}/{len(job['item_ids'])} with SmolVLM", "checking")
                 with Image.open(item["generated_path"]) as image:
                     validation = validate(image.convert("RGB"), avatar, item["prompt"])
-                status = "passed" if validation.get("pass") is True else (
+                status = "passed" if validation.get("pass") is True else "needs_review" if validation.get("review_only") else (
                     "needs_review" if item.get("repairs", 0) >= max_repairs else "repair_pending")
                 studio.update_gallery_item(save_dir, avatar_id, item_id, validation=validation, status=status)
                 yield note(save_dir, avatar_id, f"Image {index}: {status.replace('_', ' ')}")

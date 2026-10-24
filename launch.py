@@ -1074,7 +1074,7 @@ def prepare_local_runtime(fingerprint):
         DRIVE_COMFYUI / "models",
         LOCAL_RUNTIME / "ComfyUI" / "models",
         staged_sources=_flux_drive_targets(),
-        copy_to_ssd=STAGE_FLUX_TO_SSD,
+        copy_to_ssd=STAGE_FLUX_TO_SSD and provider() != "kaggle",
         required_sources=[
             path for path in required_model_targets(DRIVE_COMFYUI) if path.is_file()
         ],
@@ -1750,10 +1750,14 @@ try:
 
     ensure_models()
     ensure_custom_flux_encoder()
+    step("Identity checks", "Preparing small CPU face models")
+    import avatar_face
+    os.environ["FFS_FACE_MODELS"] = avatar_face.install_models(WS / "models" / "avatar_identity")
+    done("Identity checks", "CPU models ready; no extra GPU model")
     if provider() == "kaggle":
         from drive_store import DriveStore
         step("Drive model persistence", "Saving any newly downloaded models to your existing folder")
-        DriveStore.from_environment().sync(("ComfyUI/models", "config", "manifests"))
+        DriveStore.from_environment().sync(("ComfyUI/models", "models/avatar_identity", "config", "manifests"))
         done("Drive model persistence", "Verified")
     write_model_manifest()
     models_report = write_debug_report("models")
@@ -1761,6 +1765,7 @@ try:
         step("Diagnostics", f"Model report: {models_report.name}", "ok")
 
     run_cmd([sys.executable, str(DRIVE_APP / "fixer.py")], quiet=False)
+    run_cmd([sys.executable, "-c", "import avatar_face; avatar_face._load(); print('[identity] OpenCV CPU detector/recognizer: OK')"], cwd=DRIVE_APP, quiet=False)
 
     step("Local SSD runtime", "Restoring prepared app and ComfyUI bundles")
     restore_report = prepare_local_runtime(runtime_fingerprint)

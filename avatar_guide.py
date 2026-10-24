@@ -191,6 +191,8 @@ def advance(save_dir, avatar_id, image, generate, validate, dev_mode=False):
 
     if not avatar.get("face_locked") or not avatar.get("body_locked"):
         raise ValueError("Confirm the face and body before creating starter images.")
+    import avatar_identity
+    avatar = avatar_identity.freeze(save_dir, avatar)
     identity = studio.identity_fingerprint(avatar)
     for index, scene in enumerate(state(avatar)["scenes"]):
         item_id = f"guided-starter-{index + 1}"
@@ -222,6 +224,7 @@ def advance(save_dir, avatar_id, image, generate, validate, dev_mode=False):
                     save_dir, avatar_id, item_id, generated_path=path, prompt=prompt,
                     attempt=attempt, status="checking",
                     identity_fingerprint=identity,
+                    identity_version=avatar["identity_version"], recipe=avatar_identity.recipe(avatar),
                     scene=scene,
                 )
             yield studio.load_avatar(save_dir, avatar_id), f"Checking starter image {index + 1} of 2"
@@ -229,9 +232,9 @@ def advance(save_dir, avatar_id, image, generate, validate, dev_mode=False):
             passed = validation.get("pass") is True
             item = studio.update_gallery_item(
                 save_dir, avatar_id, item_id, validation=validation,
-                status="passed" if passed else "needs_review" if retry == 2 else "retrying",
+                status="passed" if passed else "needs_review" if retry == 2 or validation.get("review_only") else "retrying",
             )
-            if passed:
+            if passed or validation.get("review_only"):
                 break
             correction = validation.get("repair_instruction") or "; ".join(validation.get("reasons") or [])
             prompt += f" Correct this issue while preserving the identity references: {correction}"

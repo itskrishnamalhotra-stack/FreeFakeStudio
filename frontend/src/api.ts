@@ -1,4 +1,5 @@
 export type Picture = {
+  role?: "Outfit" | "Pose" | "Scene" | "Other person";
   path: string;
   url: string;
   thumb: string;
@@ -13,8 +14,21 @@ export type Turn = {
   images: Picture[];
   seed?: string;
   recipe?: Record<string, unknown>;
+  source?: Picture | null;
+  reconstruction_prompt?: string;
+  diagnostics?: Record<string, unknown>;
 };
+export type ChatSummary = {
+  id: string;
+  avatar_id: string | null;
+  title: string;
+  created_at: number;
+  updated_at: number;
+  turn_count: number;
+};
+export type Conversation = ChatSummary & { turns: Turn[] };
 export type Avatar = {
+  identity_version?: string;
   id: string;
   name: string;
   face_locked: boolean;
@@ -49,7 +63,37 @@ export type GalleryItem = {
   seed: string;
   diagnostics?: Record<string, unknown>;
   processing_passes?: number;
+  manual_review?: unknown;
   validation?: unknown;
+};
+export type Resource = {
+  id: string;
+  name: string;
+  image: Picture | null;
+  kind: "identity" | "uploaded" | "search";
+  state: "pending" | "approved" | "rejected";
+  check_state: string;
+  reason: string;
+  used: boolean;
+  committed: boolean;
+  source_url?: string;
+  validation?: unknown;
+};
+export type GalleryCounts = {
+  generations: number;
+  enhancements: number;
+  resources: number;
+  review: number;
+};
+export type GalleryPage = {
+  items: GalleryItem[];
+  total: number;
+  counts: GalleryCounts;
+};
+export type ResourcePage = {
+  items: Resource[];
+  total: number;
+  counts: Record<string, number>;
 };
 export type Job = {
   id: string;
@@ -84,10 +128,12 @@ export type Config = {
   encoder_choices: string[];
   encoder: string;
   active_model: string | null;
+  reconstruction_prompt: string;
   gallery_api: unknown;
 };
 export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
   const headers = new Headers(init.headers);
+  headers.set("ngrok-skip-browser-warning", "1");
   if (init.body && !(init.body instanceof FormData))
     headers.set("Content-Type", "application/json");
   const response = await fetch("/api" + path, {

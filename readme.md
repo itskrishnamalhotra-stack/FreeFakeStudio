@@ -4,12 +4,30 @@ FreeFakeStudio is a Colab/Kaggle AI image studio with a React/TypeScript interfa
 FastAPI job server, and the existing Python/ComfyUI image engines.
 
 [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/itskrishnamalhotra-stack/FreeFakeStudio/blob/main/FreeFakeStudio.ipynb)
+[![Open In Kaggle](https://kaggle.com/static/images/open-in-kaggle.svg)](https://www.kaggle.com/kernels/welcome?src=https%3A%2F%2Fraw.githubusercontent.com%2Fitskrishnamalhotra-stack%2FFreeFakeStudio%2Fmain%2FFreeFakeStudio.ipynb)
 
 **New interface and Kaggle support:** follow [CLOUD_SETUP.md](CLOUD_SETUP.md) for
 the complete current setup, Google Drive OAuth instructions, recovery behavior,
 UI acceptance checks and hosting limitations. Import this same notebook into
 Kaggle; enable Internet/GPU and supply private credentials. Colab still uses its
 normal Drive login. Kaggle uses Drive API synchronization, not Colab's mount.
+
+**Image-only influencer workflow:** see [INFLUENCER_STUDIO.md](INFLUENCER_STUDIO.md)
+for the Identity, Quality and Content tabs, reference-pack approval, CPU identity
+calibration, resumable consistency tests, caption/export workflow and optional
+Instagram publishing. No LoRA training, video or voice providers are required.
+
+This release also fixes identity-pack invalidation, historical policy selection,
+benchmark correction and empty Drive restores. Reference views can be selected
+explicitly; reconstruction has matched-size/detail-crop review; offline captions
+have persona-aware styles. Optional runtime scheduling only publishes explicitly
+approved future posts while that runtime remains active.
+
+**Provider limits:** free Colab restricts bypassing its notebook UI to interact
+primarily through a web UI, including content-generation interfaces. Use a
+permitted plan/runtime and follow the provider's rules; this launcher cannot
+bypass quotas or guarantee session duration. See the
+[official Colab FAQ](https://research.google.com/colaboratory/faq.html).
 
 The notebook now launches `web_server.py`, not Gradio. The frontend is prebuilt:
 Node is not needed in the notebook. Chat, avatar setup, console, reference

@@ -4,6 +4,8 @@ async (page) => {
   await page.setViewportSize({width:1440,height:960});
   await page.reload();
   await page.getByRole('button',{name:'Create',exact:true}).click();
+  await page.waitForURL('**/chats/new');
+  await page.waitForFunction(()=>document.querySelector('.chat-layout')?.getAttribute('aria-busy')==='false' && document.querySelector('.chat-layout')?.getAttribute('data-route')===location.pathname);
   const before = await page.getByAltText('Generated image',{exact:true}).count();
   await page.getByRole('textbox',{name:'Image prompt',exact:true}).fill('Browser mock generation regression');
   await page.getByRole('button',{name:'Generate image',exact:true}).click();
@@ -39,8 +41,13 @@ async (page) => {
   await page.getByRole('combobox',{name:'Model',exact:true}).selectOption('Z-Image Turbo');
   check(await page.getByRole('button',{name:/Add reference/}).count()===0,'Text-only model exposes reference upload');
   await page.getByRole('combobox',{name:'Model',exact:true}).selectOption('FLUX.2-klein 4B');
-  await page.getByRole('button',{name:'Enhancement QA Ready',exact:true}).click();
+  await page.getByRole('button',{name:'Avatar Studio',exact:true}).click();
+  await page.getByRole('button',{name:'Open avatar Enhancement QA',exact:true}).click();
   await page.getByRole('tab',{name:'Console',exact:true}).click();
+  await page.getByRole('button',{name:'Settings',exact:true}).click();
+  await page.getByRole('combobox',{name:'Face reference view',exact:true}).selectOption('front');
+  await page.getByRole('combobox',{name:'Body reference view',exact:true}).selectOption('body-front');
+  await page.getByRole('dialog',{name:'Generation settings'}).getByRole('button',{name:'Close',exact:true}).click();
   await page.screenshot({path:'output/playwright/react-console-desktop.png'});
   const footer = await page.locator('.composer').boundingBox();
   check(footer.y+footer.height<=962&&footer.y>400,'Console footer outside viewport');

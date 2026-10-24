@@ -8,6 +8,16 @@ the backend. No model runs on your laptop.
 
 ## Before You Start
 
+Open the notebook in [Colab](https://colab.research.google.com/github/itskrishnamalhotra-stack/FreeFakeStudio/blob/main/FreeFakeStudio.ipynb)
+or [import it into Kaggle](https://www.kaggle.com/kernels/welcome?src=https%3A%2F%2Fraw.githubusercontent.com%2Fitskrishnamalhotra-stack%2FFreeFakeStudio%2Fmain%2FFreeFakeStudio.ipynb).
+If Kaggle does not prefill the import, choose File > Import Notebook > URL and
+use `https://raw.githubusercontent.com/itskrishnamalhotra-stack/FreeFakeStudio/main/FreeFakeStudio.ipynb`.
+
+Google's [official FAQ](https://research.google.com/colaboratory/faq.html) restricts
+primarily web-UI interaction on free Colab managed runtimes. Account quotas and
+runtime termination are provider-controlled. Use a permitted plan/runtime;
+the code does not bypass policies, reconnect quotas or keep sessions alive.
+
 - Keep the existing `My Drive/FreeFakeStudio` folder. Do not delete its models,
   avatars, results, references, or config files.
 - Stop the other notebook before switching providers. This is a single-user,
@@ -176,6 +186,63 @@ is unavailable. The connector does not bypass platform policies or quotas.
    Activity and Diagnostics for interrupted jobs or sync errors.
 10. Test a narrow mobile viewport, theme toggle and the settings drawer. No
     model needs to run locally for these UI checks.
+
+## Gallery Sections
+
+Inside an avatar, open Gallery and choose Generations, Enhancements, Resources
+or Needs Review. Search and pagination apply to the selected category.
+Enhancements are separate variants: Compare opens the preserved source beside
+the result. Processing mode, output size, strength and editable reconstruction
+prompt remain available in Enhance.
+
+Resources includes face/body anchors, uploaded chat references and saved search
+findings. Filter All, Pending, Approved, Rejected or Used, and filter by type.
+Used is independent of approval; an uploaded reference is not automatically
+declared vision-approved. Pending findings without a local image show a
+placeholder, not an output thumbnail. Opening or using a resource never removes
+it. Archived chat resources remain available. Pipeline retains batch diagnostics
+and continue/resume controls.
+
+Needs Review overlaps the output categories. Open an image to inspect it, then
+Approve or Correct when a regeneration recipe exists. Manual approval records
+the decision without deleting machine validation, the original, or the variant.
+
+## App Link
+
+### Page Routes
+
+- `/chats/new`: the unsaved Image Studio composer (also the root-page default).
+- `/chats/<chat-id>`: a saved Image Studio conversation.
+- `/avatars`: the avatar tile library.
+- `/avatars/<avatar-id>/face`, `/body`, `/guide`: the respective setup step.
+- `/avatars/<avatar-id>/console/<chat-id>`: that avatar's conversation.
+- `/avatars/<avatar-id>/console/new`: that avatar's unsaved composer.
+- `/avatars/<avatar-id>/gallery/generations`, `/enhancements`, `/resources`,
+  `/needs-review`: the respective gallery section under the same gallery prefix.
+
+Reload and bookmarks open the same saved page. Browser Back/Forward changes
+pages and preserves unsent chat drafts within the current browser session;
+unsent drafts are not durable across a full reload. Missing/archived chats and
+invalid avatar IDs show Page unavailable, never another avatar's conversation.
+API and asset errors are not replaced with frontend HTML.
+
+Create and New chat reuse the unsaved composer, including its current text and
+attachments, without creating a sidebar entry. Only an accepted first prompt
+creates a saved conversation and assigns its permanent URL. Retrying that same
+request reuses its chat and job. Blank reloads do not create records. Existing
+empty placeholder files are retained for recovery but hidden from chat lists.
+
+### Private Launch URL
+
+The notebook starts the single-port web server, verifies readiness and health,
+then prints `OPEN FREEFAKESTUDIO` followed by the private HTTPS link. Kaggle
+uses ngrok with the supplied auth token. Colab uses the selected ngrok route or
+its native HTTPS port proxy. No Gradio share link is required.
+
+The printed `#access=...` fragment is exchanged for a private session cookie and
+removed from the address bar. Treat the full printed link as a credential. The
+link only works while the cloud server and its tunnel/proxy are running; after
+a restart, use the newly printed link. A localhost preview is not this cloud URL.
 
 ## Timing and Hosting Limits
 

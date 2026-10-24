@@ -72,6 +72,31 @@ class StudioTests(unittest.TestCase):
         self.assertEqual(next(m for m in config["models"] if m["name"] == model_manager.FLUX_MODEL_NAME)["defaults"]["steps"], 4)
         self.assertEqual(self.client.get("/").status_code, 200)
 
+    def test_deep_routes_serve_application_but_never_mask_api_or_assets(self):
+        for path in ("/chats/example", "/avatars", "/avatars/example/face", "/avatars/example/console/chat1",
+                     "/avatars/example/gallery/generations", "/avatars/example/gallery/enhancements",
+                     "/avatars/example/gallery/resources", "/avatars/example/gallery/needs-review", "/unknown-page"):
+            response = self.client.get(path)
+            self.assertEqual(response.status_code, 200, path)
+            self.assertIn("text/html", response.headers["content-type"])
+            self.assertIn('id="root"', response.text)
+            self.assertEqual(self.client.head(path).status_code, 200, path)
+        for path in ("/api/missing", "/assets/missing.js", "/missing.css", "/api", "/assets"):
+            response = self.client.get(path)
+            self.assertEqual(response.status_code, 404, path)
+            self.assertNotIn('id="root"', response.text)
+
+    def test_private_deep_links_retain_api_authentication(self):
+        app = create_app(self.root / "private-route", token="private-route-test-token")
+        try:
+            client = TestClient(app)
+            self.assertEqual(client.get("/avatars/example/gallery/resources").status_code, 200)
+            self.assertEqual(client.get("/api/avatars").status_code, 401)
+            self.assertEqual(client.post("/api/session", json={"token": "private-route-test-token"}).status_code, 200)
+            self.assertEqual(client.get("/api/avatars").status_code, 200)
+        finally:
+            app.state.jobs.shutdown()
+
     def test_main_generation_and_idempotency(self):
         header = {"Idempotency-Key": "same-request-123"}
         body = {"kind": "generate", "prompt": "A red studio chair", "quantity": 2}
@@ -85,6 +110,56 @@ class StudioTests(unittest.TestCase):
         self.assertEqual(len(self.client.get("/api/chat").json()["turns"]), 2)
         changed = self.client.post("/api/jobs", json={**body, "prompt": "different"}, headers=header)
         self.assertEqual(changed.status_code, 400)
+
+    def test_first_prompt_creates_one_chat_and_retries_reuse_it(self):
+        self.assertEqual(self.client.get("/api/chats").json(), [])
+        body = {"kind": "generate", "new_chat": True, "prompt": "First submitted prompt"}
+        headers = {"Idempotency-Key": "new-conversation-request"}
+        first = self.client.post("/api/jobs", json=body, headers=headers)
+        self.assertEqual(first.status_code, 200, first.text)
+        row = first.json()
+        chat_id = row["payload"]["chat_id"]
+        second = self.client.post("/api/jobs", json=body, headers=headers)
+        self.assertEqual(second.status_code, 200, second.text)
+        self.assertEqual(row["id"], second.json()["id"])
+        self.assertEqual(chat_id, second.json()["payload"]["chat_id"])
+        listed = self.client.get("/api/chats").json()
+        self.assertEqual(len(listed), 1)
+        self.assertEqual(listed[0]["title"], body["prompt"])
+        turns = self.client.get("/api/chats/" + chat_id).json()["turns"]
+        self.assertEqual(sum(turn["role"] == "user" for turn in turns), 1)
+        changed = self.client.post("/api/jobs", json={**body, "prompt": "Different request"}, headers=headers)
+        self.assertEqual(changed.status_code, 400)
+        self.assertEqual(len(self.app.state.service.chats.list()), 1)
+
+    def test_invalid_first_prompt_does_not_create_a_chat(self):
+        for extra in ({"prompt": "   "}, {"prompt": "x", "model": "missing"}, {"prompt": "x", "images": ["missing.png"]}):
+            response = self.client.post("/api/jobs", json={"kind": "generate", "new_chat": True, **extra},
+                                        headers={"Idempotency-Key": "invalid-first-prompt"})
+            self.assertIn(response.status_code, (400, 404), response.text)
+            self.assertEqual(self.app.state.service.chats.list(), [])
+
+    def test_first_prompt_avatar_scope_and_failed_generation_are_saved(self):
+        avatar_id = self.ready()
+        self.assertEqual(self.client.get(f"/api/chats?avatar_id={avatar_id}").json(), [])
+        job = self.job("console", avatar_id=avatar_id, new_chat=True, prompt="First avatar conversation")
+        chat_id = job["payload"]["chat_id"]
+        chats = self.client.get(f"/api/chats?avatar_id={avatar_id}").json()
+        self.assertEqual([row["id"] for row in chats], [chat_id])
+        self.assertEqual(self.client.get("/api/chats").json(), [])
+        with patch("web_service.generation.generate", side_effect=RuntimeError("Mock generation failure")):
+            failed = self.job("generate", expect="failed", new_chat=True, prompt="Keep my failed prompt")
+        chat = self.client.get("/api/chats/" + failed["payload"]["chat_id"]).json()
+        self.assertEqual(chat["title"], "Keep my failed prompt")
+        self.assertEqual(chat["turns"][0]["text"], "Keep my failed prompt")
+
+    def test_legacy_empty_placeholders_are_hidden_without_deletion(self):
+        row = self.client.post("/api/chats", json={}).json()
+        path = self.app.state.service.chats.path(row["id"])
+        self.assertTrue(path.exists())
+        self.assertEqual(self.client.get("/api/chats").json(), [])
+        self.job("generate", chat_id=row["id"], prompt="Now this is a real conversation")
+        self.assertEqual([chat["id"] for chat in self.client.get("/api/chats").json()], [row["id"]])
 
     def test_multi_reference_and_canvas(self):
         a, b = self.image(), self.image("red")
@@ -147,12 +222,144 @@ class StudioTests(unittest.TestCase):
         self.assertFalse(avatar["guide"]["active"])
         self.assertGreaterEqual(self.client.get(f"/api/avatars/{avatar['id']}/gallery").json()["total"], 2)
 
+    def test_enhance_chat_image_stays_in_original_conversation(self):
+        chat = self.client.post("/api/chats", json={}).json()
+        generated = self.job("generate", chat_id=chat["id"], prompt="A studio portrait")
+        other = self.client.post("/api/chats", json={}).json()
+        source = generated["result"]["images"][0]
+        import avatar_enhance
+        custom_prompt = "Restore realistic photographic texture without changing the subject."
+        with patch.object(avatar_enhance, "reconstruct", wraps=avatar_enhance.reconstruct) as reconstruct:
+            enhanced = self.job("enhance", chat_id=chat["id"], image=source, scale=1, reconstruction_prompt=custom_prompt)
+            self.assertEqual(reconstruct.call_args.args[-1], custom_prompt)
+        turns = self.client.get("/api/chats/" + chat["id"]).json()["turns"]
+        self.assertEqual(len(turns), 3)
+        self.assertEqual(turns[-1]["text"], "Enhanced image")
+        self.assertEqual(turns[-1]["processing_passes"], 1)
+        self.assertEqual(turns[-1]["source"]["path"], source)
+        self.assertEqual(turns[-1]["reconstruction_prompt"], custom_prompt)
+        self.assertEqual(turns[-1]["images"][0]["path"], enhanced["result"]["image"])
+        self.assertEqual(self.client.get("/api/chats/" + other["id"]).json()["turns"], [])
+        self.assertTrue((self.root / source).is_file())
+
+    def test_enhance_avatar_console_image_also_enters_gallery(self):
+        avatar_id = self.ready()
+        chat = self.client.post("/api/chats", json={"avatar_id": avatar_id}).json()
+        generated = self.job("console", avatar_id=avatar_id, chat_id=chat["id"], prompt="Outdoor portrait")
+        enhanced = self.job("enhance", avatar_id=avatar_id, chat_id=chat["id"], image=generated["result"]["image"])
+        turns = self.client.get(f"/api/chats/{chat['id']}?avatar_id={avatar_id}").json()["turns"]
+        self.assertEqual(len(turns), 3)
+        self.assertEqual(turns[-1]["images"][0]["path"], enhanced["result"]["image"])
+        self.assertEqual(self.client.get(f"/api/avatars/{avatar_id}/gallery").json()["total"], 2)
+
+    def test_enhance_rejects_uploads_and_other_chat_images(self):
+        generated = self.job("generate", prompt="Studio portrait")
+        other = self.client.post("/api/chats", json={}).json()
+        for source in (self.image()["path"], generated["result"]["images"][0]):
+            response = self.client.post("/api/jobs", json={"kind": "enhance", "chat_id": other["id"], "image": source},
+                                        headers={"Idempotency-Key": "reject-enhance-" + str(len(source))})
+            self.assertEqual(response.status_code, 400, response.text)
+
+    def test_enhancement_prompt_reaches_full_and_tiled_passes(self):
+        import avatar_enhance
+        prompts = []
+        def edit(tile, whole, prompt, seed, strength):
+            prompts.append(prompt)
+            return tile.copy()
+        list(avatar_enhance.reconstruct(Image.new("RGB", (1024, 1024)), edit, method="hd_tiles", prompt="Custom photograph prompt"))
+        self.assertEqual(prompts[0], "Custom photograph prompt")
+        self.assertGreater(len(prompts), 1)
+        self.assertTrue(all(prompt == avatar_enhance.TILE_PROMPT + "Custom photograph prompt" for prompt in prompts[1:]))
+        response = self.client.post("/api/jobs", json={"kind": "enhance", "reconstruction_prompt": "   "},
+                                    headers={"Idempotency-Key": "empty-enhancement-prompt"})
+        self.assertEqual(response.status_code, 400, response.text)
+
     def test_gallery_batch_resume_data(self):
         avatar_id = self.ready()
         self.job("gallery", avatar_id=avatar_id, quantity=2, theme="Casual studio")
         snapshot = self.client.get(f"/api/avatars/{avatar_id}/references").json()
         self.assertGreaterEqual(snapshot["counts"]["generated"], 2)
         self.assertEqual(self.client.get(f"/api/avatars/{avatar_id}/gallery").json()["total"], 2)
+
+    def test_gallery_sections_and_manual_review_preserve_sources(self):
+        avatar_id = self.ready()
+        self.job("console", avatar_id=avatar_id, prompt="Gallery separation test")
+        source = self.client.get(f"/api/avatars/{avatar_id}/gallery").json()["items"][0]
+        self.job("enhance", avatar_id=avatar_id, item_id=source["id"])
+        base = f"/api/avatars/{avatar_id}/gallery"
+        generations = self.client.get(base + "?category=generations").json()
+        enhancements = self.client.get(base + "?category=enhancements").json()
+        self.assertEqual(generations["total"], 1)
+        self.assertEqual(enhancements["total"], 1)
+        self.assertEqual(generations["counts"]["enhancements"], 1)
+        enhanced = enhancements["items"][0]
+        self.assertEqual(enhanced["source"]["path"], source["image"]["path"])
+        review = self.client.get(base + "?category=review").json()
+        self.assertIn(enhanced["id"], [row["id"] for row in review["items"]])
+        response = self.client.post(base + "/" + enhanced["id"] + "/approve")
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["status"], "passed")
+        self.assertNotIn(enhanced["id"], [row["id"] for row in self.client.get(base + "?category=review").json()["items"]])
+        self.assertEqual(self.client.get(base + "?category=enhancements").json()["total"], 1)
+        self.assertTrue((self.root / source["image"]["path"]).is_file())
+
+    def test_resources_include_checks_pending_urls_and_used_references(self):
+        import avatar_gallery_jobs as batches
+        avatar_id = self.ready()
+        a, b = self.image("red"), self.image("blue")
+        batches.add_references(str(self.root), avatar_id, [{"path": str(self.root / a["path"]), "image_url": "https://example.com/a.png"},
+            {"path": str(self.root / b["path"]), "image_url": "https://example.com/b.png"}, {"image_url": "https://example.com/pending.png"}])
+        catalog = batches.load_catalog(str(self.root), avatar_id)["references"]
+        batches.update_reference(str(self.root), avatar_id, catalog[0]["id"], state="approved", reason="Clear reference")
+        batches.update_reference(str(self.root), avatar_id, catalog[1]["id"], state="rejected", reason="Blurred face")
+        avatar_studio.record_gallery_item(str(self.root), avatar_id, {"id": "resource-use-test", "origin": "auto", "status": "passed",
+            "generated_path": str(self.root / a["path"]), "reference_id": catalog[0]["id"], "reference_path": str(self.root / a["path"])})
+        base = f"/api/avatars/{avatar_id}/resources"
+        all_rows = self.client.get(base).json()
+        self.assertEqual(all_rows["counts"]["all"], len(all_rows["items"]))
+        search = self.client.get(base + "?kind=search").json()
+        self.assertEqual(search["total"], 3)
+        pending = self.client.get(base + "?kind=search&status=pending").json()
+        self.assertEqual(pending["total"], 1)
+        self.assertIsNone(pending["items"][0]["image"])
+        rejected = self.client.get(base + "?status=rejected&query=blurred").json()
+        self.assertEqual(rejected["items"][0]["reason"], "Blurred face")
+        used = self.client.get(base + "?status=used&kind=search").json()
+        self.assertEqual(used["total"], 1)
+        self.assertTrue(used["items"][0]["committed"])
+        self.assertEqual(self.client.get(base + "?status=approved&kind=search").json()["total"], 1)
+        other = self.avatar()
+        self.assertEqual(self.client.get(f"/api/avatars/{other}/resources").json()["total"], 0)
+
+    def test_resources_survive_archived_chat_without_duplicate_copies(self):
+        avatar_id = self.ready()
+        chat = self.client.post("/api/chats", json={"avatar_id": avatar_id}).json()
+        uploaded = self.image()["path"]
+        self.job("console", avatar_id=avatar_id, chat_id=chat["id"], prompt="Reference inventory test", images=[uploaded])
+        base = f"/api/avatars/{avatar_id}/resources?kind=uploaded"
+        rows = self.client.get(base).json()
+        self.assertEqual(rows["total"], 1)
+        self.assertEqual(rows["items"][0]["image"]["path"], uploaded)
+        self.assertEqual(rows["items"][0]["state"], "pending")
+        self.assertTrue(rows["items"][0]["used"])
+        self.assertEqual(self.client.delete(f"/api/chats/{chat['id']}?avatar_id={avatar_id}").status_code, 200)
+        self.assertEqual(self.client.get(base).json()["total"], 1)
+
+    def test_gallery_category_pagination_and_resource_pagination(self):
+        import avatar_gallery_jobs as batches
+        avatar_id = self.avatar()
+        source = self.image()["path"]
+        avatar_studio.save_gallery_items(str(self.root), avatar_id, [{"id": "image-" + str(index), "origin": "enhancement" if index % 2 else "auto",
+            "status": "unchecked", "generated_path": str(self.root / source)} for index in range(60)])
+        base = f"/api/avatars/{avatar_id}/gallery?category=generations&limit=10"
+        first, second = self.client.get(base).json(), self.client.get(base + "&offset=10").json()
+        self.assertEqual(first["total"], 30)
+        self.assertFalse({row["id"] for row in first["items"]} & {row["id"] for row in second["items"]})
+        batches.add_references(str(self.root), avatar_id, [{"image_url": f"https://example.com/{index}.jpg"} for index in range(60)])
+        resources = self.client.get(f"/api/avatars/{avatar_id}/resources?limit=10&offset=50").json()
+        self.assertEqual(resources["total"], 60)
+        self.assertEqual(len(resources["items"]), 10)
+        self.assertEqual(self.client.get(base + "&category=invalid").status_code, 422)
 
     def test_invalid_requests_and_traversal(self):
         self.assertEqual(self.client.post("/api/uploads", files={"file": ("bad.png", b"not an image")}).status_code, 400)

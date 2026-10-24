@@ -1,8 +1,10 @@
 """Authenticated same-origin HTTP API for the TypeScript studio."""
 from contextlib import asynccontextmanager
+import asyncio
 import hashlib
 import io
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -19,9 +21,14 @@ from pydantic import BaseModel, ConfigDict, Field
 from PIL import Image, ImageOps, UnidentifiedImageError
 
 import avatar_enhance
+import avatar_resources
 import avatar_gallery
 import avatar_gallery_jobs
 import avatar_guide
+import avatar_identity as identity
+import avatar_quality as quality
+import avatar_benchmark as benchmark
+import avatar_content as content
 import avatar_studio as studio
 import generation_service as generation
 import model_manager
@@ -49,9 +56,50 @@ class Rename(StrictModel):
     name: str = Field(min_length=1, max_length=80)
 
 
-class JobRequest(StrictModel):
-    kind: Literal["generate", "reference", "confirm", "guide", "console", "gallery", "regenerate", "enhance", "mask_preview", "encoder", "unload"]
+class ChatCreate(StrictModel):
     avatar_id: str | None = None
+    title: str = Field(default="New chat", min_length=1, max_length=100)
+
+
+class IdentityUpdate(StrictModel):
+    action: Literal["upload", "approve", "remove", "activate", "label"]
+    image: str | None = None
+    view: Literal["front", "three-quarter", "profile", "smile", "body-front", "body-side"] = "front"
+    candidate_id: str | None = None
+    approved: bool = False
+    version: str | None = None
+    index: int = Field(default=0, ge=0, le=11)
+    label: Literal["correct", "wrong", "uncertain"] = "uncertain"
+
+
+class QualitySettings(StrictModel):
+    policies: dict[str, Literal["required", "important", "flexible"]] = Field(default_factory=dict)
+    sequential: bool = True
+
+
+class Persona(StrictModel):
+    niche: str = Field(default="", max_length=1000)
+    tone: str = Field(default="", max_length=1000)
+    values: str = Field(default="", max_length=2000)
+    disclosure: str = Field(default="AI-generated character", max_length=300)
+
+
+class ContentDraft(StrictModel):
+    image_id: str
+    caption: str = Field(min_length=1, max_length=2200)
+    planned_at: str = Field(default="", max_length=60)
+    public_url: str = Field(default="", max_length=2000)
+
+
+class Approval(StrictModel):
+    confirmed: bool
+
+
+class JobRequest(StrictModel):
+    kind: Literal["generate", "reference", "confirm", "guide", "console", "gallery", "regenerate", "enhance", "mask_preview", "encoder", "unload", "identity_view", "calibrate", "benchmark", "quality_check", "caption", "publish", "reconcile"]
+    avatar_id: str | None = None
+    chat_id: str | None = None
+    new_chat: bool = False
     item_id: str | None = None
     reference_kind: Literal["face", "body"] = "face"
     details: str = Field(default="", max_length=12000)
@@ -77,7 +125,18 @@ class JobRequest(StrictModel):
     method: Literal["photo", "hd_tiles"] = "photo"
     scale: Literal[1, 2] = 1
     strength: float = Field(default=1, ge=.35, le=1)
+    reconstruction_prompt: str = Field(default=avatar_enhance.PHOTO_PROMPT, min_length=1, max_length=16000)
     encoder: Literal["Official", "Custom"] = "Official"
+    roles: list[Literal["Outfit", "Pose", "Scene", "Other person"]] = Field(default_factory=list, max_length=2)
+    face_view: Literal["auto", "front", "three-quarter", "profile", "smile"] = "auto"
+    body_view: Literal["auto", "body-front", "body-side"] = "auto"
+    caption_style: Literal["auto", "concise", "editorial", "conversational"] = "auto"
+    view: Literal["front", "three-quarter", "profile", "smile", "body-front", "body-side"] = "front"
+    positives: list[str] = Field(default_factory=list, max_length=12)
+    negatives: list[str] = Field(default_factory=list, max_length=12)
+    use_api: bool = False
+    post_id: str | None = None
+    media_id: str = Field(default="", max_length=100)
 
 
 def redact(value):
@@ -99,8 +158,12 @@ def create_app(root=None, persist=None, token=None):
     cookie_value = secrets.token_urlsafe(48)
     mutation_lock = threading.RLock()
     auth_attempts = {}
+    scheduling = {}
 
     def handle(kind, payload, context):
+        if kind == "publish" and payload.get("scheduled") and payload.get("avatar_id") not in scheduling:
+            from web_jobs import Cancelled
+            raise Cancelled("Runtime scheduling is off. Review and publish manually or enable scheduling again.")
         if kind == "encoder":
             context.emit("Switching FLUX text encoder")
             return {"encoder": model_manager.set_flux_encoder_mode(payload["encoder"])}
@@ -111,13 +174,46 @@ def create_app(root=None, persist=None, token=None):
 
     jobs = JobStore(root / "_jobs", handle, persist)
 
+    def schedule_tick():
+        if model_manager.DEV_MODE:
+            return
+        with mutation_lock:
+            if any(row["status"] in {"queued", "running"} for row in jobs.list()):
+                return
+            for avatar_id, enabled_since in list(scheduling.items()):
+                for post in content.due_posts(str(root), avatar_id, enabled_since):
+                    key = f"scheduled-{avatar_id}-{post['id']}-{post['approval'][:12]}"
+                    if post.get("status") == "container_created":
+                        key += f"-poll-{int(time.time() // 30)}"
+                    if any(row.get("request_key") == key for row in jobs.list()):
+                        continue
+                    jobs.submit("publish", {"avatar_id": avatar_id, "post_id": post["id"], "scheduled": True}, key)
+                    return
+
+    async def scheduler_loop():
+        while True:
+            await asyncio.sleep(30)
+            try:
+                await asyncio.to_thread(schedule_tick)
+            except Exception as exc:
+                studio._atomic_json(root / "_debug" / "scheduler.json", {"error": redact(exc), "time": time.time()})
+
     @asynccontextmanager
     async def lifespan(app):
-        yield
-        jobs.shutdown()
+        task = asyncio.create_task(scheduler_loop())
+        try:
+            yield
+        finally:
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+            jobs.shutdown()
 
     app = FastAPI(title="FreeFakeStudio", lifespan=lifespan, docs_url=None, redoc_url=None)
     app.state.jobs, app.state.service = jobs, service
+    app.state.scheduling, app.state.schedule_tick = scheduling, schedule_tick
 
     def check_id(value):
         if not value or not SAFE_ID.fullmatch(value):
@@ -197,7 +293,7 @@ def create_app(root=None, persist=None, token=None):
             "face_prompt": avatar.get("face_prompt", ""), "body_prompt": avatar.get("body_prompt", ""),
             "face_specs": studio.load_specs(avatar.get("face_specs")) if avatar.get("face_specs") else {},
             "body_specs": studio.load_specs(avatar.get("body_specs")) if avatar.get("body_specs") else {},
-            "current_step": avatar.get("current_step"), "creation_mode": avatar.get("creation_mode", "custom"),
+            "current_step": avatar.get("current_step"), "creation_mode": avatar.get("creation_mode", "custom"), "identity_version": avatar.get("identity_version"),
             "guide": {"stage": avatar_guide.stage(avatar), "next_label": avatar_guide.next_label(avatar),
                       "active": avatar_guide.active(avatar) and avatar_guide.stage(avatar) != "complete", "options": dict(zip(["face", "body", "scene_one", "scene_two"], avatar_guide.options(avatar))),
                       "face_draft": info(avatar_guide.draft(avatar, "face")), "body_draft": info(avatar_guide.draft(avatar, "body"))},
@@ -205,9 +301,49 @@ def create_app(root=None, persist=None, token=None):
 
     def gallery_value(row):
         return {key: row.get(key) for key in ("id", "status", "origin", "prompt", "seed", "attempt", "validation", "source_id", "diagnostics",
-                                             "working_size", "output_size", "processing_passes", "method", "strength", "steps")} | {
+                                             "working_size", "output_size", "processing_passes", "method", "strength", "steps", "manual_review", "identity_version", "recipe")} | {
             "image": info(row.get("generated_path")), "source": info(row.get("source_path")),
             "reference": info(row.get("reference_path")), "regenerable": row.get("origin") not in {"enhancement", "legacy"} and bool(row.get("prompt"))}
+
+    def chat_summary(row):
+        return {key: row.get(key) for key in ("id", "avatar_id", "title", "created_at", "updated_at", "archived")} | {"turn_count": len(row["turns"])}
+
+    def chat_value(row):
+        return {**chat_summary(row), "turns": [{**turn, "source": info(root / turn["source"]) if turn.get("source") else None,
+                "images": [picture for path in turn.get("images", []) if (picture := info(root / path))]} for turn in row["turns"]]}
+
+    @app.get("/api/chats")
+    def conversations(avatar_id: str | None = None):
+        return [chat_summary(row) for row in service.chats.list(avatar_id) if row.get("turns")]
+
+    @app.post("/api/chats")
+    def new_conversation(body: ChatCreate):
+        with mutation_lock:
+            service.chats.ensure(body.avatar_id)
+            row = service.chats.create(body.avatar_id, body.title)
+            jobs.flush()
+            return chat_value(row)
+
+    @app.get("/api/chats/{chat_id}")
+    def conversation(chat_id: str, avatar_id: str | None = None):
+        return chat_value(service.chats.get(chat_id, avatar_id))
+
+    @app.patch("/api/chats/{chat_id}")
+    def rename_conversation(chat_id: str, body: Rename, avatar_id: str | None = None):
+        with mutation_lock:
+            row = service.chats.rename(chat_id, avatar_id, body.name)
+            jobs.flush()
+            return chat_summary(row)
+
+    @app.delete("/api/chats/{chat_id}")
+    def archive_conversation(chat_id: str, avatar_id: str | None = None):
+        if any(row["status"] in {"queued", "running"} and row["payload"].get("chat_id") == chat_id
+               and row["payload"].get("avatar_id") == avatar_id for row in jobs.list()):
+            raise HTTPException(409, "Stop the conversation's active job before archiving it")
+        with mutation_lock:
+            service.chats.archive(chat_id, avatar_id)
+            jobs.flush()
+            return {"archived": True}
 
     @app.post("/api/session")
     async def session(request: Request):
@@ -273,14 +409,169 @@ def create_app(root=None, persist=None, token=None):
         jobs.flush()
         return avatar_value(studio.load_avatar(str(root), avatar_id))
 
+    @app.get("/api/avatars/{avatar_id}/identity")
+    def get_identity(avatar_id: str):
+        avatar = service.ready_avatar(check_id(avatar_id))
+        folder = identity._folder(str(root), avatar_id)
+        versions = [identity._read(path) for path in (folder / "versions").glob("*/identity.json")]
+        data = benchmark.load(str(root), avatar_id)
+        profile = quality.profile(str(root), avatar)
+        return {"version": avatar["identity_version"], "views": identity.VIEWS,
+                "versions": sorted([{"version": row["version"], "created_at": row["created_at"]} for row in versions], key=lambda row: row["created_at"], reverse=True),
+                "candidates": [{key: value for key, value in row.items() if key != "path"} | {"image": info(row["path"])} for row in identity.pack(str(root), avatar_id)["candidates"]],
+                "profile": profile, "attribute_keys": studio.IDENTITY_SPEC_KEYS,
+                "calibration": {name: [info(str(root / path)) for path in (profile.get("face") or {}).get(key, [])] for name, key in (("positive", "positive_files"), ("negative", "negative_files"))},
+                "benchmark": benchmark.report(data),
+                "cases": [{key: value for key, value in case.items() if key != "path"} | {"image": info(case.get("path")), "index": index} for index, case in enumerate(data["cases"] if data else [])]}
+
+    @app.get("/api/avatars/{avatar_id}/identity/export")
+    def export_identity(avatar_id: str):
+        with mutation_lock:
+            ensure_idle(avatar_id)
+            target = identity.export_pack(str(root), check_id(avatar_id))
+            return FileResponse(target, filename=target.name, media_type="application/zip")
+
+    @app.post("/api/avatars/{avatar_id}/identity")
+    def update_identity(avatar_id: str, body: IdentityUpdate):
+        with mutation_lock:
+            ensure_idle(avatar_id)
+            service.ready_avatar(check_id(avatar_id))
+            if body.action == "upload":
+                image_file(body.image or "")
+                with Image.open(service.file(body.image)) as image:
+                    identity.add_candidate(str(root), avatar_id, body.view, image.convert("RGB"))
+            elif body.action == "approve":
+                identity.review_candidate(str(root), avatar_id, body.candidate_id, body.approved)
+            elif body.action == "remove":
+                identity.remove_candidate(str(root), avatar_id, body.candidate_id)
+            elif body.action == "activate":
+                identity.activate(str(root), avatar_id, body.version)
+            else:
+                benchmark.label(str(root), avatar_id, body.index, body.label)
+            jobs.flush()
+            return get_identity(avatar_id)
+
+    @app.patch("/api/avatars/{avatar_id}/quality")
+    def update_quality(avatar_id: str, body: QualitySettings):
+        with mutation_lock:
+            ensure_idle(avatar_id)
+            avatar = service.ready_avatar(check_id(avatar_id))
+            result = quality.save_profile(str(root), avatar, body.model_dump())
+            jobs.flush()
+            return result
+
+    @app.get("/api/avatars/{avatar_id}/content")
+    def get_content(avatar_id: str):
+        studio.load_avatar(str(root), check_id(avatar_id))
+        data = content.load(str(root), avatar_id)
+        data["posts"] = [{key: value for key, value in row.items() if key != "image_path"} | {"image": info(row["image_path"])} for row in data["posts"]]
+        try:
+            content.credentials()
+            data["instagram_configured"] = not model_manager.DEV_MODE
+        except ValueError:
+            data["instagram_configured"] = False
+        data["scheduling_enabled"] = avatar_id in scheduling
+        return data
+
+    @app.post("/api/avatars/{avatar_id}/scheduling")
+    def schedule_content(avatar_id: str, body: Approval):
+        with mutation_lock:
+            studio.load_avatar(str(root), check_id(avatar_id))
+            if body.confirmed:
+                if model_manager.DEV_MODE:
+                    raise ValueError("Runtime publishing is disabled in mock preview.")
+                content.credentials()
+                scheduling[avatar_id] = time.time()
+            else:
+                scheduling.pop(avatar_id, None)
+                for job in jobs.list():
+                    if job["status"] == "queued" and job["payload"].get("scheduled") and job["payload"].get("avatar_id") == avatar_id:
+                        jobs.cancel(job["id"])
+            return get_content(avatar_id)
+
+    @app.patch("/api/avatars/{avatar_id}/persona")
+    def save_persona(avatar_id: str, body: Persona):
+        with mutation_lock:
+            ensure_idle(avatar_id)
+            studio.load_avatar(str(root), check_id(avatar_id))
+            content.persona(str(root), avatar_id, **body.model_dump())
+            jobs.flush()
+            return get_content(avatar_id)
+
+    @app.post("/api/avatars/{avatar_id}/content")
+    def create_content(avatar_id: str, body: ContentDraft):
+        with mutation_lock:
+            ensure_idle(avatar_id)
+            service.ready_avatar(check_id(avatar_id))
+            identifier = content.draft(str(root), avatar_id, body.image_id, body.caption, body.planned_at, body.public_url)
+            jobs.flush()
+            return {"id": identifier}
+
+    @app.patch("/api/avatars/{avatar_id}/content/{post_id}")
+    def edit_content(avatar_id: str, post_id: str, body: ContentDraft):
+        with mutation_lock:
+            ensure_idle(avatar_id)
+            check_id(avatar_id)
+            content.edit(str(root), avatar_id, check_id(post_id), body.caption, body.planned_at, body.public_url)
+            jobs.flush()
+            return get_content(avatar_id)
+
+    @app.post("/api/avatars/{avatar_id}/content/{post_id}/approve")
+    def approve_content(avatar_id: str, post_id: str, body: Approval):
+        with mutation_lock:
+            ensure_idle(avatar_id)
+            content.approve(str(root), check_id(avatar_id), check_id(post_id), body.confirmed)
+            jobs.flush()
+            return get_content(avatar_id)
+
+    @app.get("/api/avatars/{avatar_id}/content/{post_id}/export")
+    def export_content(avatar_id: str, post_id: str):
+        path = content.export(str(root), check_id(avatar_id), check_id(post_id))
+        return FileResponse(path, filename=Path(path).name, media_type="application/zip")
+
     @app.get("/api/avatars/{avatar_id}/gallery")
-    def gallery(avatar_id: str, offset: int = 0, limit: int = 60, status: str = "all", origin: str = "all", query: str = ""):
+    def gallery(avatar_id: str, offset: int = 0, limit: int = 60, status: str = "all", origin: str = "all", query: str = "",
+                category: Literal["all", "generations", "enhancements", "review"] = "all"):
         check_id(avatar_id)
         rows = studio.visible_gallery_items(str(root), avatar_id, limit=None)
+        review_states = {"needs_review", "unchecked", "no_change", "failed", "stopped"}
+        counts = {"generations": sum(row.get("origin") != "enhancement" for row in rows),
+                  "enhancements": sum(row.get("origin") == "enhancement" for row in rows),
+                  "review": sum(row.get("status") in review_states for row in rows),
+                  "resources": len(avatar_resources.collect(root, avatar_id, service.chats))}
+        rows = [row for row in rows if category == "all"
+                or (category == "generations" and row.get("origin") != "enhancement")
+                or (category == "enhancements" and row.get("origin") == "enhancement")
+                or (category == "review" and row.get("status") in review_states)]
         rows = [row for row in reversed(rows) if (status == "all" or row.get("status") == status)
                 and (origin == "all" or row.get("origin") == origin) and query.casefold() in str(row.get("prompt", "")).casefold()]
         offset, limit = max(0, offset), max(1, min(100, limit))
-        return {"total": len(rows), "items": [gallery_value(row) for row in rows[offset:offset + limit]], "offset": offset}
+        return {"total": len(rows), "items": [gallery_value(row) for row in rows[offset:offset + limit]], "offset": offset, "counts": counts}
+
+    @app.get("/api/avatars/{avatar_id}/resources")
+    def resources(avatar_id: str, status: Literal["all", "pending", "approved", "rejected", "used"] = "all",
+                  kind: Literal["all", "identity", "uploaded", "search"] = "all", query: str = "", offset: int = 0, limit: int = 48):
+        rows = avatar_resources.collect(root, check_id(avatar_id), service.chats)
+        counts = {"all": len(rows), **{state: sum(row["state"] == state for row in rows) for state in ("pending", "approved", "rejected")},
+                  "used": sum(row["used"] for row in rows)}
+        rows = [row for row in rows if (status == "all" or (row["used"] if status == "used" else row["state"] == status))
+                and (kind == "all" or row["kind"] == kind)
+                and query.casefold() in " ".join(str(row.get(key, "")) for key in ("name", "reason", "check_state", "source_url")).casefold()]
+        offset, limit = max(0, offset), max(1, min(100, limit))
+        return {"total": len(rows), "counts": counts, "items": [{key: value for key, value in row.items() if key != "path"} | {"image": info(row.get("path"))} for row in rows[offset:offset + limit]]}
+
+    @app.post("/api/avatars/{avatar_id}/gallery/{item_id}/approve")
+    def approve_gallery_image(avatar_id: str, item_id: str):
+        with mutation_lock:
+            ensure_idle(check_id(avatar_id))
+            item = studio.gallery_item_by_id(str(root), avatar_id, check_id(item_id))
+            if not item or not item.get("generated_path"):
+                raise ValueError("Select a generated image first")
+            image_file(service.relative(item["generated_path"]))
+            updated = studio.update_gallery_item(str(root), avatar_id, item_id, status="passed",
+                manual_review={"decision": "approved", "time": time.time()})
+            jobs.flush()
+            return gallery_value(updated)
 
     @app.get("/api/avatars/{avatar_id}/references")
     def references(avatar_id: str, status: str = "All findings"):
@@ -313,7 +604,8 @@ def create_app(root=None, persist=None, token=None):
         path = root / "_sessions" / "web_chat.json"
         if path.exists():
             path.replace(path.with_name(f"chat-archive-{int(time.time())}.json"))
-        service.save_main({"version": 1, "turns": []})
+        service.chats.archive(service.chats.get()["id"])
+        service.save_main(service.chats.create())
         jobs.flush()
         return {"archived": True}
 
@@ -346,18 +638,28 @@ def create_app(root=None, persist=None, token=None):
         return FileResponse(target, filename=target.name if download else None, content_disposition_type="attachment" if download else "inline")
 
     @app.get("/api/thumbs/{path:path}")
-    def thumbnail(path: str, size: int = 420):
+    def thumbnail(path: str, size: int = 420, region: str | None = None):
         source = image_file(path)
         size = min(800, max(80, size))
-        stamp = f"{source}:{source.stat().st_mtime_ns}:{size}"
+        box = None
+        if region:
+            if len(region) > 100:
+                raise ValueError("Invalid detail crop")
+            box = [float(value) for value in region.split(",")]
+            if len(box) != 4 or any(not math.isfinite(value) or not 0 <= value <= 1 for value in box) or box[0] >= box[2] or box[1] >= box[3]:
+                raise ValueError("Invalid detail crop")
+        stamp = f"{source}:{source.stat().st_mtime_ns}:{size}:{box}"
         target = root / "_thumbs" / (hashlib.sha256(stamp.encode()).hexdigest() + ".webp")
         if not target.exists():
             target.parent.mkdir(exist_ok=True)
             with Image.open(source) as image:
                 image = ImageOps.exif_transpose(image).convert("RGB")
+                if box:
+                    pixels = (int(box[0] * image.width), int(box[1] * image.height), max(1, math.ceil(box[2] * image.width)), max(1, math.ceil(box[3] * image.height)))
+                    image = image.crop(pixels)
                 image.thumbnail((size, size))
                 buffer = io.BytesIO()
-                image.save(buffer, format="WEBP", quality=86)
+                image.save(buffer, format="WEBP", quality=100 if box else 86, lossless=bool(box))
             temporary = target.with_suffix("." + secrets.token_hex(4) + ".tmp")
             temporary.write_bytes(buffer.getvalue())
             temporary.replace(target)
@@ -367,6 +669,25 @@ def create_app(root=None, persist=None, token=None):
     def all_jobs():
         return [{**row, "error": redact(row.get("error", "")), "message": redact(row["message"])} for row in jobs.list()[:100]]
 
+    @app.get("/api/activity/events")
+    async def activity_events(request: Request):
+        async def events():
+            import asyncio
+            signature = None
+            heartbeat = time.monotonic()
+            while not await request.is_disconnected():
+                rows = await asyncio.to_thread(all_jobs)
+                current = tuple((row["id"], row["revision"]) for row in rows)
+                if current != signature:
+                    signature = current
+                    yield f"data: {json.dumps(rows)}\n\n"
+                    heartbeat = time.monotonic()
+                elif time.monotonic() - heartbeat >= 15:
+                    yield "event: heartbeat\ndata: {}\n\n"
+                    heartbeat = time.monotonic()
+                await asyncio.sleep(1)
+        return StreamingResponse(events(), media_type="text/event-stream", headers={"X-Accel-Buffering": "no", "Cache-Control": "no-cache"})
+
     @app.post("/api/jobs")
     def submit(body: JobRequest, idempotency_key: str = Header(..., min_length=8, max_length=128)):
         args = body.model_dump(exclude={"kind"})
@@ -375,10 +696,26 @@ def create_app(root=None, persist=None, token=None):
             studio.load_avatar(str(root), body.avatar_id)
         if body.item_id:
             check_id(body.item_id)
-        if body.kind not in {"generate", "mask_preview", "encoder", "unload"} and not body.avatar_id:
+        if body.kind not in {"generate", "enhance", "mask_preview", "encoder", "unload"} and not body.avatar_id:
             raise ValueError("Select an avatar first")
-        for path in [*body.images, *[value for value in (body.image, body.mask) if value]]:
+        if body.kind in {"generate", "console"}:
+            scope = body.avatar_id if body.kind == "console" else None
+            if body.kind == "generate" and body.avatar_id:
+                raise ValueError("Use the avatar console for avatar conversations")
+            if body.new_chat and body.chat_id:
+                raise ValueError("A new conversation cannot also select an existing chat")
+            if body.chat_id:
+                service.chats.get(body.chat_id, scope)
+        for path in [*body.images, *body.positives, *body.negatives, *[value for value in (body.image, body.mask) if value]]:
             image_file(path)
+        if body.kind in {"identity_view", "calibrate", "benchmark", "quality_check", "caption", "publish", "reconcile"}:
+            service.ready_avatar(body.avatar_id)
+        if body.kind == "console" and body.roles and len(body.roles) != len(body.images):
+            raise ValueError("Choose one role for each additional reference.")
+        if body.kind in {"quality_check", "caption"} and not body.item_id:
+            raise ValueError("Select a saved avatar image.")
+        if body.kind in {"publish", "reconcile"} and not body.post_id:
+            raise ValueError("Select a saved content draft.")
         if body.kind in {"generate", "console"}:
             if not body.prompt.strip():
                 raise ValueError("Write a prompt first")
@@ -393,14 +730,43 @@ def create_app(root=None, persist=None, token=None):
                 raise ValueError("The selected canvas no longer exists")
         if body.kind in {"confirm", "mask_preview"} and not body.image:
             raise ValueError("Choose an input image first")
-        if body.kind in {"enhance", "regenerate"} and not body.item_id:
+        if body.kind == "enhance":
+            if not body.reconstruction_prompt.strip():
+                raise ValueError("Write a reconstruction prompt first")
+            if body.chat_id or not body.avatar_id:
+                conversation = service.chats.get(body.chat_id, body.avatar_id)
+                args["chat_id"] = conversation["id"]
+                if not body.image or not any(body.image in turn.get("images", []) for turn in conversation["turns"] if turn.get("role") == "assistant"):
+                    raise ValueError("Select a generated image from this conversation")
+            elif not body.item_id:
+                raise ValueError("Select a saved image first")
+        if body.kind == "regenerate" and not body.item_id:
             raise ValueError("Select a saved image first")
         with mutation_lock:
-            for pending in jobs.list():
-                if pending["request_key"] != idempotency_key and pending["status"] in {"queued", "running"}:
+            saved_jobs = jobs.list()
+            previous = next((row for row in saved_jobs if row["request_key"] == idempotency_key), None)
+            for pending in saved_jobs:
+                if previous is None and pending["request_key"] != idempotency_key and pending["status"] in {"queued", "running"}:
                     if pending["payload"].get("avatar_id") == body.avatar_id:
                         raise HTTPException(409, "An operation is already active for this workspace")
-            return jobs.submit(body.kind, args, idempotency_key)
+            if body.kind in {"generate", "console"}:
+                if body.new_chat:
+                    if previous:
+                        if previous["kind"] != body.kind or not previous["payload"].get("new_chat") or previous["payload"].get("avatar_id") != body.avatar_id:
+                            raise ValueError("This request key was already used for a different operation")
+                        args["chat_id"] = previous["payload"]["chat_id"]
+                    else:
+                        if body.kind == "console":
+                            service.ready_avatar(body.avatar_id)
+                        service.chats.ensure(scope)
+                        args["chat_id"] = service.chats.create(scope)["id"]
+                else:
+                    args["chat_id"] = service.chats.get(body.chat_id, scope)["id"]
+            job = jobs.submit(body.kind, args, idempotency_key)
+            if body.kind in {"generate", "console"} and body.new_chat:
+                service.chats.append(args["chat_id"], scope, {"id": job["id"] + "-user", "role": "user", "text": body.prompt, "images": body.images})
+                jobs.flush()
+            return job
 
     @app.get("/api/jobs/{job_id}")
     def get_job(job_id: str):
@@ -423,7 +789,7 @@ def create_app(root=None, persist=None, token=None):
             import asyncio
             revision = -1
             while not await request.is_disconnected():
-                row = get_job(job_id)
+                row = await asyncio.to_thread(get_job, job_id)
                 if row["revision"] != revision:
                     revision = row["revision"]
                     yield f"id: {revision}\ndata: {json.dumps(row)}\n\n"
@@ -444,8 +810,11 @@ def create_app(root=None, persist=None, token=None):
     frontend = Path(__file__).parent / "frontend" / "dist"
     if frontend.is_dir():
         app.mount("/assets", StaticFiles(directory=frontend / "assets"), name="assets")
-        @app.get("/")
-        def index():
+        @app.api_route("/", methods=["GET", "HEAD"])
+        @app.api_route("/{path:path}", methods=["GET", "HEAD"])
+        def index(path: str = ""):
+            if path.split("/", 1)[0] in {"api", "assets"} or Path(path).suffix:
+                return JSONResponse({"detail": "Not found"}, status_code=404)
             return FileResponse(frontend / "index.html", headers={"Cache-Control": "no-cache"})
     else:
         @app.get("/")

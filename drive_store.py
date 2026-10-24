@@ -8,6 +8,7 @@ import json
 import os
 from pathlib import Path, PurePosixPath
 import re
+import shutil
 import threading
 import time
 
@@ -54,11 +55,29 @@ class DriveStore:
                    os.environ.get("GOOGLE_DRIVE_REFRESH_TOKEN", ""))
 
     def refresh(self):
-        response = self.session.post("https://oauth2.googleapis.com/token", data=self.credentials, timeout=45)
-        if response.status_code != 200:
+        for attempt in range(6):
+            try:
+                response = self.session.post("https://oauth2.googleapis.com/token", data=self.credentials, timeout=45)
+            except requests.RequestException:
+                if attempt == 5:
+                    raise RuntimeError("Google Drive authorization network unavailable. Saved files were retained.") from None
+                self.sleep(min(30, 2**attempt))
+                continue
+            if response.status_code == 200:
+                data = response.json()
+                self.access, self.expires = data["access_token"], time.monotonic() + int(data.get("expires_in", 3600)) - 90
+                return
+            if response.status_code in {429, 500, 502, 503, 504} and attempt < 5:
+                self.sleep(min(30, 2**attempt))
+                continue
             raise RuntimeError("Google Drive authorization failed. Renew the private OAuth refresh token; no saved work was deleted.")
-        data = response.json()
-        self.access, self.expires = data["access_token"], time.monotonic() + int(data.get("expires_in", 3600)) - 90
+
+    def validate_workspace(self):
+        row = self.request("GET", API + "/" + self.folder_id, params={"fields": "id,name,mimeType,trashed,capabilities(canAddChildren)"}).json()
+        if row.get("mimeType") != FOLDER or row.get("trashed"):
+            raise RuntimeError("GOOGLE_DRIVE_WORKSPACE_FOLDER_ID must identify your existing FreeFakeStudio folder, not a file")
+        if row.get("capabilities", {}).get("canAddChildren") is False:
+            raise RuntimeError("The Google account cannot write to this Drive folder. Grant edit access before setup.")
 
     def request(self, method, url, accepted=(200,), **kwargs):
         base_headers = kwargs.pop("headers", {})
@@ -143,22 +162,68 @@ class DriveStore:
             return
         path.parent.mkdir(parents=True, exist_ok=True)
         temporary = path.with_name(path.name + ".drive-part")
-        response = self.request("GET", API + "/" + row["id"], params={"alt": "media"}, stream=True)
+        metadata_path = path.with_name(path.name + ".drive-part.json")
+        expected = {key: row.get(key) for key in ("id", "size", "md5Checksum")}
         try:
-            with temporary.open("wb") as stream:
-                for chunk in response.iter_content(4 * 1024 * 1024):
-                    if chunk:
-                        stream.write(chunk)
-        finally:
-            response.close()
-        if temporary.stat().st_size != int(row.get("size", -1)) or (row.get("md5Checksum") and digest(temporary) != row["md5Checksum"]):
+            compatible = json.loads(metadata_path.read_text(encoding="utf-8")) == expected
+        except (OSError, ValueError):
+            compatible = False
+        if not compatible:
             temporary.unlink(missing_ok=True)
-            raise RuntimeError(f"Drive download verification failed for {relative}; original file was retained")
-        temporary.replace(path)
-        self.remember(relative, row, path)
+        metadata_path.write_text(json.dumps(expected), encoding="utf-8")
+        size = int(row.get("size", -1))
+        if size < 0:
+            raise RuntimeError(f"Drive file size is unavailable for {relative}; original file was retained")
+        if size == 0:
+            temporary.write_bytes(b"")
+        for attempt in range(4):
+            offset = temporary.stat().st_size if temporary.exists() else 0
+            if offset > size:
+                temporary.unlink()
+                offset = 0
+            if shutil.disk_usage(self.root).free < max(0, size - offset) + 512 * 1024**2:
+                raise RuntimeError(f"Not enough local disk space to restore {relative}. Partial download and saved work were retained.")
+            if offset < size:
+                headers = {"Range": f"bytes={offset}-"} if offset else {}
+                response = self.request("GET", API + "/" + row["id"], params={"alt": "media"}, accepted=(200, 206), headers=headers, stream=True)
+                if response.status_code == 206:
+                    match = re.fullmatch(r"bytes (\d+)-(\d+)/(\d+)", response.headers.get("Content-Range", ""))
+                    if not match or int(match[1]) != offset or int(match[3]) != size:
+                        response.close()
+                        raise RuntimeError(f"Drive returned an unexpected download range for {relative}; no original file was replaced")
+                else:
+                    offset = 0  # A server may ignore Range and send the complete body.
+                try:
+                    progress = time.monotonic()
+                    with temporary.open("ab" if offset else "wb") as stream:
+                        for chunk in response.iter_content(4 * 1024 * 1024):
+                            if chunk:
+                                stream.write(chunk)
+                                offset += len(chunk)
+                                if time.monotonic() - progress >= 20:
+                                    print(f"[drive] {relative}: {offset / 1024**2:.0f}/{size / 1024**2:.0f} MB", flush=True)
+                                    progress = time.monotonic()
+                except requests.RequestException:
+                    if attempt == 3:
+                        raise RuntimeError(f"Drive transfer interrupted for {relative}. Run again to resume its partial download.") from None
+                    self.sleep(2**attempt)
+                    continue
+                finally:
+                    response.close()
+            if temporary.stat().st_size == size:
+                if row.get("md5Checksum") and digest(temporary) != row["md5Checksum"]:
+                    temporary.unlink()
+                    metadata_path.unlink(missing_ok=True)
+                    raise RuntimeError(f"Drive download verification failed for {relative}; original file was retained")
+                temporary.replace(path)
+                metadata_path.unlink(missing_ok=True)
+                self.remember(relative, row, path)
+                return
+        raise RuntimeError(f"Drive transfer incomplete for {relative}; rerun to resume. Original file was retained.")
 
     def restore(self, select):
         with self.lock:
+            self.validate_workspace()
             for relative, row in self.scan(select).items():
                 if row["mimeType"] != FOLDER:
                     print(f"[drive] Restore {relative} ({int(row.get('size', 0)) / 1024**2:.1f} MB)", flush=True)
@@ -254,6 +319,7 @@ class DriveStore:
             files = [path for directory in directories for path in (self.root / directory).rglob("*")
                      if path.is_file() and not path.is_symlink() and not any(part.startswith(".") or part == "_thumbs" for part in path.relative_to(self.root).parts)
                      and not path.name.endswith((".part", ".tmp", ".pid"))]
+            files = [path for path in files if ".drive-part" not in path.name]
             # Binary assets are committed before records that refer to them.
             for path in sorted(files, key=lambda value: (value.suffix == ".json", str(value))):
                 relative = path.relative_to(self.root).as_posix()
@@ -272,6 +338,8 @@ def restore_selection(path, folder):
         return False
     if parts[0] in {"results", "config", "manifests", "diagnostics"}:
         return not path.endswith((".pid", ".part", ".tmp"))
+    if parts[0] == "models":
+        return path == "models" or len(parts) >= 2 and parts[1] == "avatar_identity" and (folder or path.endswith(".onnx"))
     if parts[0] == "bundles":
         return folder and (len(parts) == 1 or parts[1] == "caches") or len(parts) > 2 and parts[1] == "caches"
     if parts[0] == "ComfyUI":

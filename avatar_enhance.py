@@ -4,6 +4,7 @@ import math
 
 import numpy as np
 from PIL import Image, ImageOps
+import image_review
 
 
 REALISM_PROMPT = (
@@ -87,11 +88,15 @@ def change_metrics(baseline, result):
     mean = float(delta.mean())
     changed = float((delta.max(axis=2) >= 4).mean())
     return {"mean_absolute_pixel_change": round(mean, 4), "changed_pixel_fraction": round(changed, 4),
+            "detail_evidence": image_review.detail_evidence(baseline, result), "detail_regions": image_review.regions(baseline.size),
             "near_noop": mean < 1.0 and changed < 0.02,
             "meaning": "pixel change only; not a realism, identity or quality score"}
 
 
-def reconstruct(image, edit_tile, scale=1, strength=1.0, seed=0, cancelled=None, method="photo"):
+def reconstruct(image, edit_tile, scale=1, strength=1.0, seed=0, cancelled=None, method="photo", prompt=None):
+    prompt = PHOTO_PROMPT if prompt is None else str(prompt).strip()
+    if not prompt:
+        raise ValueError("Write a reconstruction prompt first")
     """One native photo edit by default; optional full-photo + tiled HD reconstruction."""
     strength = float(strength)
     if not 0.35 <= strength <= 1.0:
@@ -102,7 +107,7 @@ def reconstruct(image, edit_tile, scale=1, strength=1.0, seed=0, cancelled=None,
     size = target_size(source.size, int(scale))
     working = source.copy()
     working.thumbnail((1024, 1024), Image.Resampling.LANCZOS)
-    baseline = working.resize(size, Image.Resampling.LANCZOS)
+    baseline = source.resize(size, Image.Resampling.LANCZOS)
     boxes = tile_boxes(size) if method == "hd_tiles" else []
     total = 1 + len(boxes)
 
@@ -117,7 +122,7 @@ def reconstruct(image, edit_tile, scale=1, strength=1.0, seed=0, cancelled=None,
     check_stop()
     yield progress(1, "full_photo")
     padded = _pad(working)
-    rebuilt = edit_tile(padded, None, PHOTO_PROMPT, int(seed) % (2 ** 63), strength)
+    rebuilt = edit_tile(padded, None, prompt, int(seed) % (2 ** 63), strength)
     if not isinstance(rebuilt, Image.Image) or rebuilt.size != padded.size:
         raise RuntimeError("FLUX returned an invalid full-photo reconstruction.")
     check_stop()
@@ -135,7 +140,7 @@ def reconstruct(image, edit_tile, scale=1, strength=1.0, seed=0, cancelled=None,
         yield progress(index + 2, "hd_tile")
         tile = base.crop(box)
         padded = _pad(tile)
-        edited = edit_tile(padded, context, TILE_PROMPT + REALISM_PROMPT,
+        edited = edit_tile(padded, context, TILE_PROMPT + prompt,
                            (int(seed) + index + 1) % (2 ** 63), strength)
         if not isinstance(edited, Image.Image) or edited.size != padded.size:
             raise RuntimeError("FLUX returned an invalid reconstruction tile.")

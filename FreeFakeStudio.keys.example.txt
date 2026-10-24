@@ -7,7 +7,7 @@
 # KEY=VALUE and KEY: VALUE both work.
 
 # Public HTTPS route.
-# Colab proxy is recommended because ngrok can break Gradio queue streaming.
+# Colab supports its HTTPS proxy; Kaggle requires ngrok. The native UI has no Gradio queue.
 PUBLIC_ROUTE=Colab proxy
 
 # Optional ngrok token. Used only when PUBLIC_ROUTE=ngrok or PUBLIC_ROUTE=Auto.
@@ -33,6 +33,13 @@ HUGGINGFACE_TOKEN=
 # Avatar Studio Auto Gallery APIs.
 GEMINI_API_KEY=
 TAVILY_API_KEY=
+
+# Optional Instagram image publishing only. Not required for generation/export.
+# Use your own professional account and approved Meta publishing permissions.
+INSTAGRAM_ACCESS_TOKEN=
+INSTAGRAM_USER_ID=
+INSTAGRAM_GRAPH_VERSION=
+INSTAGRAM_LOGIN_MODE=instagram
 
 # Optional Gemini model override. Leave blank to auto-pick a compatible Flash model.
 GEMINI_MODEL=
