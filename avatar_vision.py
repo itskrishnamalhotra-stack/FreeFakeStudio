@@ -3,6 +3,7 @@ import gc
 import json
 import os
 import re
+import traceback
 import uuid
 from datetime import datetime, timezone
 from functools import lru_cache
@@ -48,35 +49,31 @@ def prepare_image(image, max_edge=MAX_EDGE):
 @lru_cache(maxsize=1)
 def _load_model():
     try:
+        import vision_runtime
+        vision_runtime.validate()
         import torch
-        from transformers import AutoModelForImageTextToText, AutoProcessor, BitsAndBytesConfig
+        from transformers import AutoModelForImageTextToText, AutoProcessor
+        quant_config = vision_runtime.quantization_config()
+        processor = AutoProcessor.from_pretrained(MODEL_ID)
+        model = AutoModelForImageTextToText.from_pretrained(
+            MODEL_ID,
+            quantization_config=quant_config,
+            device_map={"": 0},
+            dtype=torch.float16,
+            low_cpu_mem_usage=True,
+            use_safetensors=True,
+            attn_implementation="eager",
+        )
+        model.eval()
     except Exception as exc:
+        from vision_runtime import diagnostics
+        report = _write_vision_diagnostic({"context": "model-load", "error": str(exc),
+                                           "traceback": traceback.format_exc(), **diagnostics()})
         raise RuntimeError(
-            "Avatar image analysis dependencies are missing. Run the Colab launcher again "
-            "with REPAIR_INSTALL enabled so transformers, accelerate, bitsandbytes, and "
-            "sentencepiece are installed."
+            f"Avatar image analysis could not load: {exc}. Stop the notebook cell, then rerun "
+            "with UPDATE_APP enabled to check/repair the vision runtime. Your saved batch is "
+            f"preserved; resume it after startup. Diagnostic: {report or 'results/_debug'}"
         ) from exc
-
-    if not torch.cuda.is_available():
-        raise RuntimeError("Avatar image analysis needs a CUDA GPU. Use the Colab T4 runtime.")
-
-    quant_config = BitsAndBytesConfig(
-        load_in_4bit=True,
-        bnb_4bit_quant_type="nf4",
-        bnb_4bit_compute_dtype=torch.float16,
-        bnb_4bit_use_double_quant=False,
-    )
-    processor = AutoProcessor.from_pretrained(MODEL_ID)
-    model = AutoModelForImageTextToText.from_pretrained(
-        MODEL_ID,
-        quantization_config=quant_config,
-        device_map={"": 0},
-        dtype=torch.float16,
-        low_cpu_mem_usage=True,
-        use_safetensors=True,
-        attn_implementation="eager",
-    )
-    model.eval()
     cleanup_memory()
     return processor, model, torch
 

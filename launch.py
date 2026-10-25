@@ -827,16 +827,46 @@ def package_ok(module_name):
 
 def avatar_quantization_probe():
     code = (
-        "import importlib.metadata; "
-        "from packaging.version import Version; "
-        "import bitsandbytes; "
-        "from transformers import AutoModelForImageTextToText, BitsAndBytesConfig; "
-        "version = importlib.metadata.version('bitsandbytes'); "
-        "assert Version(version) >= Version('0.46.1'), version; "
-        "print('bitsandbytes=' + version)"
+        f"import sys; sys.path.insert(0, {str(DRIVE_APP)!r}); "
+        "from vision_runtime import main; main()"
     )
-    probe = subprocess.run([sys.executable, "-c", code], text=True, capture_output=True)
-    return probe.returncode == 0, (probe.stdout or probe.stderr or "unknown error").strip()
+    try:
+        probe = subprocess.run([sys.executable, "-c", code], cwd=DRIVE_APP,
+                               text=True, capture_output=True, timeout=120)
+    except subprocess.TimeoutExpired:
+        return False, "Vision CUDA NF4 validation timed out after 120 seconds"
+    return probe.returncode == 0, "\n".join(part for part in (probe.stdout, probe.stderr) if part).strip()
+
+
+def ensure_avatar_quantization(environment_restored):
+    """Repair once in a fresh process; never publish a broken vision runtime."""
+    ok, detail = avatar_quantization_probe()
+    if ok:
+        print("[dependencies] Avatar Vision: Transformers validator + CUDA NF4 test OK", flush=True)
+        return environment_restored
+    debug = WS / "results" / "_debug"
+    debug.mkdir(parents=True, exist_ok=True)
+    report = debug / "vision-dependencies.txt"
+    report.write_text(detail, encoding="utf-8")
+    print(f"[dependencies] Repairing Avatar Vision; diagnostic: {report}", flush=True)
+    # An overlay can shadow a repaired global install even when pip reports success.
+    discard_restored_environment()
+    (MANIFESTS / "python-overlay.json").unlink(missing_ok=True)
+    ok, detail = avatar_quantization_probe()
+    if not ok:
+        from vision_runtime import REQUIREMENTS
+        # Replace damaged package files/metadata without reinstalling the CUDA stack.
+        pip_install("--force-reinstall", "--no-deps", *REQUIREMENTS)
+        pip_install(*REQUIREMENTS)
+        ok, detail = avatar_quantization_probe()
+    report.write_text(detail, encoding="utf-8")
+    if not ok:
+        raise RuntimeError(
+            "Avatar Vision's 4-bit backend failed validation after automatic repair. "
+            f"No app link was published. See {report}. Saved avatars and batches are unchanged."
+        )
+    print("[dependencies] Avatar Vision repaired: Transformers validator + CUDA NF4 test OK", flush=True)
+    return False
 
 
 ENVIRONMENT_DISTRIBUTIONS = (
@@ -866,6 +896,7 @@ def runtime_requirements_digest():
         DRIVE_COMFYUI / "custom_nodes" / "ComfyUI-GGUF" / "requirements.txt",
         DRIVE_APP / "launch.py",
         DRIVE_APP / "startup_restore.py",
+        DRIVE_APP / "vision_runtime.py",
     ]
     values = {str(path.relative_to(WS)): startup_restore.file_digest(path) for path in paths}
     return startup_restore.hash_text(json.dumps(values, sort_keys=True))
@@ -1659,31 +1690,7 @@ try:
     from packaging.version import Version
     if Version(package_version("fastapi") or "0") < Version("0.115") or Version(package_version("pydantic") or "0") < Version("2.7"):
         pip_install("fastapi>=0.115,<1", "pydantic>=2.7,<3", "uvicorn>=0.30,<1", "python-multipart>=0.0.20")
-    quantization_ok, quantization_detail = avatar_quantization_probe()
-    if not quantization_ok:
-        if environment_restored:
-            print(
-                "[restore] Prepared overlay failed Avatar Vision validation; rebuilding it. "
-                f"Details: {quantization_detail[-500:]}",
-                flush=True,
-            )
-            discard_restored_environment()
-            environment_restored = False
-        pip_install(
-            "transformers>=5.13,<6",
-            "accelerate",
-            "bitsandbytes>=0.46.1",
-            "sentencepiece",
-        )
-        quantization_ok, quantization_detail = avatar_quantization_probe()
-        if not quantization_ok:
-            print(
-                "[startup warning] Avatar Vision quantization is unavailable and will be "
-                f"deferred: {quantization_detail[-500:]}",
-                flush=True,
-            )
-    else:
-        print(f"[dependencies] Avatar Vision quantization ready: {quantization_detail}", flush=True)
+    environment_restored = ensure_avatar_quantization(environment_restored)
     if not package_ok("onnxruntime"):
         pip_install("onnxruntime-gpu")
     try:
@@ -1781,6 +1788,10 @@ try:
     done("Local runtime", f"{runtime_probe} / {' / '.join(checkpoint_probes)}")
     os.environ["FFS_RUNTIME_FINGERPRINT_ID"] = runtime_fingerprint["id"]
 
+    step("Avatar Vision runtime", "Checking after ComfyUI installs and local restore")
+    environment_restored = ensure_avatar_quantization(environment_restored)
+    done("Avatar Vision runtime", "Transformers + CUDA NF4 verified")
+
     comfy_report = write_debug_report("comfy_runtime")
     if comfy_report:
         step("Diagnostics", f"ComfyUI report: {comfy_report.name}", "ok")
@@ -1808,6 +1819,11 @@ try:
             "torchsde",
             "transformers>=5.13,<6",
         )
+
+    # The app imports this overlay, not necessarily the global pip installation.
+    step("Avatar Vision runtime", "Checking final application package paths")
+    environment_restored = ensure_avatar_quantization(environment_restored)
+    done("Avatar Vision runtime", "Final application environment verified")
 
     step("GPU", "Checking")
     gpu_name, gpu_memory_mib = gpu_summary()

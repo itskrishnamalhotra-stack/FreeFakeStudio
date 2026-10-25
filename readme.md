@@ -417,6 +417,25 @@ repair are required merely to get these code changes.
 The legacy `FFS_AVATAR_ANALYZER_STRICT=0` flag no longer substitutes mock identity
 specifications after a production failure; mocks are limited to development mode.
 
+If a batch stops with **4-bit quantization requires bitsandbytes**, stop the
+notebook cell and rerun with `UPDATE_APP=True`, `REPAIR_INSTALL=False` and the
+same workspace/keys path. The launcher now checks Transformers' actual 4-bit
+quantizer and a tiny CUDA NF4 round-trip, including after ComfyUI installs and
+after restoring/building the final Python overlay. This check loads no model.
+An invalid overlay is discarded; damaged vision packages are repaired once,
+without force-reinstalling their CUDA/PyTorch dependencies or deleting models.
+The dependency report is saved to `results/_debug/vision-dependencies.txt`.
+If repair still fails, startup stops before publishing the interface. Explicitly
+requested vision preload/warmup failures also stop startup instead of being
+silently deferred; their traceback is in `results/_debug/vision-startup.txt`.
+
+After startup succeeds, open the same avatar, select the interrupted gallery
+batch and click **Resume batch**. Saved references, prepared prompts and generated
+images are retained; an image awaiting vision validation is checked again rather
+than generated again. Do not start a new batch to recover the old one. Instagram
+login/rate-limit responses and non-image download rejections are separate source
+download failures; installing bitsandbytes does not make those URLs downloadable.
+
 Guided setup uses FLUX and the local SmolVLM analyzer without requiring Gemini or
 Tavily keys:
 

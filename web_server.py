@@ -36,21 +36,24 @@ def prepare_models():
             if flag("FFS_WARMUP_ENABLED"):
                 engine.warmup(int(os.environ.get("FFS_WARMUP_SIZE", "256")))
                 warmup = "complete"
-            if flag("FFS_PRELOAD_AVATAR_VISION"):
-                try:
-                    import avatar_vision
-                    if flag("FFS_WARMUP_ENABLED"):
-                        avatar_vision.warmup(128)
-                        vision = "complete"
-                    else:
-                        avatar_vision.preload()
-                        vision = "loaded"
-                except Exception:
-                    vision = "deferred"
-                    debug = Path(workspace.get_save_dir()) / "_debug"
-                    debug.mkdir(parents=True, exist_ok=True)
-                    (debug / "vision-startup.txt").write_text(traceback.format_exc(), encoding="utf-8")
-                    print("Vision preload deferred; details saved in results/_debug/vision-startup.txt", flush=True)
+        if flag("FFS_PRELOAD_AVATAR_VISION"):
+            try:
+                import avatar_vision
+                if flag("FFS_WARMUP_ENABLED"):
+                    avatar_vision.warmup(128)
+                    vision = "complete"
+                else:
+                    avatar_vision.preload()
+                    vision = "loaded"
+            except Exception as exc:
+                vision = "failed"
+                debug = Path(workspace.get_save_dir()) / "_debug"
+                debug.mkdir(parents=True, exist_ok=True)
+                (debug / "vision-startup.txt").write_text(traceback.format_exc(), encoding="utf-8")
+                raise RuntimeError(
+                    f"Avatar Vision preload failed: {exc}. No app link was published. "
+                    "Details: results/_debug/vision-startup.txt"
+                ) from exc
         state(ready=True, phase="model-ready", model=model_manager.get_current_model(), warmup=warmup, vision=vision)
     except Exception as exc:
         state(ready=False, phase="startup-failed", model=model_manager.get_current_model(), warmup="failed", vision=vision, error=str(exc))
