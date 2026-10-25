@@ -75,18 +75,23 @@ Version the library when changing routing or classification semantics. Text-only
 revisions use `PROMPT_VERSION` and are saved in each new plan as `prompt_version`;
 they do not invalidate compatible source classifications or force model downloads.
 
-In automatic mode, **Additional instructions (optional)** starts blank. The
-automatic profile is marked pending, not displayed as the old generic prompt.
-The actual assembled prompt is recorded after analysis. You can explicitly select
-one of the 15 profiles if automatic recognition is wrong, preview its known text,
-and choose **Use as custom prompt** to edit it yourself.
+The **Prompt profile** dropdown offers **Automatic**, the 15 named profiles and
+**Custom**. Only Automatic runs source classification and enhancement scene/focus
+review. It is marked pending until analysis determines the profile. Choosing a
+named profile skips those analysis calls and uses that profile directly, without
+inferred focus instructions. **Additional instructions (optional)** starts blank
+and is appended to the selected profile in either Automatic or named-profile mode.
+Preview a named profile and choose **Use as custom prompt** to edit a copy,
+including any additional instructions already entered.
 
-Switch **Automatic image-aware prompt** off to use **Custom enhancement prompt**.
-It starts blank and must be filled. One-pass custom mode sends that exact text
+Choose **Custom** to use **Custom enhancement prompt**. It starts blank and must
+be filled. One-pass custom mode sends that exact text
 without scene analysis, automatic templates or hidden additional instructions.
 HD tile passes also receive their required crop/context prefix; it is recorded
 under sampling diagnostics. Automatic and custom drafts do not mix in requests.
 Opening another image resets text, profile selection and sampling defaults.
+These prompt controls do not disable the separate avatar identity/quality validator
+for avatar outputs. Its checks remain governed by the avatar quality policy.
 
 Start a new enhancement after updating: resuming an existing job keeps its saved
 prompt, source and generated image rather than silently rerunning it.

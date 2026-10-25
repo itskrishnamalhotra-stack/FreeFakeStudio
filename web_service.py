@@ -350,13 +350,17 @@ class StudioService:
             raise ValueError("The source image changed since this enhancement started. Start a new enhancement.")
         if not plan:
             if args.get("adaptive_prompt", True) and not context.saved.get("image"):
-                context.emit("Analyzing source for an image-aware reconstruction prompt")
-                if not model_manager.DEV_MODE:
-                    app_settings.prepare_vision(self.root)
-                analysis = enhancement_analysis.analyze(source, self.root, mock=model_manager.DEV_MODE,
-                    check=context.check, emit=context.emit)
+                profile = args.get("enhancement_profile", "auto")
+                if profile == "auto":
+                    context.emit("Analyzing source for an image-aware reconstruction prompt")
+                    if not model_manager.DEV_MODE:
+                        app_settings.prepare_vision(self.root)
+                    analysis = enhancement_analysis.analyze(source, self.root, mock=model_manager.DEV_MODE,
+                        check=context.check, emit=context.emit)
+                else:
+                    analysis = {"status": "disabled", "reason": "manual_profile"}
                 instructions = args.get("additional_instructions", "").strip() or args["reconstruction_prompt"]
-                plan = enhancement_analysis.plan(analysis, instructions, args.get("enhancement_profile", "auto"))
+                plan = enhancement_analysis.plan(analysis, instructions, profile)
             else:
                 plan = {"automatic": False, "selection": "custom", "analysis": {"status": "legacy_unrecorded" if context.saved.get("image") else "disabled"}, "prompt": args["reconstruction_prompt"]}
             plan.update(source_sha256=source_hash, requested_prompt=plan.get("user_instructions", args["reconstruction_prompt"]),

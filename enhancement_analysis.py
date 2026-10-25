@@ -249,7 +249,8 @@ def plan(analysis, instructions, profile_override="auto"):
     selected = (profile_override if profile_override != "auto" else
                 profiles.select(analysis) if analysis.get("status") in {"complete", "partial"} else "general")
     profile = profiles.PROFILES[selected]
-    focus = profiles.focus_rules(analysis)
+    automatic = profile_override == "auto"
+    focus = profiles.focus_rules(analysis) if automatic else []
     parts = [profile["prompt"]]
     custom = str(instructions).strip()
     if custom and custom != PHOTO_PROMPT:
@@ -258,7 +259,7 @@ def plan(analysis, instructions, profile_override="auto"):
     return {"version": VERSION, "prompt_version": profiles.PROMPT_VERSION, "analysis": analysis, "profile_id": selected, "profile_name": profile["name"],
             "selection": "automatic" if profile_override == "auto" else "manual_override",
             "user_instructions": custom if custom != PHOTO_PROMPT else "",
-            "focus_rules": focus, "prompt": " ".join(parts), "automatic": True}
+            "focus_rules": focus, "prompt": " ".join(parts), "automatic": automatic}
 
 
 def review_texture(image, analysis, mock=False, check=lambda: None, ask=None):

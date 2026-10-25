@@ -257,6 +257,7 @@ class StudioTests(unittest.TestCase):
         engine = model_manager.ensure_model(model_manager.FLUX_MODEL_NAME)
         prompt = "Refine only the existing black fabric stitching. Keep the face and background unchanged."
         with patch("enhancement_analysis.analyze", side_effect=AssertionError("Custom must bypass analysis")), \
+             patch("enhancement_analysis.review_texture", side_effect=AssertionError("Custom must bypass scene review")), \
              patch.object(engine, "reconstruct_reference", wraps=engine.reconstruct_reference) as native:
             enhanced = self.job("enhance", chat_id=generated["payload"]["chat_id"], image=generated["result"]["images"][0],
                                 adaptive_prompt=False, reconstruction_prompt=prompt)
@@ -293,17 +294,31 @@ class StudioTests(unittest.TestCase):
             self.assertEqual(row["status"], "completed", row)
         self.assertEqual(native.call_args.args[2], 0)
 
-    def test_automatic_override_and_extra_instructions_are_saved_without_generic_default(self):
-        generated = self.job("generate", new_chat=True, prompt="Automatic override source")
+    def test_all_manual_profiles_skip_analysis_and_append_extra_instructions(self):
+        import enhancement_profiles
+        generated = self.job("generate", new_chat=True, prompt="Manual profile source")
+        for profile_id, profile in enhancement_profiles.PROFILES.items():
+            with self.subTest(profile=profile_id), \
+                 patch("enhancement_analysis.analyze", side_effect=AssertionError("Manual selection must not analyze")), \
+                 patch("enhancement_analysis.review_texture", side_effect=AssertionError("Manual selection must not run scene review")):
+                enhanced = self.job("enhance", chat_id=generated["payload"]["chat_id"], image=generated["result"]["images"][0],
+                                    enhancement_profile=profile_id, additional_instructions="Keep the cafe background soft.")
+            plan = enhanced["checkpoint"]["enhancement_plan"]
+            self.assertEqual(plan["profile_id"], profile_id)
+            self.assertEqual(plan["selection"], "manual_override")
+            self.assertFalse(plan["automatic"])
+            self.assertEqual(plan["analysis"]["status"], "disabled")
+            self.assertEqual(plan["focus_rules"], [])
+            self.assertEqual(plan["prompt"], profile["prompt"] + " Additional reconstruction instructions: Keep the cafe background soft.")
+            self.assertEqual(plan["requested_prompt"], "Keep the cafe background soft.")
+            self.assertEqual(enhanced["checkpoint"]["diagnostics"]["texture_review"]["status"], "disabled")
+
+    def test_manual_profile_without_extra_instructions_is_verbatim(self):
+        import enhancement_profiles
+        generated = self.job("generate", new_chat=True, prompt="Manual exact source")
         enhanced = self.job("enhance", chat_id=generated["payload"]["chat_id"], image=generated["result"]["images"][0],
-                            enhancement_profile="female_body", additional_instructions="Keep the cafe background soft.")
-        plan = enhanced["checkpoint"]["enhancement_plan"]
-        self.assertEqual(plan["profile_id"], "female_body")
-        self.assertEqual(plan["selection"], "manual_override")
-        self.assertEqual(plan["prompt"].count("Keep the cafe background soft."), 1)
-        self.assertEqual(plan["requested_prompt"], "Keep the cafe background soft.")
-        import avatar_enhance
-        self.assertNotIn(avatar_enhance.PHOTO_PROMPT, plan["prompt"])
+                            enhancement_profile="female_body")
+        self.assertEqual(enhanced["checkpoint"]["enhancement_plan"]["prompt"], enhancement_profiles.PROFILES["female_body"]["prompt"])
 
     def test_invalid_enhancement_modes_fail_before_job_creation(self):
         for extra in ({"enhancement_profile": "bogus"}, {"steps": 20},

@@ -15,7 +15,8 @@ async (page) => {
   await page.getByAltText('Generated image', {exact:true}).hover();
   await page.getByRole('button', {name:'Enhance',exact:true}).first().click();
   const dialog = page.getByRole('dialog', {name:'Enhance image',exact:true});
-  if (!await dialog.getByRole('checkbox', {name:'Automatic image-aware prompt',exact:true}).isChecked()) throw new Error('Automatic planning should default on');
+  if (await dialog.getByRole('combobox', {name:'Prompt profile',exact:true}).inputValue() !== 'auto') throw new Error('Automatic planning should default on');
+  if (await dialog.getByRole('checkbox', {name:'Automatic image-aware prompt',exact:true}).count()) throw new Error('Redundant automatic checkbox still displayed');
   if (!await dialog.getByRole('checkbox', {name:'Preserve source lighting and colors',exact:true}).isChecked()) throw new Error('Source lighting preservation should default on');
   const sampling = dialog.getByRole('combobox', {name:'Sampling',exact:true});
   if (await sampling.inputValue() !== 'reference') throw new Error('Native reference sampling should default on');
