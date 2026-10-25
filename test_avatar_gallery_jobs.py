@@ -121,6 +121,43 @@ class APIRetryTests(unittest.TestCase):
         self.assertFalse(gallery.reference_passes(approval(face_visible=False), require_face=True))
         self.assertFalse(gallery.reference_passes(approval(image_clear=False)))
 
+    def test_gender_reference_gate_requires_explicit_matching_policy_and_verdict(self):
+        for gender in ("female", "male"):
+            with self.subTest(gender=gender):
+                self.assertTrue(gallery.reference_passes(approval(avatar_gender=gender, presentation_match="match"), avatar_gender=gender))
+                for verdict in ("mismatch", "unclear", None, True):
+                    self.assertFalse(gallery.reference_passes(approval(avatar_gender=gender, presentation_match=verdict), avatar_gender=gender))
+                self.assertFalse(gallery.reference_passes(approval(presentation_match="match"), avatar_gender=gender))
+                other = "male" if gender == "female" else "female"
+                self.assertFalse(gallery.reference_passes(approval(avatar_gender=other, presentation_match="match"), avatar_gender=gender))
+        self.assertTrue(gallery.reference_passes(approval(), avatar_gender="any"))
+        with self.assertRaisesRegex(ValueError, "Choose Female"):
+            gallery.reference_presentation_matches(approval(), "invalid")
+
+    def test_gender_is_used_in_search_without_claiming_real_person_gender_identity(self):
+        with mock.patch.object(gallery, "gemini_json", return_value={"search_query": "adult women's editorial portraits"}) as call:
+            gallery._search_query("Cafe", avatar_gender="female")
+        prompt = call.call_args.args[0]
+        self.assertIn("user-selected gender is female", prompt)
+        self.assertIn("feminine", prompt)
+        self.assertIn("not the real person's gender identity", prompt)
+
+    def test_visual_check_saves_gender_policy_and_rejects_high_scoring_mismatch(self):
+        checks = [approval(index=1, presentation_match="mismatch", presentation_reason="Masculine main-subject presentation"),
+                  approval(index=2, presentation_match="match", presentation_reason="Suitable feminine presentation"),
+                  approval(index=3, presentation_match="unclear", presentation_reason="Subject too obscured")]
+        events = []
+        with mock.patch.object(gallery, "gemini_json", return_value={"results": checks}) as call:
+            selected = gallery._validate_references([{"id": str(n)} for n in (1, 2, 3)], avatar_gender="female",
+                on_result=lambda row, check, accepted: events.append((row["id"], check["avatar_gender"], accepted)))
+        self.assertEqual(events, [("1", "female", False), ("2", "female", True), ("3", "female", False)])
+        self.assertEqual([row["id"] for row in selected], ["2"])
+        self.assertIn("presentation_match", call.call_args.args[1]["properties"]["results"]["items"]["required"])
+
+    def test_missing_presentation_answer_cannot_pass_a_restricted_batch(self):
+        with mock.patch.object(gallery, "gemini_json", return_value={"results": [approval()]}):
+            self.assertEqual(gallery._validate_references([{}], avatar_gender="female"), [])
+
     def test_validation_reports_rejected_references_instead_of_discarding_findings(self):
         checks = [approval(index=1), approval(index=2, accept=False, image_clear=False, reason="Too blurry")]
         events = []
@@ -258,6 +295,31 @@ class GalleryJobTests(unittest.TestCase):
         self.execute()
         self.assertEqual(sum(call[0] == "generate" for call in self.calls), 3)
 
+    def test_batch_gender_is_saved_and_not_changed_by_resume_form_values(self):
+        with self.assertRaisesRegex(RuntimeError, "Paused"):
+            self.execute(quantity=1, avatar_gender="female", make_prompt=mock.Mock(side_effect=RuntimeError("Paused")))
+        batch_id = jobs.load_batch(self.root, self.avatar_id)["id"]
+        prompt = mock.Mock(side_effect=self.prompt)
+        self.execute(avatar_gender="male", make_prompt=prompt)
+        saved = jobs.load_batch(self.root, self.avatar_id, batch_id)
+        self.assertEqual(saved["avatar_gender"], "female")
+        self.assertEqual(prompt.call_args.args[2]["avatar_gender"], "female")
+        self.assertEqual(studio.load_gallery_items(self.root, self.avatar_id)[0]["avatar_gender"], "female")
+        self.execute(new_batch=True, quantity=1, avatar_gender="male")
+        self.assertEqual(jobs.load_batch(self.root, self.avatar_id)["avatar_gender"], "male")
+        self.assertEqual(jobs.load_batch(self.root, self.avatar_id, batch_id)["avatar_gender"], "female")
+
+    def test_legacy_batch_without_gender_keeps_existing_queue_on_resume(self):
+        with self.assertRaisesRegex(RuntimeError, "Paused"):
+            self.execute(quantity=1, make_prompt=mock.Mock(side_effect=RuntimeError("Paused")))
+        saved = jobs.load_batch(self.root, self.avatar_id)
+        saved.pop("avatar_gender")
+        studio._atomic_json(jobs._batch_path(self.root, self.avatar_id, saved["id"]), saved)
+        prompt = mock.Mock(side_effect=self.prompt)
+        self.execute(avatar_gender="female", make_prompt=prompt)
+        self.assertEqual(prompt.call_args.args[2]["avatar_gender"], "any")
+        self.discover.assert_called_once()
+
     def test_repairs_are_deferred_until_first_attempts_for_every_reference(self):
         validations = iter([{"pass": False, "reasons": ["Wrong pose"]}, {"pass": True}, {"pass": True}, {"pass": True}])
         self.execute(validate=lambda *args: next(validations))
@@ -392,6 +454,34 @@ class GalleryJobTests(unittest.TestCase):
         rows = jobs.load_catalog(self.root, self.avatar_id)["references"]
         self.assertEqual(rows[0]["reason"], "Visible face required")
         self.assertEqual(rows[1]["state"], "approved")
+
+    def test_real_discovery_uses_saved_gender_and_keeps_mismatch_reason(self):
+        candidates = [{"url": f"https://example.test/{index}.jpg"} for index in (1, 2)]
+        checks = [{"results": [approval(index=1, presentation_match="mismatch", presentation_reason="Masculine main subject"),
+                               approval(index=2, presentation_match="match", presentation_reason="Suitable reference")]}]
+        _, search = self.real_discovery(candidates, checks, quantity=1, avatar_gender="female")
+        self.assertEqual(search.call_args.kwargs["avatar_gender"], "female")
+        rows = jobs.load_catalog(self.root, self.avatar_id)["references"]
+        self.assertEqual(rows[0]["state"], "rejected")
+        self.assertIn("presentation mismatch for female avatar", rows[0]["reason"])
+        self.assertEqual(rows[1]["state"], "approved")
+
+    def test_previously_approved_reference_without_matching_policy_is_not_committed(self):
+        saved = jobs._create_batch(self.root, self.avatar_id, 1, "864x1152 (3:4)", "editorial", False, avatar_gender="female")
+        token = jobs._batch_scope.set((str(Path(self.root).resolve()), self.avatar_id, saved["id"]))
+        try:
+            rows, _ = self.references(self.avatar_id, 1, "editorial")
+            jobs.add_references(self.root, self.avatar_id, rows, "editorial")
+            reference = jobs.batch_references(self.root, self.avatar_id, saved)[0]
+            jobs.update_reference(self.root, self.avatar_id, reference["id"], state="approved", validation=approval())
+            self.assertEqual(jobs._approved(self.root, self.avatar_id, saved), [])
+            with mock.patch.object(gallery, "gemini_json", return_value={"results": [approval(presentation_match="match", presentation_reason="Suitable")]}), \
+                    mock.patch.object(gallery, "_search_query") as search:
+                list(jobs._discover(self.root, self.avatar_id, saved))
+            search.assert_not_called()
+            self.assertEqual(len(jobs._approved(self.root, self.avatar_id, saved)), 1)
+        finally:
+            jobs._batch_scope.reset(token)
 
     def test_cleaning_503_preserves_downloaded_images_and_does_not_search_on_resume(self):
         candidates = [{"url": f"https://example.test/{index}.jpg"} for index in (1, 2)]

@@ -286,7 +286,8 @@ class StudioService:
             args.get("require_face", False), self.gallery_prompt, make, self.validate, repair,
             mock_discover=self.mock_references if model_manager.DEV_MODE else None,
             batch_id=context.saved.get("batch_id") or args.get("batch_id") or (context.id[:12] if args.get("new_batch") else None),
-            new_batch=args.get("new_batch", False), name=args.get("batch_name", ""))
+            new_batch=args.get("new_batch", False), name=args.get("batch_name", ""),
+            avatar_gender=args.get("avatar_gender", "any"))
         try:
             previous_phase = None
             for row in iterator:

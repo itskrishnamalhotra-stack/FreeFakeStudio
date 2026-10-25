@@ -34,6 +34,7 @@ export function GalleryBatches({ batches, busy, open, resume, manage }: Props) {
           <span className="status">{batch.archived ? "Archived" : batch.status.replaceAll("_", " ")}</span>
         </div>
         <p className="muted batch-meta">{batch.created_at} · {batch.id}</p>
+        <p className="muted">{batch.avatar_gender === "female" ? "Female avatar" : batch.avatar_gender === "male" ? "Male avatar" : batch.avatar_gender === "any" ? "No gender restriction" : "Gender not specified"}</p>
         {batch.theme && <p>{batch.theme}</p>}
         <div className="batch-counts">
           {[["Found", batch.counts.found], ["Approved", batch.counts.approved], ["Rejected", batch.counts.rejected], ["Generated", `${batch.counts.generated}/${batch.quantity}`], ["Need review", batch.counts.review], ["Pending", batch.counts.pending]].map(([label, value]) => <span key={label}><strong>{value}</strong> {label}</span>)}

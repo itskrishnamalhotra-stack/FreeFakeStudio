@@ -368,6 +368,20 @@ class StudioTests(unittest.TestCase):
         self.assertGreaterEqual(snapshot["counts"]["generated"], 2)
         self.assertEqual(self.client.get(f"/api/avatars/{avatar_id}/gallery").json()["total"], 2)
 
+    def test_batch_gender_round_trips_through_api_and_persists_independently(self):
+        avatar_id = self.ready()
+        first = self.job("gallery", avatar_id=avatar_id, new_batch=True, quantity=1, avatar_gender="female")
+        second = self.job("gallery", avatar_id=avatar_id, new_batch=True, quantity=1, avatar_gender="male")
+        self.assertEqual(first["payload"]["avatar_gender"], "female")
+        self.assertEqual(second["payload"]["avatar_gender"], "male")
+        batches = {row["id"]: row for row in self.client.get(f"/api/avatars/{avatar_id}/gallery/batches").json()["items"]}
+        self.assertEqual(batches[first["payload"]["batch_id"]]["avatar_gender"], "female")
+        self.assertEqual(batches[second["payload"]["batch_id"]]["avatar_gender"], "male")
+        response = self.client.post("/api/jobs", json={"kind": "gallery", "avatar_id": avatar_id, "new_batch": True,
+            "avatar_gender": "invalid"}, headers={"Idempotency-Key": "invalid-batch-gender"})
+        self.assertEqual(response.status_code, 422)
+        self.assertEqual(len(self.client.get(f"/api/avatars/{avatar_id}/gallery/batches").json()["items"]), 2)
+
     def test_batch_management_and_scoped_gallery_resources(self):
         avatar_id = self.ready()
         base = f"/api/avatars/{avatar_id}"

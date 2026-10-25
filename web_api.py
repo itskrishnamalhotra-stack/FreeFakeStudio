@@ -111,6 +111,7 @@ class JobRequest(StrictModel):
     batch_id: str | None = None
     new_batch: bool = False
     batch_name: str = Field(default="", max_length=120)
+    avatar_gender: Literal["female", "male", "any"] = "any"
     chat_id: str | None = None
     new_chat: bool = False
     item_id: str | None = None
@@ -847,7 +848,7 @@ def create_app(root=None, persist=None, token=None):
                     service.ready_avatar(body.avatar_id)
                     batch_id = hashlib.sha256((body.avatar_id + idempotency_key).encode()).hexdigest()[:12]
                     batch = avatar_gallery_jobs._create_batch(str(root), body.avatar_id, body.quantity, body.aspect,
-                        body.theme, body.require_face, body.batch_name, batch_id)
+                        body.theme, body.require_face, body.batch_name, batch_id, body.avatar_gender)
                     avatar_gallery_jobs.update_batch(str(root), body.avatar_id, batch_id=batch_id, status="pending", phase="pending")
                     args["batch_id"] = batch["id"]
             job = jobs.submit(body.kind, args, idempotency_key)

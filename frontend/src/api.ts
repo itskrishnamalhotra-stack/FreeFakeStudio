@@ -67,7 +67,9 @@ export type GalleryItem = {
   manual_review?: unknown;
   validation?: unknown;
 };
+export type AvatarGender = "female" | "male" | "any";
 export type GalleryBatch = {
+  avatar_gender?: AvatarGender;
   id: string;
   name: string;
   theme: string;

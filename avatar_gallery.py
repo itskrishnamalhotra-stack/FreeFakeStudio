@@ -243,7 +243,35 @@ def gemini_json(prompt, schema, images=None, max_output_tokens=2400):
     return _extract_json(response.json())
 
 
-def _search_query(theme):
+def normalize_avatar_gender(value="any"):
+    if value not in {"female", "male", "any"}:
+        raise ValueError("Choose Female, Male, or No gender restriction for the batch")
+    return value
+
+
+def reference_presentation_matches(check, gender="any"):
+    gender = normalize_avatar_gender(gender)
+    return gender == "any" or (
+        check.get("avatar_gender") == gender and check.get("presentation_match") == "match"
+    )
+
+
+def reference_presentation_instruction(gender="any"):
+    gender = normalize_avatar_gender(gender)
+    if gender == "any":
+        return "No gender or presentation restriction was requested for this batch."
+    presentation = "feminine" if gender == "female" else "masculine"
+    return (
+        f"The fictional avatar's user-selected gender is {gender}. Find references suitable for "
+        f"that avatar, with {presentation} main-subject presentation and styling. "
+        "Assess only visible reference suitability, not the real person's gender identity or sex. "
+        "Do not rely on names, captions or stereotypes about a single clothing item. "
+        "Opposite-presentation subjects, mixed groups without one clear suitable main subject, "
+        "and uncertain presentation must not pass this batch's reference check."
+    )
+
+
+def _search_query(theme, avatar_gender="any"):
     schema = {
         "type": "object",
         "properties": {
@@ -256,6 +284,8 @@ def _search_query(theme):
 Create one broad web image search query for finding clearly adult fashion and pose
 reference photographs for an AI avatar gallery. The requested gallery theme is:
 {theme or 'varied editorial fashion and lifestyle portraits'}
+
+{reference_presentation_instruction(avatar_gender)}
 
 The references should show a useful outfit, pose, or composition. Prefer full or
 mostly full body photographs. Exclude minors, age-ambiguous people, product-only
@@ -380,7 +410,8 @@ def _download_candidate(candidate, output_dir):
     }
 
 
-def _validate_references(candidates, on_result=None, require_face=False):
+def _validate_references(candidates, on_result=None, require_face=False, avatar_gender="any"):
+    gender = normalize_avatar_gender(avatar_gender)
     schema = {
         "type": "object",
         "properties": {
@@ -411,6 +442,13 @@ def _validate_references(candidates, on_result=None, require_face=False):
         },
         "required": ["results"],
     }
+    if gender != "any":
+        item_schema = schema["properties"]["results"]["items"]
+        item_schema["properties"].update({
+            "presentation_match": {"type": "string", "enum": ["match", "mismatch", "unclear"]},
+            "presentation_reason": {"type": "string"},
+        })
+        item_schema["required"].extend(["presentation_match", "presentation_reason"])
     prompt = """
 Evaluate every numbered candidate independently as a reference for generating a new
 AI avatar image. Accept only a clearly adult person with a useful visible outfit,
@@ -422,6 +460,12 @@ or pose. Set image_clear only when those visual details are readable. Record
 face_visible separately; do not mistake an obscured face for a blank photograph.
 Return one result for every supplied candidate and JSON only.
     """.strip()
+    prompt += "\n\n" + reference_presentation_instruction(gender)
+    if gender != "any":
+        prompt += (
+            " Return presentation_match as match only when visibly suitable for this requirement; "
+            "otherwise return mismatch or unclear, explain in presentation_reason, and set accept=false."
+        )
     validations = {}
 
     def validate_batch(batch, offset):
@@ -438,10 +482,11 @@ Return one result for every supplied candidate and JSON only.
                     local_index = int(item["index"]) - 1
                     if not 0 <= local_index < len(batch):
                         continue
+                    item = {**item, "avatar_gender": gender}
                     validations[offset + local_index] = item
                     received.add(local_index)
                     if on_result:
-                        on_result(batch[local_index], item, reference_passes(item, require_face))
+                        on_result(batch[local_index], item, reference_passes(item, require_face, gender))
                 except (KeyError, TypeError, ValueError):
                     continue
             if len(received) != len(batch):
@@ -458,14 +503,14 @@ Return one result for every supplied candidate and JSON only.
     accepted = []
     for index, candidate in enumerate(candidates):
         check = validations.get(index, {})
-        passes = reference_passes(check, require_face)
+        passes = reference_passes(check, require_face, gender)
         if passes:
             accepted.append({**candidate, "validation": check})
     accepted.sort(key=lambda item: int(item["validation"].get("score", 0)), reverse=True)
     return accepted
 
 
-def reference_passes(check, require_face=False):
+def reference_passes(check, require_face=False, avatar_gender="any"):
     return (
         check.get("accept") is True and int(check.get("score", 0)) >= 68
         and int(check.get("adult_confidence", 0)) >= 85
@@ -473,6 +518,7 @@ def reference_passes(check, require_face=False):
         and check.get("outfit_or_pose_visible") is True and check.get("person_large_enough") is True
         and check.get("major_obstruction") is False and check.get("image_clear") is True
         and (not require_face or check.get("face_visible") is True)
+        and reference_presentation_matches(check, avatar_gender)
     )
 
 
@@ -571,6 +617,9 @@ Gallery theme: {theme or 'varied editorial lifestyle'}
 Reference description: {reference.get('description') or reference.get('title') or 'visual reference'}
 Face identity notes: {face_summary}
 Body identity notes: {body_summary}
+User-selected avatar gender for this batch: {normalize_avatar_gender(reference.get('avatar_gender', 'any'))}.
+When specified as female or male, explicitly preserve that avatar gender in the
+generation prompt; never copy the external reference person's identity or physique.
 
 Inspect the attached selected reference image, rather than relying only on its
 caption. Describe its visible outfit, pose, framing and setting as appropriate

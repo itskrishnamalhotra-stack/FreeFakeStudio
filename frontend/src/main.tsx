@@ -69,6 +69,7 @@ import {
   GalleryPage,
   ResourcePage,
   GalleryBatch,
+  AvatarGender,
 } from "./api";
 import "./styles.css";
 import { InfluencerWorkspace } from "./InfluencerWorkspace";
@@ -332,6 +333,7 @@ function App() {
     [batchOpen, setBatchOpen] = useState(false),
     [batchManagerOpen, setBatchManagerOpen] = useState(false),
     [batchName, setBatchName] = useState(""),
+    [batchGender, setBatchGender] = useState<AvatarGender | "">(""),
     [batches, setBatches] = useState<GalleryBatch[]>([]),
     [batchQuantity, setBatchQuantity] = useState(20),
     [batchTheme, setBatchTheme] = useState(""),
@@ -1792,7 +1794,7 @@ function App() {
             <button
               className="primary"
               disabled={busy || !avatar?.body_locked}
-              onClick={() => {setBatchName(""); setBatchOpen(true);}}
+              onClick={() => {setBatchName(""); setBatchGender(""); setBatchOpen(true);}}
             >
               <Plus size={16} />
               Create batch
@@ -3544,7 +3546,7 @@ function App() {
         )}
         {batchManagerOpen && <Modal title="Gallery batches" wide onClose={() => setBatchManagerOpen(false)}>
           <div className="settings-content">
-            <button className="primary" disabled={busy || !avatar?.body_locked} onClick={() => {setBatchManagerOpen(false); setBatchName(""); setBatchOpen(true);}}><Plus size={16} /> Create batch</button>
+            <button className="primary" disabled={busy || !avatar?.body_locked} onClick={() => {setBatchManagerOpen(false); setBatchName(""); setBatchGender(""); setBatchOpen(true);}}><Plus size={16} /> Create batch</button>
             <GalleryBatches batches={batches} busy={busy} open={(id) => {selectBatch(id); setBatchManagerOpen(false);}}
               resume={resumeBatch} manage={async (id, operation, name) => {
                 try {
@@ -3558,6 +3560,14 @@ function App() {
           <Modal title="Gallery batch" onClose={() => setBatchOpen(false)}>
             <div className="settings-content">
               <Field label="Batch name"><input value={batchName} onChange={(e) => setBatchName(e.target.value)} maxLength={120} /></Field>
+              <Field label="Avatar gender">
+                <select aria-label="Avatar gender" required value={batchGender} onChange={(e) => setBatchGender(e.target.value as AvatarGender)}>
+                  <option value="" disabled>Select gender</option>
+                  <option value="female">Female</option>
+                  <option value="male">Male</option>
+                  <option value="any">No gender restriction</option>
+                </select>
+              </Field>
               <Range
                 label="Photographs"
                 value={batchQuantity}
@@ -3583,14 +3593,16 @@ function App() {
               </label>
               <button
                 className="primary"
-                disabled={busy}
+                disabled={busy || !batchGender}
                 onClick={async () => {
+                  if (!batchGender) return;
                   const job = await action(
                     {
                       kind: "gallery",
                       avatar_id: avatarId,
                       new_batch: true,
                       batch_name: batchName,
+                      avatar_gender: batchGender,
                       quantity: batchQuantity,
                       aspect,
                       theme: batchTheme,

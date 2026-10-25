@@ -554,6 +554,15 @@ outfit/pose visibility. **Require visible face** is optional and off by default:
 a hidden face can still provide a useful clothing or pose reference. These checks
 are estimates, so inspect their findings and generated results yourself.
 
+In **Create batch**, explicitly choose **Avatar gender**: Female, Male, or
+No gender restriction. The selection is saved per batch, shown in the batch
+manager, and used for search queries, reference suitability checks and generation
+prompts. Restricted batches require a confident visible-presentation match;
+mismatched, unclear or missing assessments do not pass solely because image
+quality is high. This checks reference suitability, not a real person's gender
+identity. Results are model estimates, not guarantees. Older batches retain their
+original unrestricted behavior; create a new batch to use the new selection.
+
 Approved references are committed to a batch, and every prompt is saved before
 FLUX starts generating. Each saved image is checked with SmolVLM. Prompt repairs
 through Gemini happen only after all committed references have their first image.
@@ -563,7 +572,7 @@ Temporary Gemini/Tavily connection errors, HTTP 408, 429, and 5xx responses rece
 up to three retries with backoff and jitter. Authentication/configuration errors
 are not retried. If retries fail, use **Resume batch**: saved prompts, completed
 images, pending visual checks, and remaining references are reused. A resumed
-batch retains its original theme, quantity, aspect, and face requirement. **Stop**
+batch retains its original theme, quantity, aspect, gender selection, and face requirement. **Stop**
 preserves the batch; an in-progress inference/API request may finish first.
 
 The avatar's `gallery/references/catalog.json` retains findings and rejection

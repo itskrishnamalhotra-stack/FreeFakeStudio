@@ -246,15 +246,18 @@ def _available(save_dir, avatar_id, job):
 def _approved(save_dir, avatar_id, job):
     return [row for row in _available(save_dir, avatar_id, job)
             if row.get("state") == "approved" and os.path.isfile(row.get("path") or "")
+            and gallery.reference_presentation_matches(row.get("validation") or {}, job.get("avatar_gender", "any"))
             and (not job["require_face"] or (row.get("validation") or {}).get("face_visible") is True)]
 
 
-def _create_batch(save_dir, avatar_id, quantity, aspect, theme, require_face, name="", batch_id=None):
+def _create_batch(save_dir, avatar_id, quantity, aspect, theme, require_face, name="", batch_id=None, avatar_gender="any"):
+    avatar_gender = gallery.normalize_avatar_gender(avatar_gender)
     avatar = studio.load_avatar(save_dir, avatar_id)
     job = {"version": 2, "id": _check_batch_id(batch_id) if batch_id else uuid.uuid4().hex[:12], "avatar_id": avatar_id,
            "name": str(name or theme or "Untitled batch").strip()[:120], "archived": False,
            "status": "running", "phase": "finding", "quantity": max(1, min(20, int(quantity))),
            "aspect": aspect, "theme": str(theme or "").strip(), "require_face": bool(require_face),
+           "avatar_gender": avatar_gender,
            "identity_fingerprint": studio.identity_fingerprint(avatar), "item_ids": [],
            "reference_ids": [], "queries": [], "round": 0, "downloads": 0, "events": [],
            "stop_requested": False, "created_at": studio._now(), "message": "Gathering references"}
@@ -273,7 +276,8 @@ def _discover(save_dir, avatar_id, job, mock_discover=None):
         add_references(save_dir, avatar_id, references, job["theme"])
         for row in references:
             update_reference(save_dir, avatar_id, _reference_id(row), state="approved", reason="Mock visual check",
-                             validation={"accept": True, "score": 100, "face_visible": True, "image_clear": True})
+                             validation={"accept": True, "score": 100, "face_visible": True, "image_clear": True,
+                                         "avatar_gender": job.get("avatar_gender", "any"), "presentation_match": "match"})
         return
     rounds = gallery._env_int("FFS_AVATAR_SEARCH_ROUNDS", 3, 1, 5)
     maximum = gallery._env_int("FFS_AVATAR_MAX_CANDIDATE_DOWNLOADS", 60, 10, 120)
@@ -306,8 +310,9 @@ def _discover(save_dir, avatar_id, job, mock_discover=None):
             yield "Reference file checked"
         rows = _available(save_dir, avatar_id, job)
         visual = [row for row in rows if row.get("state") == "downloaded" or (
-            row.get("state") == "approved" and job["require_face"] and
-            (row.get("validation") or {}).get("face_visible") is not True)]
+            row.get("state") == "approved" and (
+                (job["require_face"] and (row.get("validation") or {}).get("face_visible") is not True)
+                or not gallery.reference_presentation_matches(row.get("validation") or {}, job.get("avatar_gender", "any"))))]
         for start in range(0, len(visual), 8):
             if len(_approved(save_dir, avatar_id, job)) >= job["quantity"]:
                 return
@@ -343,11 +348,16 @@ def _discover(save_dir, avatar_id, job, mock_discover=None):
             def checked(row, validation, accepted):
                 reason = ("Visible face required" if job["require_face"] and validation.get("face_visible") is not True
                           else validation.get("reason") or ("Approved" if accepted else "Visual check failed"))
+                if not gallery.reference_presentation_matches(validation, job.get("avatar_gender", "any")):
+                    verdict = validation.get("presentation_match", "unclear")
+                    reason = (f"Reference presentation {verdict} for {job['avatar_gender']} avatar: "
+                              + str(validation.get("presentation_reason") or "No confident suitable match"))
                 update_reference(save_dir, avatar_id, row["id"], state="approved" if accepted else "rejected",
                                  validation=validation, reason=reason)
 
             if batch:
-                gallery._validate_references(batch, on_result=checked, require_face=job["require_face"])
+                gallery._validate_references(batch, on_result=checked, require_face=job["require_face"],
+                                             avatar_gender=job.get("avatar_gender", "any"))
             yield "Reference visual checks saved"
         if len(_approved(save_dir, avatar_id, job)) >= job["quantity"]:
             return
@@ -357,7 +367,7 @@ def _discover(save_dir, avatar_id, job, mock_discover=None):
         queries = job["queries"]
         if len(queries) <= job["round"]:
             variation = job["theme"] if job["round"] == 0 else f"{job['theme']}; different outfit, pose and setting"
-            query = gallery._search_query(variation)
+            query = gallery._search_query(variation, avatar_gender=job.get("avatar_gender", "any"))
             queries = queries + [query]
             job = update_batch(save_dir, avatar_id, queries=queries)
         payload = gallery._tavily_search(queries[job["round"]], max_results=20)
@@ -386,7 +396,7 @@ def run(*args, **kwargs):
 
 
 def _run(save_dir, avatar_id, quantity, aspect, theme, require_face, make_prompt, generate, validate, repair,
-         mock_discover=None, batch_id=None, new_batch=False, name=""):
+         mock_discover=None, batch_id=None, new_batch=False, name="", avatar_gender="any"):
     if not _run_lock.acquire(blocking=False):
         raise RuntimeError("A gallery operation is still finishing. Wait before resuming.")
     job = None
@@ -406,7 +416,7 @@ def _run(save_dir, avatar_id, quantity, aspect, theme, require_face, make_prompt
         if batch_id and job and job["status"] in {"complete", "exhausted"}:
             raise ValueError("This batch is finished. Create a new batch instead.")
         if not job or job["status"] in {"complete", "exhausted"}:
-            job = _create_batch(save_dir, avatar_id, quantity, aspect, theme, require_face, name, batch_id)
+            job = _create_batch(save_dir, avatar_id, quantity, aspect, theme, require_face, name, batch_id, avatar_gender)
         elif job["identity_fingerprint"] != studio.identity_fingerprint(avatar):
             raise ValueError("This batch belongs to a different confirmed identity. Restore its references before resuming.")
         job = _isolate_legacy(save_dir, avatar_id, job)
@@ -447,6 +457,7 @@ def _run(save_dir, avatar_id, quantity, aspect, theme, require_face, make_prompt
                             "reference_id": reference["id"], "reference_path": reference["path"],
                             "reference_url": reference.get("image_url"), "reference_source": reference.get("source_url"),
                             "reference_validation": reference.get("validation"), "theme": job["theme"],
+                            "avatar_gender": job.get("avatar_gender", "any"),
                             "aspect": job["aspect"], "attempt": 0, "repairs": 0,
                         })
                     item_ids.append(item_id)
@@ -461,7 +472,7 @@ def _run(save_dir, avatar_id, quantity, aspect, theme, require_face, make_prompt
                     continue
                 yield note(save_dir, avatar_id, f"Preparing prompt {index}/{len(job['item_ids'])}", "prompting")
                 reference = next(row for row in load_catalog(save_dir, avatar_id)["references"] if row["id"] == item["reference_id"])
-                prompt = make_prompt(avatar, job["theme"], reference)
+                prompt = make_prompt(avatar, job["theme"], {**reference, "avatar_gender": job.get("avatar_gender", "any")})
                 if not str(prompt or "").strip():
                     raise RuntimeError("The prompt writer returned an empty prompt.")
                 studio.update_gallery_item(save_dir, avatar_id, item_id, prompt=prompt, status="queued")
