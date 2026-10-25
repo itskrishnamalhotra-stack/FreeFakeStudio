@@ -37,8 +37,10 @@ def start(form, workspace, app_dir, kaggle):
     os.environ["FFS_WORKSPACE"] = str(workspace)
     os.environ["FREEFAKESTUDIO_WORKSPACE"] = str(workspace)
     os.environ["FFS_LOCAL_RUNTIME"] = "/tmp/freefakestudio_runtime" if kaggle else "/content/freefakestudio_runtime"
-    from runtime_process import stop_previous
-    stop_previous(workspace, os.environ["FFS_LOCAL_RUNTIME"])
+    import importlib
+    import runtime_process
+    # The notebook kernel survives reruns; use the freshly updated shutdown helper.
+    importlib.reload(runtime_process).stop_previous(workspace, os.environ["FFS_LOCAL_RUNTIME"])
     os.environ["FFS_ACCESS_TOKEN"] = secrets.token_urlsafe(32)
     os.environ.pop("FREEFAKESTUDIO_DEV", None)
     try:

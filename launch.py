@@ -671,6 +671,7 @@ def launch_app_process(timeout_seconds=1800, fingerprint=None):
         "FFS_WARMUP_SIZE": str(WARMUP_SIZE),
         "FFS_EXPOSE_AFTER_WARMUP": "1" if EXPOSE_AFTER_WARMUP else "0",
         "FFS_READY_STATE_PATH": str(READY_STATE_FILE),
+        "FFS_SHUTDOWN_STATE_PATH": str(WS / "config" / "app.shutdown.json"),
         "FFS_RUNTIME_FINGERPRINT_ID": (fingerprint or {}).get("id", "unknown"),
     }
     import secrets
@@ -774,33 +775,8 @@ def launch_app_process(timeout_seconds=1800, fingerprint=None):
 
 def terminate_previous_app_process():
     """Stop only a previous app process recorded for this Drive workspace."""
-    if not APP_PID_FILE.is_file():
-        return
-    try:
-        pid = int(APP_PID_FILE.read_text(encoding="ascii").strip())
-        command_line = Path(f"/proc/{pid}/cmdline").read_bytes().replace(b"\0", b" ").decode(
-            "utf-8", errors="replace"
-        )
-    except (OSError, ValueError):
-        APP_PID_FILE.unlink(missing_ok=True)
-        return
-    expected_paths = (str(APP / "app.py"), str(DRIVE_APP / "app.py"))
-    if not any(expected in command_line for expected in expected_paths):
-        APP_PID_FILE.unlink(missing_ok=True)
-        return
-    print(f"Stopping previous FreeFakeStudio process ({pid})...", flush=True)
-    try:
-        os.kill(pid, signal.SIGTERM)
-        for _ in range(30):
-            if not Path(f"/proc/{pid}").exists():
-                break
-            time.sleep(0.2)
-        else:
-            os.kill(pid, signal.SIGKILL)
-    except ProcessLookupError:
-        pass
-    finally:
-        APP_PID_FILE.unlink(missing_ok=True)
+    from runtime_process import stop_previous
+    stop_previous(WS, LOCAL_RUNTIME)
 
 
 def pip_install(*packages, force=False):

@@ -71,11 +71,13 @@ def main():
         persist = store.sync
     from web_api import create_app
     import uvicorn
+    from web_lifecycle import StudioServer
     app = create_app(persist=persist)
     port = int(os.environ.get("FREEFAKESTUDIO_PORT", "7860"))
     host = "0.0.0.0" if cloud_runtime() else "127.0.0.1"
     print(f"Running on local URL: http://{host}:{port}", flush=True)
-    uvicorn.run(app, host=host, port=port, access_log=False, proxy_headers=True, forwarded_allow_ips="127.0.0.1")
+    StudioServer(uvicorn.Config(app, host=host, port=port, access_log=False,
+                                proxy_headers=True, forwarded_allow_ips="127.0.0.1")).run()
 
 
 if __name__ == "__main__":

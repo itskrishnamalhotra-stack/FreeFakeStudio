@@ -181,7 +181,7 @@ def create_app(root=None, persist=None, token=None):
     jobs = JobStore(root / "_jobs", handle, persist)
 
     def schedule_tick():
-        if model_manager.DEV_MODE:
+        if model_manager.DEV_MODE or jobs.stopping.is_set():
             return
         with mutation_lock:
             if any(row["status"] in {"queued", "running"} for row in jobs.list()):
@@ -210,12 +210,16 @@ def create_app(root=None, persist=None, token=None):
         try:
             yield
         finally:
+            jobs.request_shutdown()
             task.cancel()
             try:
                 await task
             except asyncio.CancelledError:
                 pass
-            jobs.shutdown()
+            report = getattr(app.state, "report_shutdown", lambda stage: None)
+            report("saving_jobs")
+            await asyncio.to_thread(jobs.shutdown, on_progress=report)
+            report("saved")
 
     app = FastAPI(title="FreeFakeStudio", lifespan=lifespan, docs_url=None, redoc_url=None)
     app.state.jobs, app.state.service = jobs, service
@@ -242,6 +246,8 @@ def create_app(root=None, persist=None, token=None):
                 allowed = {public, str(request.base_url).rstrip("/")}
                 if origin and origin not in allowed:
                     return JSONResponse({"detail": "Cross-origin writes are not allowed"}, status_code=403)
+            if jobs.stopping.is_set() and request.method not in {"GET", "HEAD", "OPTIONS"}:
+                return JSONResponse({"detail": "Server is saving and restarting. Use the new notebook link when ready."}, status_code=503)
         response = await call_next(request)
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["Referrer-Policy"] = "no-referrer"
@@ -694,7 +700,7 @@ def create_app(root=None, persist=None, token=None):
             import asyncio
             signature = None
             heartbeat = time.monotonic()
-            while not await request.is_disconnected():
+            while not jobs.stopping.is_set() and not await request.is_disconnected():
                 rows = await asyncio.to_thread(all_jobs)
                 current = tuple((row["id"], row["revision"]) for row in rows)
                 if current != signature:
@@ -807,7 +813,7 @@ def create_app(root=None, persist=None, token=None):
         async def events():
             import asyncio
             revision = -1
-            while not await request.is_disconnected():
+            while not jobs.stopping.is_set() and not await request.is_disconnected():
                 row = await asyncio.to_thread(get_job, job_id)
                 if row["revision"] != revision:
                     revision = row["revision"]

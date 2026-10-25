@@ -252,6 +252,25 @@ a restart, use the newly printed link. A localhost preview is not this cloud URL
 
 ## Timing and Hosting Limits
 
+### Updating an Already Running Session
+
+Stop the notebook cell, set `UPDATE_APP=True`, and run it once. The launcher asks
+only the verified previous server to stop, then waits before restoring files.
+New releases close live progress streams first, stop jobs at operation boundaries,
+save checkpoints and perform a final storage sync. An in-flight model call or
+Drive upload can still take time. Shutdown progress prints every 10 seconds;
+`config/app.shutdown.json` records the stage for new servers. The launcher waits
+up to five minutes and never force-kills a saving server to proceed.
+
+If upgrading from an older release and it stays at "Stopping the previous
+server", close **all FreeFakeStudio app tabs**, not the notebook. Old progress
+streams could hold the old server open indefinitely. Allow current work to save,
+then rerun the cell once. Refreshing the notebook does not stop its server.
+If shutdown still fails, inspect `config/app.shutdown.json` and
+`diagnostics/app_launch_latest.log` in your workspace. Do not delete `app.pid` to bypass
+the check or rerun cells concurrently. A runtime restart discards in-memory work;
+on Kaggle, make sure the last Drive sync completed before discarding the session.
+
 Allow roughly 5-20+ minutes for a new cloud machine's setup, transfer and warmup;
 large existing models still need transfer to Kaggle. Network speed, dependency
 changes and GPU availability can make this longer. Same-machine reruns should

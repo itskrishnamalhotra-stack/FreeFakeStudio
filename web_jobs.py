@@ -20,7 +20,7 @@ class JobContext:
         self.store, self.id = store, job_id
 
     def check(self):
-        if self.store.get(self.id).get("cancel_requested"):
+        if self.store.stopping.is_set() or self.store.get(self.id).get("cancel_requested"):
             raise Cancelled("Stopped after the current operation. Saved work is preserved.")
 
     def emit(self, message, **detail):
@@ -47,6 +47,7 @@ class JobStore:
         self.lock = threading.RLock()
         self.executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="studio-gpu")
         self.closed = False
+        self.stopping = threading.Event()
         for row in self.list():
             if row["status"] in {"queued", "running"}:
                 self.update(row["id"], status="interrupted", message="Runtime restarted. Resume saved work.")
@@ -73,10 +74,10 @@ class JobStore:
         return sorted(rows, key=lambda row: row.get("created_at", 0), reverse=True)
 
     def submit(self, kind, payload, key):
-        if self.closed:
-            raise RuntimeError("The job worker is shutting down")
         signature = hashlib.sha256(json.dumps({"kind": kind, "payload": payload}, sort_keys=True).encode()).hexdigest()
         with self.lock:
+            if self.closed or self.stopping.is_set():
+                raise RuntimeError("The job worker is shutting down")
             previous = next((row for row in self.list() if row.get("request_key") == key), None)
             if previous:
                 if previous["signature"] != signature:
@@ -98,6 +99,8 @@ class JobStore:
 
     def resume(self, job_id):
         with self.lock:
+            if self.closed or self.stopping.is_set():
+                raise RuntimeError("The job worker is shutting down")
             row = self.get(job_id)
             if row["status"] not in {"failed", "interrupted", "cancelled"}:
                 raise ValueError("Only a stopped, interrupted or failed job can be resumed")
@@ -135,9 +138,21 @@ class JobStore:
             except Exception as exc:
                 self.update(job_id, sync_error=str(exc))
 
-    def shutdown(self):
-        self.closed = True
+    def request_shutdown(self):
+        self.stopping.set()
+
+    def shutdown(self, on_progress=None):
+        self.request_shutdown()
+        with self.lock:
+            self.closed = True
+            for row in self.list():
+                if row["status"] in {"queued", "running"}:
+                    self.cancel(row["id"])
+        self.executor.shutdown(wait=True, cancel_futures=True)
+        # Futures cancelled before starting never enter _run's saving/finally path.
         for row in self.list():
             if row["status"] in {"queued", "running"}:
-                self.cancel(row["id"])
-        self.executor.shutdown(wait=True, cancel_futures=True)
+                self.update(row["id"], status="cancelled", message="Server stopped. Resume saved work.")
+        if on_progress:
+            on_progress("syncing_storage")
+        self.flush()
