@@ -32,3 +32,23 @@ def regions(size, faces=None):
         if box[0] < box[2] and box[1] < box[3]:
             rows.append({"label": f"Face {index + 1}", "box": [round(v, 5) for v in box]})
     return rows
+
+
+def enhancement_review(source, result, metrics):
+    size = tuple(max(1, round(v * min(1, 512 / max(source.size)))) for v in source.size)
+    before = np.asarray(source.convert("RGB").resize(size, Image.Resampling.LANCZOS), dtype=np.float32)
+    after = np.asarray(result.convert("RGB").resize(size, Image.Resampling.LANCZOS), dtype=np.float32)
+    low_before = np.asarray(Image.fromarray(before.astype(np.uint8)).filter(ImageFilter.GaussianBlur(4)), dtype=np.float32)
+    low_after = np.asarray(Image.fromarray(after.astype(np.uint8)).filter(ImageFilter.GaussianBlur(4)), dtype=np.float32)
+    tone_change = float(np.abs(low_after - low_before).mean())
+    detail_change = float(np.abs((after - low_after) - (before - low_before)).mean())
+    reasons = []
+    if not metrics.get("near_noop"):
+        if tone_change > 2 and detail_change < .3 * tone_change:
+            reasons.append("Most measured change is lighting/color rather than fine detail")
+        if metrics["detail_evidence"]["detail_energy_ratio"] <= 1.05:
+            reasons.append("No measured fine-detail gain at matched resolution")
+    return {"status": "needs_review" if reasons else "no_change" if metrics.get("near_noop") else "unverified",
+            "reasons": reasons, "low_frequency_change": round(tone_change, 4),
+            "fine_detail_change": round(detail_change, 4), "quality_verified": False,
+            "method": "Pixel-frequency heuristic; additional noise/sharpening is not proof of improvement"}

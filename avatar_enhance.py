@@ -3,7 +3,7 @@
 import math
 
 import numpy as np
-from PIL import Image, ImageOps
+from PIL import Image, ImageOps, ImageFilter
 import image_review
 
 
@@ -14,7 +14,8 @@ REALISM_PROMPT = (
     "materials. Preserve the existing complexion, skin markings and degree of skin smoothness. "
     "Keep naturally soft areas soft and preserve the original depth of field and background blur. "
     "Correct only clear compression or rendering defects whose intended structure is unambiguous. "
-    "Return the same photograph with a modest improvement in clarity, not a redesigned or heavily textured version."
+    "Restore fine edge separation and natural, non-repeating material detail rather than changing brightness, "
+    "contrast or color grading. Return the same photograph with clearer fine detail, not a redesigned or heavily textured version."
 )
 TILE_PROMPT = (
     "Image 1 is a cropped detail tile and is the exact editing canvas. Image 2 shows the whole "
@@ -90,7 +91,21 @@ def change_metrics(baseline, result):
             "meaning": "pixel change only; not a realism, identity or quality score"}
 
 
-def reconstruct(image, edit_tile, scale=1, strength=DEFAULT_STRENGTH, seed=0, cancelled=None, method="photo", prompt=None):
+def anchor_tone(source, result):
+    """Bound low-frequency color drift while retaining generated high-frequency detail."""
+    factor = min(1, 512 / max(result.size))
+    small = tuple(max(1, round(v * factor)) for v in result.size)
+    first = np.asarray(source.resize(small, Image.Resampling.LANCZOS).filter(ImageFilter.GaussianBlur(12)), dtype=np.float32)
+    second = np.asarray(result.resize(small, Image.Resampling.LANCZOS).filter(ImageFilter.GaussianBlur(12)), dtype=np.float32)
+    correction = np.clip(first - second, -12, 12)
+    channels = [np.asarray(Image.fromarray(correction[:, :, c]).resize(result.size, Image.Resampling.BILINEAR)) for c in range(3)]
+    corrected = np.clip(np.asarray(result, dtype=np.float32) + np.stack(channels, axis=2), 0, 255)
+    return Image.fromarray(np.rint(corrected).astype(np.uint8)), {
+        "enabled": True, "method": "bounded source low-frequency color anchor", "max_correction_per_channel": 12,
+        "mean_correction": round(float(np.abs(correction).mean()), 4)}
+
+
+def reconstruct(image, edit_tile, scale=1, strength=DEFAULT_STRENGTH, seed=0, cancelled=None, method="photo", prompt=None, preserve_tone=True):
     prompt = PHOTO_PROMPT if prompt is None else str(prompt).strip()
     if not prompt:
         raise ValueError("Write a reconstruction prompt first")
@@ -116,6 +131,18 @@ def reconstruct(image, edit_tile, scale=1, strength=DEFAULT_STRENGTH, seed=0, ca
         return {"tile": index, "total": total, "stage": stage, "size": size,
                 "working_size": working.size, "output_images": 1, "image": None}
 
+    def finish(result):
+        raw = change_metrics(baseline, result)
+        if preserve_tone:
+            result, tone = anchor_tone(baseline, result)
+        else:
+            tone = {"enabled": False}
+        metrics = change_metrics(baseline, result)
+        metrics["tone_anchor"] = tone
+        metrics["before_tone_anchor"] = {key: raw[key] for key in ("mean_absolute_pixel_change", "detail_evidence")}
+        metrics["enhancement_review"] = image_review.enhancement_review(baseline, result, metrics)
+        return result, metrics
+
     check_stop()
     yield progress(1, "full_photo")
     padded = _pad(working)
@@ -126,7 +153,8 @@ def reconstruct(image, edit_tile, scale=1, strength=DEFAULT_STRENGTH, seed=0, ca
     rebuilt = rebuilt.convert("RGB").crop((0, 0, working.width, working.height))
     base = rebuilt.resize(size, Image.Resampling.LANCZOS)
     if not boxes:
-        yield {**progress(1, "complete"), "image": base, "diagnostics": change_metrics(baseline, base)}
+        result, metrics = finish(base)
+        yield {**progress(1, "complete"), "image": result, "diagnostics": metrics}
         return
     context = source.copy()
     context.thumbnail((768, 768), Image.Resampling.LANCZOS)
@@ -150,4 +178,5 @@ def reconstruct(image, edit_tile, scale=1, strength=DEFAULT_STRENGTH, seed=0, ca
         accum[top:bottom, left:right] += pixels * mask[:, :, None]
         weights[top:bottom, left:right] += mask
     result = Image.fromarray(np.rint(accum / weights[:, :, None]).clip(0, 255).astype(np.uint8))
-    yield {**progress(total, "complete"), "image": result, "diagnostics": change_metrics(baseline, result)}
+    result, metrics = finish(result)
+    yield {**progress(total, "complete"), "image": result, "diagnostics": metrics}

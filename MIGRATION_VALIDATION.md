@@ -2,7 +2,7 @@
 
 ## Completed Locally
 
-- `python -m unittest discover`: 293 tests passed. Includes legacy engine/memory
+- `python -m unittest discover`: 301 tests passed. Includes legacy engine/memory
   contracts and new HTTP, authentication, traversal, upload, idempotency,
   checkpoint, recovery, guided avatar, console, gallery and reconstruction tests.
 - Release regressions cover anchor-change invalidation without losing snapshots,
@@ -22,6 +22,11 @@
   cache isolation, image-content invalidation, cancellation, explicit analysis
   fallback, and recovery without repeated analysis or reconstruction. New skin
   markings/roughness warnings cannot be cleared by an identity-only recheck.
+- Targeted-analysis follow-up covers independent visibility probes, partial
+  rather than false-complete status, verbose yes/no parsing, bounded retries,
+  face-region coordinate bounds, old-cache rejection, and no Not Applicable
+  bypass for uncertain portraits. Synthetic image tests cover brightness-only
+  correction, explicit opt-out, retained generated detail, and tone-only review.
 - `test_web_enhancement_analysis_browser.js` passes for automatic prompt planning,
   default 0.65 strength, one-pass/one-image output, saved applied prompt and
   analysis after reload, and 1366px/390px/320px viewer layouts. Images/vision are

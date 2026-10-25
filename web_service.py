@@ -422,7 +422,7 @@ class StudioService:
             return engine.img2img([tile] if whole is None else [tile, whole], prompt, "", seed, 1.0, strength, args["steps"])
         try:
             for row in avatar_enhance.reconstruct(source, edit, args["scale"], args["strength"], seed,
-                    lambda: context.store.get(context.id).get("cancel_requested", False), args["method"], args["reconstruction_prompt"]):
+                    lambda: context.store.get(context.id).get("cancel_requested", False), args["method"], args["reconstruction_prompt"], preserve_tone=args.get("preserve_tone", True)):
                 if row["image"] is None:
                     context.emit(f"FLUX pass {row['tile']}/{row['total']} / one output image", pass_index=row["tile"], total=row["total"])
                 else:

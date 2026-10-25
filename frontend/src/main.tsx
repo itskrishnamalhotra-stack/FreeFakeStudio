@@ -346,6 +346,7 @@ function App() {
     [enhanceMethod, setEnhanceMethod] = useState("photo"),
     [enhancementPrompt, setEnhancementPrompt] = useState<string | null>(null),
     [adaptivePrompt, setAdaptivePrompt] = useState(true),
+    [preserveTone, setPreserveTone] = useState(true),
     [scale, setScale] = useState(1),
     [strength, setStrength] = useState(0.65),
     [correction, setCorrection] = useState<GalleryItem | null>(null),
@@ -423,6 +424,8 @@ function App() {
     | { automatic: boolean; prompt: string; analysis: Record<string, unknown> }
     | undefined;
   const textureReview = viewerDiagnostics?.texture_review as
+    { status: string; reasons?: string[] } | undefined;
+  const enhancementReview = viewerDiagnostics?.enhancement_review as
     { status: string; reasons?: string[] } | undefined;
   function comparisonUrl(pic: Picture) {
     const region =
@@ -3240,6 +3243,25 @@ function App() {
                       {reason}
                     </p>
                   ))}
+                  {enhancementReview && (
+                    <p>
+                      Detail review:{" "}
+                      {enhancementReview.status.replaceAll("_", " ")}
+                    </p>
+                  )}
+                  {enhancementReview?.reasons?.map((reason) => (
+                    <p className="memory-warning" key={reason}>
+                      {reason}
+                    </p>
+                  ))}
+                  {Boolean(viewerPlan.analysis.answers) && (
+                    <details>
+                      <summary>Analysis questions and answers</summary>
+                      <pre>
+                        {JSON.stringify(viewerPlan.analysis.answers, null, 2)}
+                      </pre>
+                    </details>
+                  )}
                   <details>
                     <summary>Applied reconstruction prompt</summary>
                     <p>{viewerPlan.prompt}</p>
@@ -3334,6 +3356,14 @@ function App() {
                   />
                   Automatic image-aware prompt
                 </label>
+                <label className="check-field">
+                  <input
+                    type="checkbox"
+                    checked={preserveTone}
+                    onChange={(e) => setPreserveTone(e.target.checked)}
+                  />
+                  Preserve source lighting and colors
+                </label>
                 <Field label="Reconstruction prompt">
                   <textarea
                     rows={8}
@@ -3367,6 +3397,7 @@ function App() {
                         strength,
                         reconstruction_prompt: reconstructionPrompt,
                         adaptive_prompt: adaptivePrompt,
+                        preserve_tone: preserveTone,
                         steps: 4,
                       },
                       () => setEnhance(null),

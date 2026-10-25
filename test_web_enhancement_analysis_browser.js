@@ -16,11 +16,13 @@ async (page) => {
   await page.getByRole('button', {name:'Enhance',exact:true}).first().click();
   const dialog = page.getByRole('dialog', {name:'Enhance image',exact:true});
   if (!await dialog.getByRole('checkbox', {name:'Automatic image-aware prompt',exact:true}).isChecked()) throw new Error('Automatic planning should default on');
+  if (!await dialog.getByRole('checkbox', {name:'Preserve source lighting and colors',exact:true}).isChecked()) throw new Error('Source lighting preservation should default on');
   if (+await dialog.getByRole('slider', {name:'Reconstruction strength',exact:true}).inputValue() !== .65) throw new Error('Unexpected default reconstruction strength');
   const request = page.waitForResponse(r => new URL(r.url()).pathname === '/api/jobs' && r.request().method() === 'POST');
   await dialog.getByRole('button', {name:'Enhance image',exact:true}).click();
   const job = await (await request).json();
   if (!job.payload.adaptive_prompt) throw new Error('Automatic flag missing from request');
+  if (!job.payload.preserve_tone) throw new Error('Lighting preservation flag missing');
   if (job.payload.chat_id !== chat) throw new Error('Enhancement escaped its original conversation');
   let complete = false;
   for (let index = 0; index < 300; index++) {
@@ -36,6 +38,8 @@ async (page) => {
   if (enhanced.processing_passes !== 1 || enhanced.images.length !== 1) throw new Error('One-pass enhancement created multiple outputs');
   if (!enhanced.reconstruction_prompt.includes('Do not invent freckles')) throw new Error('Preservation guard not applied');
   if (!enhanced.diagnostics.enhancement_plan.analysis.mock_not_quality_evidence) throw new Error('Mock analysis not labeled');
+  if (!enhanced.diagnostics.tone_anchor.enabled) throw new Error('Tone preservation was not applied');
+  if (enhanced.diagnostics.enhancement_review.quality_verified) throw new Error('Pixel changes must not claim verified quality');
   await page.reload();
   await page.getByAltText('Generated image', {exact:true}).last().click();
   await page.getByText('Enhancement analysis', {exact:true}).click();

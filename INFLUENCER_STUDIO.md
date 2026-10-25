@@ -87,10 +87,16 @@ sharpening can raise them: they are explicitly not a realism or quality score.
 
 Enhancement now defaults to Automatic image-aware prompt and reconstruction
 strength 0.65, rather than full-strength editing with a universal pore/follicle
-checklist. After Enhance is clicked, SmolVLM observes the source category,
-materials, lighting, technical condition and visible skin appearance. Only
-validated enum answers select predefined prompt clauses; model prose cannot
-inject editing instructions. The source's identity, age, markings, texture
+checklist. After Enhance is clicked, SmolVLM answers separate yes/no/unclear
+questions about the foreground person, face, bare skin, hair, fabric, subject
+blur, compression blocks, edge halos, daylight, shadows and visible markings.
+Unclear replies get one simpler retry, never a guessed answer. Portrait skin
+checks run even when another visibility/material answer is uncertain. Available
+CPU face localization supplies a focused inspection crop; result review uses
+that same region. If localization fails, the full image is used and recorded.
+Only parsed answers select predefined prompt clauses; model prose cannot inject
+editing instructions. Unresolved observations produce Partial, not Complete.
+The source's identity, age, markings, texture
 scale, colors and intentional blur take priority. You can still edit the base
 instructions or explicitly disable automatic tailoring for a manual prompt.
 
@@ -107,9 +113,22 @@ heuristic, not proof that every freckle or pore is correct. No extra automatic
 FLUX repair pass is hidden inside this check. Analysis failures use conservative
 instructions and a visible review status instead of pretending analysis passed.
 Image viewer > Enhancement analysis shows the observations, texture verdict
-and applied prompt for both chat and gallery output. Originals remain untouched.
+and applied prompt for both chat and gallery output, with expandable individual
+questions/replies. Version 2 does not reuse version 1's broad-question cache;
+start a new enhancement to use it, rather than resuming an old saved prompt plan.
+Originals remain untouched.
 One reconstruction pass with 2x output is still one generative edit followed by
 resize; HD tiled mode is the explicit multi-pass option for larger outputs.
+
+Preserve source lighting and colors defaults On. A bounded low-frequency color
+anchor reduces generated lighting drift while retaining fine-scale generated
+detail. Its correction is capped at 12/255 per channel to limit artifacts; this
+does not guarantee identical exposure. The setting can be disabled explicitly.
+Diagnostics retain pre-correction evidence and the correction magnitude. A
+matched-resolution review flags predominantly tone-only changes or absent
+measured detail gain; neither extra high-frequency energy nor a lighting change
+proves improved realism. These warnings survive an identity-only recheck. A
+near-identical output stays No Change instead of being advertised as improved.
 
 Replacing confirmed face/body anchors deactivates the old pack's approvals;
 old versions remain restorable. Historical rechecks, repairs and enhancement

@@ -79,7 +79,7 @@ class ReconstructionTests(unittest.TestCase):
             data[::2, ::2] = 160
             return Image.fromarray(data)
 
-        result = list(enhance.reconstruct(source, editor, scale=1))[-1]["image"]
+        result = list(enhance.reconstruct(source, editor, scale=1, preserve_tone=False))[-1]["image"]
         data = np.asarray(result)
         self.assertGreater(float(data.std()), 2)
         self.assertGreater(float(data.mean()), 140)
@@ -93,10 +93,33 @@ class ReconstructionTests(unittest.TestCase):
         source = Image.new("RGB", (128, 128), (100, 100, 100))
         def editor(tile, context, *args):
             return tile.copy() if context is None else Image.new("RGB", tile.size, (180, 160, 140))
-        result = list(enhance.reconstruct(source, editor, method="hd_tiles"))[-1]
+        result = list(enhance.reconstruct(source, editor, method="hd_tiles", preserve_tone=False))[-1]
         self.assertEqual(result["image"].getpixel((64, 64)), (180, 160, 140))
         self.assertEqual(result["total"], 2)
         self.assertFalse(result["diagnostics"]["near_noop"])
+
+    def test_brightness_only_edit_is_anchored_back_and_not_called_an_improvement(self):
+        source = Image.new("RGB", (128, 128), (100, 100, 100))
+        result = list(enhance.reconstruct(source, lambda tile, *args: Image.new("RGB", tile.size, (110, 110, 110))))[-1]
+        self.assertEqual(result["image"].getpixel((64, 64)), (100, 100, 100))
+        self.assertTrue(result["diagnostics"]["near_noop"])
+        self.assertTrue(result["diagnostics"]["tone_anchor"]["enabled"])
+
+    def test_tone_only_change_is_flagged_when_preservation_is_disabled(self):
+        source = fixture((128, 128))
+        def editor(tile, *args):
+            return Image.fromarray(np.clip(np.asarray(tile, dtype=np.int16) + 10, 0, 255).astype(np.uint8))
+        result = list(enhance.reconstruct(source, editor, preserve_tone=False))[-1]
+        self.assertEqual(result["diagnostics"]["enhancement_review"]["status"], "needs_review")
+        self.assertFalse(result["diagnostics"]["enhancement_review"]["quality_verified"])
+
+    def test_tone_anchor_preserves_generated_fine_detail(self):
+        source = Image.new("RGB", (128, 128), (100, 100, 100))
+        pixels = np.full((128, 128, 3), 110, dtype=np.uint8)
+        pixels[::2, ::2] = 120
+        result, _ = enhance.anchor_tone(source, Image.fromarray(pixels))
+        self.assertGreater(float(np.asarray(result).std()), 2)
+        self.assertLess(float(np.asarray(result).mean()), 104)
 
     def test_stop_before_or_after_tile_preserves_source(self):
         source = fixture()
