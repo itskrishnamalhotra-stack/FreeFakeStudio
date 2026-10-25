@@ -29,8 +29,8 @@ class AnalysisTests(unittest.TestCase):
         value = analysis.analyze(self.image, self.root, ask=self.replies())
         prompt = analysis.plan(value, avatar_enhance.PHOTO_PROMPT)["prompt"]
         self.assertEqual(value["profile_id"], "female_portrait")
-        self.assertIn("Do not invent freckles", prompt)
-        self.assertIn("overly smooth or synthetic surfaces", prompt)
+        self.assertIn("without inventing freckles, wrinkles, blemishes, pigmentation, or signs of aging", prompt)
+        self.assertIn("Replace waxy skin, artificial smoothing", prompt)
         self.assertFalse(any(key.startswith("skin_") for key in value["answers"]))
         self.assertNotIn("fine irregular pores", prompt)
 
@@ -38,8 +38,8 @@ class AnalysisTests(unittest.TestCase):
         ask = self.ask({"landscape_visible": "yes", "compression_blocks": "yes"})
         value = analysis.analyze(self.image, self.root, ask=ask)
         prompt = analysis.plan(value, avatar_enhance.PHOTO_PROMPT)["prompt"]
-        self.assertIn("accurate water reflections and ripples", prompt)
-        self.assertIn("individual leaves and grasses where resolvable", prompt)
+        self.assertIn("Correct inconsistent reflections, lighting, shadows, and depth relationships", prompt)
+        self.assertIn("existing grass, leaves, bark, soil, rocks, water, and clouds", prompt)
         self.assertNotIn("compression_blocks", value["answers"])
         self.assertNotIn("edge_halos", value["answers"])
         self.assertNotIn("Reduce edge halos", prompt)
@@ -186,14 +186,16 @@ class AnalysisTests(unittest.TestCase):
             value = analysis.analyze(self.image, self.root / scene, ask=self.ask({scene + "_visible": "yes", "person_visible": "yes"}))
             planned = analysis.plan(value, "Make it photographic")
             self.assertEqual(planned["profile_id"], scene)
-            self.assertIn("rather than converting it into a photograph", planned["prompt"])
+            self.assertIn(profiles.PROFILES[scene]["prompt"], planned["prompt"])
+            self.assertNotIn("Image 1 is the authoritative source", planned["prompt"])
             self.assertNotIn("person_visible", value["answers"])
 
-    def test_macro_adds_subject_specific_rule_without_changing_focus(self):
+    def test_macro_uses_one_standalone_profile_without_changing_focus(self):
         value = analysis.analyze(self.image, self.root, ask=self.ask({"macro_visible": "yes", "animal_visible": "yes", "subject_blurred": "yes"}))
         planned = analysis.plan(value, "Enhance source")
         self.assertEqual(planned["profile_id"], "macro")
-        self.assertIn(profiles.PROFILES["animal"]["prompt"], planned["prompt"])
+        self.assertIn(profiles.PROFILES["macro"]["prompt"], planned["prompt"])
+        self.assertNotIn(profiles.PROFILES["animal"]["prompt"], planned["prompt"])
         self.assertIn("soft_subject", planned["focus_rules"])
 
     def test_scene_review_flags_changed_subject_and_blur_without_skin_probes(self):
@@ -212,26 +214,28 @@ class AnalysisTests(unittest.TestCase):
     def test_user_supplied_refinement_prompts_match_approved_text(self):
         import hashlib
         expected = {
-            "female_portrait": "3ba5af8076b92bdea41e3fd6b6afdd134a5b0a77abe9908605cf221a55a76c9a",
-            "male_portrait": "4eba7b42199f66de4242b83ea6f69e24e7b3c253495f3ffd74ed41e8f8426bbf",
-            "female_body": "b753f1b35646eab34f7b92b962ab7626fa02c125f5a36df66e44cb670e8184ee",
-            "male_body": "feeb08db9de12403337ad453f7eaa8c85e12dd0c9998a1a44cd1ea1dc1174dfb",
-            "group": "7c321bdc9ff87a59a0a989c81c0bea271a743237fad9eee89f3df7efc303da64",
-            "person_unspecified": "68a657cd1651c58a852890378de1030ab7f772c640a014535f27ba27a67cb998",
-            "landscape": "b68ee3e244653948b91d98f14f6079ae71c9aa9196ed959c90ddf7f084c821d4",
-            "architecture": "9ca88006992cc5600d99c143c7c9846339ac0f83cca40e0c3a558004c9b9b98d",
-            "product": "61ae0faaa7887a962f42211de1eae3be9819596b083e1dd4dae3c0d7d80cbbdc",
-            "animal": "0fa9c389a2ab28457b6f371b06728386ffbf05406f9c492f4a6e4f5869c48647",
-            "food": "648b0e81814feac75b11c3ef6f5f44adef9508691ecb6c0743244bdb71c26a0a",
-            "macro": "6ace4bc9ffae71c886246023f6697f1c7fa7f4757ad79dcce515531b925ec5d4",
-            "artwork": "2261ec77399c59fd3d63f3ce3b7a3775d10d4a4ffbb8342651a760c9d2b4a506",
-            "document": "0982c1b37f7a0e76dea41b80ba61b81fca61e2e5e7d64e548f46294ac0141d27",
-            "general": "055ee8bd1079d8b084733380e7ba013446a9c075567d6ff0337cb48c9db01164",
+            "female_portrait": "64d03ee8dc5c55a3327becdf7510f1c3a204db894c73a78612f6b59b3dc9f0da",
+            "male_portrait": "ed8f537622736307c3b5a86fba595bc2f461a55fee48aa4d08de66d63bc1f881",
+            "female_body": "5507d3c36582f9ced7e1ea88266cd5e6a2e3aab34b79271547057a91697797d8",
+            "male_body": "0d5cff68ddb09ddabb1a2a22bb2dab715de3c5cd8ad744326725548c1ca78d62",
+            "group": "2e2ef0613ca2781aa04796132ea596b3fe2d8faeaa64c71b1fdcf9b3cccf6291",
+            "person_unspecified": "ffb2029d63b9aa19d45af8da91f67d13e90f16758921746975e9ffb6b7671f13",
+            "landscape": "ab81faff6cd3ddeb8d23041d4d90f47e5cc9f1c1d93ad8ed6f31518c5cd53ab9",
+            "architecture": "6a0cccf85b95b4662c5a2b00aeb6c942d96da9601db8ef2f430082e7e12f5b7a",
+            "product": "8c6ffb3c5a68859cfd0989a3802bb0b8448f735b79170fe7b2ae55f2404e3d42",
+            "animal": "aa6680116d7dd2bdd3f256b53013f5a2245f03a6cc6da58f10d7ca655dd54b0c",
+            "food": "8aee717533c1b110eb8050180dbb7521d3fb22786d234218146f0d60b71c3844",
+            "macro": "37cd5a011055948e24a687413bb89a39d8d3fc9fb0c82f521d0e0cf4dd9591c8",
+            "artwork": "408a34fc9932e96a3fa7381a213746bb870b3eccf471a60ae7e44ab4a08e51cc",
+            "document": "43b916451e470b4d97df7730a567401ff4c73545e2687bdfce1a41385de2c52f",
+            "general": "547a42440ee3ef1875867cd0f55617a5aaec5ef98dd791a5973ebbd94c14ded2",
         }
-        self.assertEqual(profiles.PROMPT_VERSION, "user-refinement-v1")
+        self.assertEqual(profiles.PROMPT_VERSION, "user-refinement-v2")
         self.assertEqual({key: hashlib.sha256(value["prompt"].encode()).hexdigest()
                           for key, value in profiles.PROFILES.items()}, expected)
         self.assertNotIn("Important:", profiles.PROFILES["document"]["prompt"])
+        self.assertNotIn("Production safeguard:", profiles.PROFILES["document"]["prompt"])
+        self.assertNotIn("editing pipeline, I recommend", profiles.PROFILES["general"]["prompt"])
 
     def test_standalone_profile_does_not_duplicate_generic_default(self):
         source = analysis.analyze(self.image, self.root, ask=self.replies())
@@ -239,6 +243,9 @@ class AnalysisTests(unittest.TestCase):
         self.assertNotIn(avatar_enhance.PHOTO_PROMPT, planned["prompt"])
         self.assertEqual(planned["prompt_version"], profiles.PROMPT_VERSION)
         self.assertEqual(planned["prompt"].count(profiles.PROFILES["female_portrait"]["prompt"]), 1)
+        self.assertTrue(planned["prompt"].startswith(profiles.PROFILES["female_portrait"]["prompt"]))
+        self.assertNotIn("Image 1 is the authoritative source", planned["prompt"])
+        self.assertNotIn("even if an earlier instruction", planned["prompt"])
         custom = "Preserve the exact red scarf."
         self.assertIn(custom, analysis.plan(source, custom)["prompt"])
 

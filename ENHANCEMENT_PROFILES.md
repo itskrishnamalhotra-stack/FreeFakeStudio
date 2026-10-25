@@ -1,11 +1,12 @@
 # Enhancement Prompt Profiles
 
-Automatic image-aware enhancement uses **shared preservation instructions + one
-standalone profile + focus rules + any additional reconstruction instructions**. The
-15 profile bodies use the supplied detailed refinement prompts (`user-refinement-v1`).
-The old generic default is not added again on top of a standalone profile. Source preservation
-and the original medium take precedence over conflicting requests for generic
-texture. The final applied prompt is saved with the output.
+Automatic image-aware enhancement uses **one standalone profile + targeted focus
+rules + any user-provided additional reconstruction instructions**. All 15 profile
+bodies use the supplied final AI-image repair prompts (`user-refinement-v2`). No
+universal preservation prompt is prepended or appended, and no second category's
+full prompt is added. Each profile balances conservative defect repair, appropriate
+texture reconstruction and preservation of correct details. The final applied
+prompt is saved with the output.
 
 ## The 15 Profiles
 
@@ -45,7 +46,7 @@ enhancements do not ask skin, pore, freckle or material-inventory questions.
    portrait/body profile. Ambiguous/conflicting replies and obscured faces use
    the neutral person profile. Presentation is not a claim about gender identity.
 4. Other scenes use nature, architecture, animals, food or objects. Macro framing
-   gets the macro profile, supplemented by the detected subject's instructions.
+   gets the standalone macro profile without a second full subject prompt.
    Background people remain background elements and do not get portrait treatment.
 5. Add focus rules for in-focus subjects, soft subjects, groups, background people
    and uncertainty. Preserve lighting in every category; do not relight to simulate
@@ -67,8 +68,8 @@ profile, medium, main subject, people's role/count, framing, presentation, focus
 and assessment scope. Expand questions/answers or the applied prompt for details.
 
 The exact 15 prompt texts, names and short descriptions live in
-`enhancement_profiles.py` (`PROFILES`). Shared constraints are in `PRESERVATION`
-and focus instructions in `FOCUS_RULES`. Supply a replacement using the profile
+`enhancement_profiles.py` (`PROFILES`), with targeted focus instructions in
+`FOCUS_RULES`. Supply a replacement using the profile
 name or ID; no model checkpoint or notebook changes are needed to edit its text.
 Version the library when changing routing or classification semantics. Text-only
 revisions use `PROMPT_VERSION` and are saved in each new plan as `prompt_version`;
@@ -123,7 +124,9 @@ better quality. Unclear checks or detected mismatches require review. Pixel/deta
 metrics and before/after comparisons remain available. Documents require careful
 visual verification because generative editing cannot guarantee exact lettering.
 For legal records, screenshots and other character-perfect work, use deterministic
-restoration rather than relying solely on FLUX. This warning is documentation,
+restoration rather than relying solely on FLUX. Validate readable content against
+OCR or original structured data and render text deterministically when exactness
+matters. Never accept an unchecked generative document edit. This warning is documentation,
 not an instruction embedded in the document profile's model prompt.
 
 Legacy jobs keep their original prompts and texture-review metadata. The API

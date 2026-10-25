@@ -46,13 +46,13 @@ async (page) => {
   const enhanced = saved.turns.find(turn => turn.diagnostics?.enhancement_plan);
   if (!enhanced) throw new Error(JSON.stringify({chat, job:job.id, turns:saved.turns.map(turn => ({id:turn.id,text:turn.text,keys:Object.keys(turn)}))}));
   if (enhanced.processing_passes !== 1 || enhanced.images.length !== 1) throw new Error('One-pass enhancement created multiple outputs');
-  if (!enhanced.reconstruction_prompt.includes('Do not invent freckles')) throw new Error('Preservation guard not applied');
+  if (enhanced.reconstruction_prompt.includes('Image 1 is the authoritative source')) throw new Error('Old universal wrapper still applied');
   if (!enhanced.diagnostics.enhancement_plan.analysis.mock_not_quality_evidence) throw new Error('Mock analysis not labeled');
   if (enhanced.diagnostics.enhancement_plan.version !== 'scene-profiles-v2') throw new Error('Old scene classifier cache is still active');
   if (enhanced.diagnostics.sampling.scheduler !== 'Flux2Scheduler') throw new Error('Native FLUX.2 schedule not recorded');
   if (!enhanced.reconstruction_prompt.includes('Keep the cafe background soft.')) throw new Error('Extra instructions absent from applied prompt');
-  if (enhanced.diagnostics.enhancement_plan.prompt_version !== 'user-refinement-v1') throw new Error('User-supplied prompt revision not applied');
-  if (!enhanced.reconstruction_prompt.includes('Apply restrained texture reconstruction only where it improves the original image')) throw new Error('Supplied standalone fallback prompt is missing');
+  if (enhanced.diagnostics.enhancement_plan.prompt_version !== 'user-refinement-v2') throw new Error('User-supplied prompt revision not applied');
+  if (!enhanced.reconstruction_prompt.startsWith('Intelligently repair and enhance this AI-generated image')) throw new Error('Supplied standalone fallback prompt is missing');
   if (enhanced.diagnostics.enhancement_plan.profile_id !== 'general') throw new Error('Mock preview must use a labeled fallback, not fabricated recognition');
   if (!enhanced.diagnostics.content_review) throw new Error('Scene content review missing');
   if (!enhanced.diagnostics.tone_anchor.enabled) throw new Error('Tone preservation was not applied');

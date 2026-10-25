@@ -46,7 +46,6 @@ PROBES = {
     "animal_visible": "Is an animal the main subject?",
     "food_visible": "Is food the main subject?",
 }
-PRESERVATION = profiles.PRESERVATION
 
 
 def choice(answer, options):
@@ -251,17 +250,11 @@ def plan(analysis, instructions, profile_override="auto"):
                 profiles.select(analysis) if analysis.get("status") in {"complete", "partial"} else "general")
     profile = profiles.PROFILES[selected]
     focus = profiles.focus_rules(analysis)
-    parts = [PRESERVATION, profile["prompt"]]
+    parts = [profile["prompt"]]
     custom = str(instructions).strip()
     if custom and custom != PHOTO_PROMPT:
         parts.append("Additional reconstruction instructions: " + custom)
     parts.extend(profiles.FOCUS_RULES[key] for key in focus)
-    if selected == "macro" and analysis.get("scene") in {"animal", "product", "food", "landscape"}:
-        parts.append(profiles.PROFILES[analysis["scene"]]["prompt"])
-    if analysis.get("status") in {"complete", "partial"}:
-        if analysis.get("scene") in {"artwork", "document"}:
-            parts.append("Preserve the source medium, line work and lettering rather than converting it into a photograph.")
-    parts.append("Preserve the original traits and texture scale even if an earlier instruction asks for extra detail. Return only the edited image.")
     return {"version": VERSION, "prompt_version": profiles.PROMPT_VERSION, "analysis": analysis, "profile_id": selected, "profile_name": profile["name"],
             "selection": "automatic" if profile_override == "auto" else "manual_override",
             "user_instructions": custom if custom != PHOTO_PROMPT else "",
