@@ -2435,6 +2435,26 @@ details p {
   overflow-wrap: anywhere;
 }
 .batch-manager { display: grid; gap: 16px; min-width: 0; }
+.resource-workspace { min-width: 0; margin-bottom: 18px; border-bottom: 1px solid var(--border); }
+.resource-tab-strip { display: flex; align-items: center; gap: 6px; min-width: 0; border-bottom: 1px solid var(--border); }
+.resource-tabs { display: flex; flex: 1; min-width: 0; overflow-x: auto; gap: 3px; padding-top: 6px; }
+.resource-tabs > button, .resource-tab { flex: 0 0 auto; border: 1px solid transparent; border-bottom: 0; border-radius: 6px 6px 0 0; background: transparent; }
+.resource-tabs > button[aria-selected="true"], .resource-tab.selected { background: var(--raised); border-color: var(--border); }
+.resource-tab { display: flex; align-items: center; max-width: 250px; }
+.resource-tab > button[role="tab"] { border: 0; background: transparent; display: flex; gap: 10px; min-width: 0; padding: 10px 8px 10px 12px; }
+.resource-tab > button span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.resource-tab small { color: var(--muted); }
+.resource-tab .icon-button { border: 0; background: transparent; flex: 0 0 32px; min-width: 32px; margin-right: 3px; }
+.resource-tab-details { padding: 14px 0; display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+.resource-search-summary { flex: 1; min-width: 200px; }
+.resource-search-summary p { margin: 6px 0; overflow-wrap: anywhere; color: var(--muted); display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+.resource-counts { display: flex; gap: 8px 18px; flex-wrap: wrap; font-size: 13px; }
+.resource-tab-details > .error-text { width: 100%; margin: 0; }
+@media (max-width: 600px) {
+  .resource-tab { max-width: 200px; }
+  .resource-tab-details .button-row { width: 100%; flex-wrap: wrap; }
+  .resource-tab .icon-button { min-height: 44px; min-width: 40px; }
+}
 .batch-row { padding: 16px 0; border-top: 1px solid var(--border); min-width: 0; }
 .batch-row p { overflow-wrap: anywhere; margin: 8px 0; }
 .batch-heading { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }

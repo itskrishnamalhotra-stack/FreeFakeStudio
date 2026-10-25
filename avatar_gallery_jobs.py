@@ -61,15 +61,21 @@ def _reference_id(row):
 
 
 def update_reference(save_dir, avatar_id, reference_id, **changes):
-    catalog = load_catalog(save_dir, avatar_id)
-    row = next(row for row in catalog["references"] if row["id"] == reference_id)
-    row.update(changes)
-    row["updated_at"] = studio._now()
-    _save_catalog(save_dir, avatar_id, catalog)
-    return row
+    with _state_lock:
+        catalog = load_catalog(save_dir, avatar_id)
+        row = next(row for row in catalog["references"] if row["id"] == reference_id)
+        row.update(changes)
+        row["updated_at"] = studio._now()
+        _save_catalog(save_dir, avatar_id, catalog)
+        return row
 
 
 def add_references(save_dir, avatar_id, references, theme="", legacy=False):
+    with _state_lock:
+        return _add_references(save_dir, avatar_id, references, theme, legacy)
+
+
+def _add_references(save_dir, avatar_id, references, theme="", legacy=False):
     catalog = load_catalog(save_dir, avatar_id)
     known = {row["id"] for row in catalog["references"]}
     for reference in references:
@@ -88,6 +94,11 @@ def add_references(save_dir, avatar_id, references, theme="", legacy=False):
 
 
 def import_legacy_references(save_dir, avatar_id):
+    with _state_lock:
+        return _import_legacy_references(save_dir, avatar_id)
+
+
+def _import_legacy_references(save_dir, avatar_id):
     folder = _root(save_dir, avatar_id) / "references"
     catalog = load_catalog(save_dir, avatar_id)
     imported = set(catalog.get("imported_reports", []))
@@ -174,17 +185,27 @@ def batch_references(save_dir, avatar_id, job):
 def list_batches(save_dir, avatar_id):
     items = studio.load_gallery_items(save_dir, avatar_id)
     result = []
-    for path in (_root(save_dir, avatar_id) / "batches").glob("*.json"):
-        job = load_batch(save_dir, avatar_id, path.stem)
+    saved = [load_batch(save_dir, avatar_id, path.stem) for path in (_root(save_dir, avatar_id) / "batches").glob("*.json")]
+    states = {row["id"]: row for row in saved}
+    catalog = load_catalog(save_dir, avatar_id)["references"]
+    for job in saved:
+        if job.get("role"):
+            continue
+        children = [child for child in saved if child.get("owner_batch_id") == job["id"] and child.get("role") == "generation_run"]
+        all_ids = job.get("item_ids", []) + [key for child in children for key in child.get("item_ids", [])]
         rows = [row for row in items if row.get("batch_id") == job["id"] and row.get("origin") == "auto"]
-        references = batch_references(save_dir, avatar_id, job)
-        result.append({**job, "name": job.get("name") or job.get("theme") or "Untitled batch",
+        from avatar_resource_tabs import family_references
+        references = family_references(save_dir, avatar_id, job["id"], states, catalog)
+        result.append({**job, "quantity": job["quantity"] + sum(child["quantity"] for child in children),
+                       "name": job.get("name") or job.get("theme") or "Untitled batch",
                        "counts": {"found": len(references), "approved": sum(r.get("state") == "approved" for r in references),
                                   "rejected": sum(r.get("state") == "rejected" for r in references),
-                                  "committed": len(job.get("item_ids", [])), "generated": sum(bool(r.get("generated_path")) for r in rows),
+                                  "committed": len(all_ids), "generated": sum(bool(r.get("generated_path")) for r in rows),
                                   "passed": sum(r.get("status") == "passed" for r in rows),
                                   "review": sum(r.get("status") == "needs_review" for r in rows),
-                                  "pending": sum(r.get("status") not in TERMINAL for r in rows)},
+                                  "pending": sum(r.get("status") not in TERMINAL and not r.get("queue_closed") for r in rows)
+                                      + sum(max(0, child["quantity"] - len(child.get("item_ids", []))) for child in children
+                                            if child["status"] not in {"complete", "exhausted"})},
                        "legacy_shared_references": job.get("version", 1) < 2})
     return sorted(result, key=lambda row: (row.get("created_at", ""), row["id"]), reverse=True)
 
@@ -203,6 +224,15 @@ def manage_batch(save_dir, avatar_id, batch_id, action, name=""):
     elif action == "finish":
         changes.update(status="complete", phase="closed_by_user", completion_reason="finished_by_user",
                        message="Finished by user; saved images and unused references retained")
+        for path in (_root(save_dir, avatar_id) / "batches").glob("*.json"):
+            child = load_batch(save_dir, avatar_id, path.stem)
+            if child.get("owner_batch_id") == batch_id and child.get("role") == "generation_run" and child["status"] not in {"complete", "exhausted"}:
+                update_batch(save_dir, avatar_id, batch_id=child["id"], **changes)
+        items = studio.load_gallery_items(save_dir, avatar_id)
+        for item in items:
+            if item.get("batch_id") == batch_id and item.get("status") not in TERMINAL:
+                item.update(queue_closed=True, status="needs_review" if item.get("generated_path") else "stopped")
+        studio.save_gallery_items(save_dir, avatar_id, items)
     else:
         raise ValueError("Unknown batch action")
     return update_batch(save_dir, avatar_id, batch_id=batch_id, **changes)
@@ -235,12 +265,16 @@ def _used_references(save_dir, avatar_id):
 
 
 def _available(save_dir, avatar_id, job):
+    from avatar_resource_tabs import resource_mode, reference_usage, reference_keys
     items = studio.load_gallery_items(save_dir, avatar_id)
     used = {str(row.get(key)) for row in items if row.get("batch_id") == job["id"] and row.get("generated_path")
             for key in ("reference_id", "reference_url", "reference_path") if row.get(key)}
+    if resource_mode.get():
+        consumed, reserved = reference_usage(save_dir, avatar_id)
+        used |= consumed | reserved
     return [row for row in batch_references(save_dir, avatar_id, job)
             if row.get("theme", "") in ("", job["theme"])
-            and not any(str(row.get(key)) in used for key in ("id", "image_url", "path") if row.get(key))]
+            and not reference_keys(row).intersection(used)]
 
 
 def _approved(save_dir, avatar_id, job):
@@ -266,7 +300,8 @@ def _create_batch(save_dir, avatar_id, quantity, aspect, theme, require_face, na
     return job
 
 
-def _discover(save_dir, avatar_id, job, mock_discover=None):
+def _discover(save_dir, avatar_id, job, mock_discover=None, target_quantity=None, allow_search=True):
+    target = job["quantity"] if target_quantity is None else target_quantity
     if job.get("version", 1) < 2:
         import_legacy_references(save_dir, avatar_id)
     folder = _root(save_dir, avatar_id) / "references" / job["id"]
@@ -284,8 +319,12 @@ def _discover(save_dir, avatar_id, job, mock_discover=None):
     while True:
         gallery.check_cancelled()
         job = load_batch(save_dir, avatar_id)
-        if len(_approved(save_dir, avatar_id, job)) >= job["quantity"]:
+        if len(_approved(save_dir, avatar_id, job)) >= target:
             return
+        rows = _available(save_dir, avatar_id, job)
+        for row in rows:
+            if row.get("state") in {"downloaded", "approved"} and not os.path.isfile(row.get("path") or ""):
+                update_reference(save_dir, avatar_id, row["id"], state="found", reason="Saved reference missing; download pending")
         rows = _available(save_dir, avatar_id, job)
         pending = [row for row in rows if row.get("state") == "found"]
         for row in pending:
@@ -314,7 +353,7 @@ def _discover(save_dir, avatar_id, job, mock_discover=None):
                 (job["require_face"] and (row.get("validation") or {}).get("face_visible") is not True)
                 or not gallery.reference_presentation_matches(row.get("validation") or {}, job.get("avatar_gender", "any"))))]
         for start in range(0, len(visual), 8):
-            if len(_approved(save_dir, avatar_id, job)) >= job["quantity"]:
+            if len(_approved(save_dir, avatar_id, job)) >= target:
                 return
             gallery.check_cancelled()
             note(save_dir, avatar_id, "Gemini is checking clarity, subject and reference suitability", "cleaning")
@@ -359,7 +398,9 @@ def _discover(save_dir, avatar_id, job, mock_discover=None):
                 gallery._validate_references(batch, on_result=checked, require_face=job["require_face"],
                                              avatar_gender=job.get("avatar_gender", "any"))
             yield "Reference visual checks saved"
-        if len(_approved(save_dir, avatar_id, job)) >= job["quantity"]:
+        if len(_approved(save_dir, avatar_id, job)) >= target:
+            return
+        if not allow_search:
             return
         if job["round"] >= rounds or job["downloads"] >= maximum:
             return
@@ -439,8 +480,9 @@ def _run(save_dir, avatar_id, quantity, aspect, theme, require_face, make_prompt
         with gallery.api_context(lambda message: note(save_dir, avatar_id, message), cancelled):
             yield note(save_dir, avatar_id, "Resuming saved batch" if job["item_ids"] else "Gathering references")
             if not job["item_ids"]:
-                for message in _discover(save_dir, avatar_id, job, mock_discover):
-                    yield note(save_dir, avatar_id, message)
+                if job.get("role") != "generation_run":
+                    for message in _discover(save_dir, avatar_id, job, mock_discover):
+                        yield note(save_dir, avatar_id, message)
                 job = load_batch(save_dir, avatar_id)
                 references = _approved(save_dir, avatar_id, job)[:job["quantity"]]
                 if not references:
@@ -453,10 +495,13 @@ def _run(save_dir, avatar_id, quantity, aspect, theme, require_face, make_prompt
                     existing = {row["id"] for row in studio.load_gallery_items(save_dir, avatar_id)}
                     if item_id not in existing:
                         studio.record_gallery_item(save_dir, avatar_id, {
-                            "id": item_id, "batch_id": job["id"], "origin": "auto", "status": "awaiting_prompt",
+                            "id": item_id, "batch_id": job.get("owner_batch_id", job["id"]), "origin": "auto", "status": "awaiting_prompt",
+                            "generation_run_id": job["id"], "resource_tab_id": job.get("source_tab_id", job["id"]),
                             "reference_id": reference["id"], "reference_path": reference["path"],
                             "reference_url": reference.get("image_url"), "reference_source": reference.get("source_url"),
                             "reference_validation": reference.get("validation"), "theme": job["theme"],
+                            "reference_pixel_hash": reference.get("pixel_hash"), "reference_stored_pixel_hash": reference.get("stored_pixel_hash"),
+                            "source_reference_id": reference.get("source_reference_id", reference["id"]),
                             "avatar_gender": job.get("avatar_gender", "any"),
                             "aspect": job["aspect"], "attempt": 0, "repairs": 0,
                         })
@@ -522,9 +567,12 @@ def _run(save_dir, avatar_id, quantity, aspect, theme, require_face, make_prompt
             passed = sum(item["status"] == "passed" for item in items)
             message = f"Saved {len(items)} image(s): {passed} passed, {len(items) - passed} need review."
             if len(items) < job["quantity"]:
-                message += f" {job['quantity'] - len(items)} fewer references passed the configured search budget."
+                message += (f" {job['quantity'] - len(items)} fewer unused references were usable in the selected resource tab."
+                            if job.get("role") == "generation_run" else
+                            f" {job['quantity'] - len(items)} fewer references passed the configured search budget.")
             update_batch(save_dir, avatar_id, status="complete", phase="complete",
-                         completion_reason="queue_processed" if len(items) == job["quantity"] else "search_budget_exhausted")
+                         completion_reason="queue_processed" if len(items) == job["quantity"] else
+                             "resource_inventory_exhausted" if job.get("role") == "generation_run" else "search_budget_exhausted")
             yield note(save_dir, avatar_id, message)
     except gallery.GalleryCancelled as exc:
         if job and scope_token is not None:
@@ -555,12 +603,17 @@ def snapshot(save_dir, avatar_id, filter_value="All findings", batch_id=None):
     if not path.exists():
         import_legacy_references(save_dir, avatar_id)
     job = load_batch(save_dir, avatar_id, batch_id)
-    catalog = batch_references(save_dir, avatar_id, job)
+    if job and not job.get("role"):
+        from avatar_resource_tabs import family_references
+        catalog = family_references(save_dir, avatar_id, job["id"])
+    else:
+        catalog = batch_references(save_dir, avatar_id, job)
     items = studio.load_gallery_items(save_dir, avatar_id)
-    batch_items = [row for row in items if job and row["id"] in job.get("item_ids", [])]
+    batch_items = [row for row in items if job and (row["id"] in job.get("item_ids", []) or (
+        not job.get("role") and row.get("batch_id") == job["id"] and row.get("origin") == "auto"))]
     counts = {"found": len(catalog), "approved": sum(row["state"] == "approved" for row in catalog),
               "rejected": sum(row["state"] == "rejected" for row in catalog),
-              "queued": len(job.get("item_ids", [])) if job else 0,
+              "queued": len(batch_items),
               "prompts": sum(bool(row.get("prompt")) for row in batch_items),
               "generated": sum(bool(row.get("generated_path")) for row in batch_items),
               "passed": sum(row.get("status") == "passed" for row in batch_items),

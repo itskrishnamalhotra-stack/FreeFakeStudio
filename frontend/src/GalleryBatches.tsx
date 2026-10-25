@@ -46,7 +46,7 @@ export function GalleryBatches({ batches, busy, open, resume, manage }: Props) {
         <div className="button-row">
           <button onClick={() => open(batch.id)}><ArrowRight size={16} /> Open batch</button>
           {!finished && !batch.archived && <button disabled={busy} onClick={() => resume(batch.id)}><Play size={16} /> Resume batch</button>}
-          {!finished && !batch.archived && <button disabled={busy} onClick={() => {if (confirm("Finish this batch without generating remaining items? Existing images and references will be retained.")) void manage(batch.id, "finish");}}><Check size={16} /> Finish batch</button>}
+          {(!finished || batch.counts.pending > 0) && !batch.archived && <button disabled={busy} onClick={() => {if (confirm("Finish this batch without generating remaining items? Existing images and references will be retained.")) void manage(batch.id, "finish");}}><Check size={16} /> Finish batch</button>}
           <button disabled={busy} onClick={() => {if (batch.archived || confirm("Archive this batch? Nothing will be deleted; restore it to resume later.")) void manage(batch.id, batch.archived ? "restore" : "archive");}}>
             {batch.archived ? <RotateCcw size={16} /> : <Archive size={16} />}{batch.archived ? "Restore batch" : "Archive batch"}
           </button>

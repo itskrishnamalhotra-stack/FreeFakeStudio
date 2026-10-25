@@ -85,6 +85,8 @@ export type GalleryBatch = {
   counts: Record<string, number>;
 };
 export type Resource = {
+  resource_tab_id?: string;
+  reserved?: boolean;
   id: string;
   name: string;
   image: Picture | null;
@@ -111,6 +113,18 @@ export type GalleryPage = {
 export type ResourcePage = {
   items: Resource[];
   total: number;
+  counts: Record<string, number>;
+};
+export type ResourceTab = {
+  id: string;
+  batch_id: string;
+  batch_name: string;
+  name: string;
+  description: string;
+  avatar_gender: AvatarGender;
+  archived: boolean;
+  status: string;
+  error?: string;
   counts: Record<string, number>;
 };
 export type Job = {

@@ -128,6 +128,8 @@ class StudioService:
             return self.console(args, context)
         if kind == "gallery":
             return self.gallery(args, context)
+        if kind in {"resource_search", "resource_generate"}:
+            return self.resource_operation(kind, args, context)
         if kind == "regenerate":
             return self.regenerate(args, context)
         if kind == "enhance":
@@ -301,6 +303,15 @@ class StudioService:
         finally:
             iterator.close()
         return {"avatar_id": args["avatar_id"]}
+
+    def resource_operation(self, kind, args, context):
+        import avatar_resource_tabs
+        self.ready_avatar(args["avatar_id"])
+        repair = (lambda prompt, result: prompt + " Correct identity and anatomy.") if model_manager.DEV_MODE else avatar_gallery.repair_generation_prompt
+        return avatar_resource_tabs.run(str(self.root), args["avatar_id"], args["resource_tab_id"],
+            args["quantity"], args["aspect"], context, self.gallery_prompt,
+            lambda *items: self.gallery_image(*items, context), self.validate, repair,
+            search=kind == "resource_search", mock_discover=self.mock_references if model_manager.DEV_MODE else None)
 
     def regenerate(self, args, context):
         item = studio.gallery_item_by_id(str(self.root), args["avatar_id"], args["item_id"])

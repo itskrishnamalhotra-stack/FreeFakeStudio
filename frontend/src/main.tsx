@@ -65,6 +65,7 @@ import {
   ChatSummary,
   Conversation,
   Resource,
+  ResourceTab,
   GalleryCounts,
   GalleryPage,
   ResourcePage,
@@ -75,6 +76,7 @@ import "./styles.css";
 import { InfluencerWorkspace } from "./InfluencerWorkspace";
 import { GalleryBatches } from "./GalleryBatches";
 import { JobFailureNotifications } from "./job-notifications";
+import { ResourceTabs } from "./ResourceTabs";
 
 const FLUX = "FLUX.2-klein 4B";
 const GALLERY_SECTIONS = [
@@ -248,6 +250,7 @@ function Range({
 function App() {
   const location = useLocation();
   const batchFilter = new URLSearchParams(location.search).get("batch") || "";
+  const resourceTab = new URLSearchParams(location.search).get("resource") || "";
   const navigate = useNavigate();
   const routeKey = useRef(location.key);
   routeKey.current = location.key;
@@ -322,6 +325,7 @@ function App() {
     }),
     [galleryLoading, setGalleryLoading] = useState(false),
     [resources, setResources] = useState<Resource[]>([]),
+    [resourceTabs, setResourceTabs] = useState<ResourceTab[]>([]),
     [resourceTotal, setResourceTotal] = useState(0),
     [resourceCounts, setResourceCounts] = useState<Record<string, number>>({}),
     [resourceFilter, setResourceFilter] = useState("all"),
@@ -341,6 +345,9 @@ function App() {
     [findings, setFindings] = useState<any>(null),
     [findingsOpen, setFindingsOpen] = useState(false),
     [referenceFilter, setReferenceFilter] = useState("All findings");
+  const [resourceSearch, setResourceSearch] = useState<{tab?: ResourceTab; batchId: string; name: string; description: string; quantity: number} | null>(null);
+  const [resourceGeneration, setResourceGeneration] = useState<{tab: ResourceTab; quantity: number} | null>(null);
+  const [resourceDelete, setResourceDelete] = useState<ResourceTab | null>(null);
   const [viewer, setViewer] = useState<{
       images: Picture[];
       index: number;
@@ -388,6 +395,7 @@ function App() {
     maxExtras = isAvatar ? 2 : 4;
   const scope = isAvatar && avatarId ? avatarId : null;
   const galleryRequest = useRef(0);
+  const galleryAbort = useRef<AbortController | null>(null);
   const galleryLoaded = useRef({ generations: 0, resources: 0 });
   galleryLoaded.current = {
     generations: gallery.length,
@@ -395,6 +403,7 @@ function App() {
   };
   const galleryContext = useRef({
     avatarId,
+    resourceTab,
     batchFilter,
     gallerySection,
     filter,
@@ -405,6 +414,7 @@ function App() {
   });
   galleryContext.current = {
     avatarId,
+    resourceTab,
     batchFilter,
     gallerySection,
     filter,
@@ -845,6 +855,7 @@ function App() {
     resourceKind,
     chatId,
     batchFilter,
+    resourceTab,
     boot,
   ]);
   useEffect(() => {
@@ -880,7 +891,7 @@ function App() {
     setResourceKind("all");
     setGallery([]);
     setResources([]);
-  }, [avatarId, gallerySection, batchFilter]);
+  }, [avatarId, gallerySection, batchFilter, resourceTab]);
   useEffect(() => {
     if (!boot && isAvatar && avatarId) {
       loadGallery(0);
@@ -898,6 +909,7 @@ function App() {
     resourceFilter,
     resourceKind,
     boot,
+    resourceTab,
   ]);
   useEffect(() => {
     if (!boot && avatar?.id === avatarId) {
@@ -976,6 +988,9 @@ function App() {
     if (!context.avatarId) return;
     const key = JSON.stringify(context);
     const request = ++galleryRequest.current;
+    galleryAbort.current?.abort();
+    const controller = new AbortController();
+    galleryAbort.current = controller;
     const current = () =>
       request === galleryRequest.current &&
       key === JSON.stringify(galleryContext.current);
@@ -1012,7 +1027,7 @@ function App() {
               origin: context.origin,
               query: context.query,
               ...(context.batchFilter ? {batch_id: context.batchFilter} : {}),
-            }),
+            }), {signal: controller.signal},
         ),
         context.gallerySection === "resources"
           ? api<ResourcePage>(
@@ -1026,7 +1041,8 @@ function App() {
                   kind: context.resourceKind,
                   query: context.query,
                   ...(context.batchFilter ? {batch_id: context.batchFilter} : {}),
-                }),
+                  ...(context.resourceTab ? {tab_id: context.resourceTab} : {}),
+                }), {signal: controller.signal},
             )
           : Promise.resolve(null),
       ]);
@@ -1045,7 +1061,7 @@ function App() {
         setTotal(data.total);
       }
     } catch (e) {
-      if (current()) fail(e);
+      if (current() && !controller.signal.aborted) fail(e);
     } finally {
       if (current()) setGalleryLoading(false);
     }
@@ -1081,9 +1097,19 @@ function App() {
   async function loadBatches() {
     if (!avatarId) return;
     const target = avatarId;
+    const selected = batchFilter;
+    const selectedResource = resourceTab;
     try {
-      const data = await api<{items: GalleryBatch[]}>("/avatars/" + target + "/gallery/batches");
-      if (galleryContext.current.avatarId === target) setBatches(data.items);
+      const [data, tabs] = await Promise.all([
+        api<{items: GalleryBatch[]}>("/avatars/" + target + "/gallery/batches"),
+        api<{items: ResourceTab[]}>("/avatars/" + target + "/resource-tabs" + (selected ? "?batch_id=" + encodeURIComponent(selected) : "")),
+      ]);
+      if (galleryContext.current.avatarId === target && galleryContext.current.batchFilter === selected) {
+        setBatches(data.items); setResourceTabs(tabs.items);
+        if (selectedResource && galleryContext.current.resourceTab === selectedResource && !tabs.items.some(tab => tab.id === selectedResource)) {
+          selectResourceTab("", selected);
+        }
+      }
     } catch (e) { fail(e); }
   }
   function selectBatch(id: string) {
@@ -1093,6 +1119,16 @@ function App() {
   async function resumeBatch(id: string) {
     const job = await action({kind: "gallery", avatar_id: avatarId, batch_id: id});
     if (job) { selectBatch(id); setBatchManagerOpen(false); setFindingsOpen(true); }
+  }
+  function selectResourceTab(id: string, batch = batchFilter) {
+    const params = new URLSearchParams();
+    if (batch) params.set("batch", batch);
+    if (id) params.set("resource", id);
+    go(avatarPath(avatarId, "gallery", "resources") + (params.size ? "?" + params.toString() : ""));
+  }
+  function openResourceSearch(tab?: ResourceTab) {
+    setResourceSearch({tab, batchId: tab?.batch_id || batchFilter || resourceTabs.find(row => row.id === resourceTab)?.batch_id || batches.find(row => !row.archived)?.id || "",
+      name: "", description: tab?.description || "", quantity: 20});
   }
   useEffect(() => {
     if (findingsOpen) loadFindings();
@@ -1858,6 +1894,10 @@ function App() {
           aria-labelledby={"gallery-tab-" + gallerySection}
           aria-busy={galleryLoading}
         >
+          {isResources && <ResourceTabs tabs={resourceTabs} selected={resourceTab} busy={busy} jobs={jobs}
+            select={id => selectResourceTab(id)} search={openResourceSearch}
+            generate={tab => setResourceGeneration({tab, quantity: 6})} remove={setResourceDelete}
+            resume={job => write("/jobs/" + job.id + "/resume").then(refresh).catch(fail)} />}
           <div className="gallery-filters">
             <div className="search-box">
               <Search size={16} />
@@ -1877,7 +1917,7 @@ function App() {
                   value={resourceFilter}
                   onChange={(event) => setResourceFilter(event.target.value)}
                 >
-                  {["all", "pending", "approved", "rejected", "used"].map(
+                  {["all", "unused", "pending", "approved", "rejected", "used", "reserved"].map(
                     (value) => (
                       <option key={value} value={value}>
                         {value === "all"
@@ -2010,6 +2050,7 @@ function App() {
                       {resource.committed && !resource.used && (
                         <span className="status">Committed</span>
                       )}
+                      {resource.reserved && <span className="status">Reserved</span>}
                       <span className="resource-type">{resource.kind}</span>
                     </div>
                     <p>
@@ -3554,6 +3595,60 @@ function App() {
                   await loadBatches(); await loadFindings();
                 } catch (e) { fail(e); }
               }} />
+          </div>
+        </Modal>}
+        {resourceSearch && <Modal title={resourceSearch.tab ? "Search more resources" : "New resource search"} onClose={() => setResourceSearch(null)}>
+          <div className="settings-content">
+            <Field label="Batch"><select aria-label="Resource search batch" value={resourceSearch.batchId} disabled={Boolean(resourceSearch.tab)}
+              onChange={event => setResourceSearch({...resourceSearch, batchId: event.target.value})}>
+              <option value="" disabled>Select batch</option>
+              {batches.filter(row => !row.archived).map(row => <option key={row.id} value={row.id}>{row.name}</option>)}
+            </select></Field>
+            {!resourceSearch.tab && <Field label="Tab name"><input value={resourceSearch.name} maxLength={120}
+              onChange={event => setResourceSearch({...resourceSearch, name: event.target.value})} /></Field>}
+            <Field label="Search description"><textarea rows={4} value={resourceSearch.description} readOnly={Boolean(resourceSearch.tab)}
+              onChange={event => setResourceSearch({...resourceSearch, description: event.target.value})} /></Field>
+            <Range label="New approved references" value={resourceSearch.quantity} min={1} max={20}
+              onChange={quantity => setResourceSearch({...resourceSearch, quantity})} />
+            <button className="primary" disabled={busy || !resourceSearch.batchId || !resourceSearch.description.trim()}
+              onClick={async () => {
+                const job = await action({kind: "resource_search", avatar_id: avatarId, batch_id: resourceSearch.batchId,
+                  resource_tab_id: resourceSearch.tab?.id, resource_tab_name: resourceSearch.name,
+                  theme: resourceSearch.description, quantity: resourceSearch.quantity});
+                if (job) {setResourceSearch(null); selectResourceTab(String(job.payload.resource_tab_id), String(job.payload.batch_id));}
+              }}><Search size={16} /> Search resources</button>
+          </div>
+        </Modal>}
+        {resourceGeneration && <Modal title="Generate from resources" onClose={() => setResourceGeneration(null)}>
+          <div className="settings-content">
+            <h3>{resourceGeneration.tab.name}</h3>
+            <div className="segmented" aria-label="Generation quantity presets">{[6, 10, 20].map(quantity =>
+              <button key={quantity} aria-pressed={resourceGeneration.quantity === quantity}
+                onClick={() => setResourceGeneration({...resourceGeneration, quantity})}>{quantity}</button>)}</div>
+            <Range label="Images" value={resourceGeneration.quantity} min={1} max={20}
+              onChange={quantity => setResourceGeneration({...resourceGeneration, quantity})} />
+            <Field label="Image size"><select value={aspect} onChange={event => setAspect(event.target.value)}>{config?.aspects.map(value => <option key={value}>{value}</option>)}</select></Field>
+            <button className="primary" disabled={busy} onClick={async () => {
+              const job = await action({kind: "resource_generate", avatar_id: avatarId, batch_id: resourceGeneration.tab.batch_id,
+                resource_tab_id: resourceGeneration.tab.id, quantity: resourceGeneration.quantity, aspect});
+              if (job) setResourceGeneration(null);
+            }}><Images size={16} /> Generate {resourceGeneration.quantity} images</button>
+          </div>
+        </Modal>}
+        {resourceDelete && <Modal title="Delete resource tab?" onClose={() => setResourceDelete(null)}>
+          <div className="settings-content"><p>Delete {resourceDelete.name} and its resources? Generated images will be kept.</p>
+            <div className="button-row"><button onClick={() => setResourceDelete(null)}>Cancel</button>
+              <button className="danger" disabled={busy} onClick={async () => {
+                try {
+                  if (resourceTab === resourceDelete.id) {
+                    galleryAbort.current?.abort();
+                    ++galleryRequest.current;
+                    selectResourceTab("");
+                  }
+                  await api("/avatars/" + avatarId + "/resource-tabs/" + resourceDelete.id, {method: "DELETE"});
+                  setResourceDelete(null); await refresh();
+                } catch (error) {fail(error);}
+              }}><Trash2 size={16} /> Delete tab</button></div>
           </div>
         </Modal>}
         {batchOpen && (

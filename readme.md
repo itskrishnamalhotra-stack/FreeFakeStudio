@@ -592,6 +592,39 @@ completion means the usable queue was processed, not that every output passed
 quality review or that the requested count was reached. Only one GPU operation
 runs at a time. A changed confirmed identity cannot silently resume an older batch.
 
+### Resource Search Tabs and More Images
+
+Open an avatar's **Gallery > Resources**. Each original batch search appears as a
+resource tab. Select it and click **Generate more** to request another 6, 10 or 20
+images (or choose 1-20). This processes unused findings from that tab: missing
+downloads and pending visual checks are completed before a new generation queue
+is committed. It does not silently start a new web search. If fewer references
+pass than requested, the run saves the smaller usable queue and reports the gap.
+The results stay under the same visible batch; earlier images are not overwritten.
+
+Use **+ New resource search** to choose the existing batch, enter a different
+description, and create another independent resource tab. **Search more** in a
+selected tab searches again using its saved description and a fresh bounded search
+budget. Search jobs only gather/check references; they do not generate images.
+Each tab inherits the batch's avatar-gender and visible-face rules.
+
+The Ready unused, Awaiting checks, Used and Reserved counters distinguish usable
+resources from work still to do. References already generated for this avatar are
+excluded by saved reference ID, URL/path and known exact pixel hashes, including
+when the same image reappears in another tab. Pending generation queues reserve
+their selected references so another request cannot consume them. This is exact
+matching, not a promise to detect every crop, near-duplicate or edited web image.
+Use **Resume saved work** for an interrupted run; it retains its queue and saved
+images. **Finish batch** releases abandoned pending queues without deleting output.
+
+Click a resource tab's **X** to delete that tab and its resource inventory only.
+Other tabs, the parent batch and generated images remain. Unreferenced owned image
+files are removed; files required by saved generations or another tab are retained
+for provenance and regeneration. Tabs with reserved unfinished work must be
+resumed or their batch finished before deletion. Search/generation state is saved
+with the avatar on Drive and restored after reconnecting. No extra model or API
+provider is required beyond the existing reference-search pipeline.
+
 Auto Gallery reads `GEMINI_API_KEY` and `TAVILY_API_KEY` from the uploaded keys
 txt, the single Colab cell form, Colab Secrets (the key icon in Colab's left
 sidebar), or saved private Drive settings. The committed notebook keeps those

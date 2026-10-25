@@ -368,6 +368,66 @@ class StudioTests(unittest.TestCase):
         self.assertGreaterEqual(snapshot["counts"]["generated"], 2)
         self.assertEqual(self.client.get(f"/api/avatars/{avatar_id}/gallery").json()["total"], 2)
 
+    def test_resource_search_tabs_and_more_generation_stay_in_the_existing_batch(self):
+        avatar_id = self.ready()
+        original = self.job("gallery", avatar_id=avatar_id, new_batch=True, quantity=1, theme="Studio")
+        parent = original["payload"]["batch_id"]
+        base = f"/api/avatars/{avatar_id}"
+        found = self.job("resource_search", avatar_id=avatar_id, batch_id=parent, theme="Beach sunsets", resource_tab_name="Beach", quantity=6)
+        tab_id = found["payload"]["resource_tab_id"]
+        self.assertEqual(self.client.get(base + "/gallery").json()["total"], 1)
+        tabs = self.client.get(base + "/resource-tabs").json()["items"]
+        self.assertEqual(len(tabs), 2)
+        self.assertEqual(next(tab for tab in tabs if tab["id"] == tab_id)["description"], "Beach sunsets")
+        available_before = next(tab for tab in tabs if tab["id"] == tab_id)["counts"]["available"]
+        generated = self.job("resource_generate", avatar_id=avatar_id, batch_id=parent, resource_tab_id=tab_id, quantity=6)
+        self.assertEqual(generated["result"]["batch_id"], parent)
+        self.assertEqual(self.client.get(base + f"/gallery?batch_id={parent}").json()["total"], 7)
+        resources = self.client.get(base + f"/resources?batch_id={parent}&tab_id={tab_id}").json()
+        self.assertEqual(resources["total"], available_before)
+        self.assertEqual(resources["counts"]["used"], 6)
+        unused = self.client.get(base + f"/resources?batch_id={parent}&tab_id={tab_id}&status=unused").json()
+        self.assertEqual(unused["total"], available_before - 6)
+        self.assertTrue(all(not row["used"] and not row.get("reserved") for row in unused["items"]))
+        self.job("resource_generate", avatar_id=avatar_id, batch_id=parent, resource_tab_id=tab_id, quantity=6)
+        items = avatar_studio.load_gallery_items(str(self.root), avatar_id)
+        references = [row["reference_path"] for row in items]
+        self.assertEqual(len(set(references)), len(references))
+        batches = self.client.get(base + "/gallery/batches").json()["items"]
+        self.assertEqual(len(batches), 1)
+        self.assertEqual(batches[0]["counts"]["generated"], 13)
+        deleted = self.client.delete(base + f"/resource-tabs/{tab_id}")
+        self.assertEqual(deleted.status_code, 200, deleted.text)
+        self.assertEqual(self.client.get(base + "/gallery").json()["total"], 13)
+        self.assertTrue(all(Path(row["generated_path"]).is_file() and Path(row["reference_path"]).is_file() for row in items))
+        self.assertEqual([tab["id"] for tab in self.client.get(base + "/resource-tabs").json()["items"]], [parent])
+        stale = self.client.get(base + f"/resources?tab_id={tab_id}")
+        self.assertEqual(stale.status_code, 200)
+        self.assertTrue(stale.json()["deleted"])
+        self.assertEqual(stale.json()["total"], 0)
+
+    def test_resource_search_idempotency_and_cross_batch_validation(self):
+        avatar_id = self.ready()
+        original = self.job("gallery", avatar_id=avatar_id, new_batch=True, quantity=1)
+        parent = original["payload"]["batch_id"]
+        body = {"kind": "resource_search", "avatar_id": avatar_id, "batch_id": parent, "theme": "Cafe", "quantity": 1}
+        headers = {"Idempotency-Key": "resource-search-repeated"}
+        first = self.client.post("/api/jobs", json=body, headers=headers)
+        second = self.client.post("/api/jobs", json=body, headers=headers)
+        self.assertEqual(first.status_code, 200, first.text)
+        self.assertEqual(second.status_code, 200, second.text)
+        self.assertEqual(first.json()["id"], second.json()["id"])
+        for _ in range(200):
+            if self.client.get("/api/jobs/" + first.json()["id"]).json()["status"] not in {"running", "queued"}:
+                break
+            time.sleep(.01)
+        tab_id = first.json()["payload"]["resource_tab_id"]
+        other = self.job("gallery", avatar_id=avatar_id, new_batch=True, quantity=1)
+        invalid = self.client.post("/api/jobs", json={"kind": "resource_generate", "avatar_id": avatar_id,
+            "batch_id": other["payload"]["batch_id"], "resource_tab_id": tab_id}, headers={"Idempotency-Key": "resource-wrong-owner"})
+        self.assertEqual(invalid.status_code, 400)
+        self.assertEqual(len(self.client.get(f"/api/avatars/{avatar_id}/resource-tabs").json()["items"]), 3)
+
     def test_batch_gender_round_trips_through_api_and_persists_independently(self):
         avatar_id = self.ready()
         first = self.job("gallery", avatar_id=avatar_id, new_batch=True, quantity=1, avatar_gender="female")

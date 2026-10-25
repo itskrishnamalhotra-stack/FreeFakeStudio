@@ -26,6 +26,7 @@ import app_settings
 import avatar_resources
 import avatar_gallery
 import avatar_gallery_jobs
+import avatar_resource_tabs
 import avatar_guide
 import avatar_identity as identity
 import avatar_quality as quality
@@ -106,12 +107,14 @@ class Approval(StrictModel):
 
 
 class JobRequest(StrictModel):
-    kind: Literal["generate", "reference", "confirm", "guide", "console", "gallery", "regenerate", "enhance", "mask_preview", "encoder", "unload", "identity_view", "calibrate", "benchmark", "quality_check", "caption", "publish", "reconcile"]
+    kind: Literal["generate", "reference", "confirm", "guide", "console", "gallery", "resource_search", "resource_generate", "regenerate", "enhance", "mask_preview", "encoder", "unload", "identity_view", "calibrate", "benchmark", "quality_check", "caption", "publish", "reconcile"]
     avatar_id: str | None = None
     batch_id: str | None = None
     new_batch: bool = False
     batch_name: str = Field(default="", max_length=120)
     avatar_gender: Literal["female", "male", "any"] = "any"
+    resource_tab_id: str | None = None
+    resource_tab_name: str = Field(default="", max_length=120)
     chat_id: str | None = None
     new_chat: bool = False
     item_id: str | None = None
@@ -598,20 +601,53 @@ def create_app(root=None, persist=None, token=None):
         return {"total": len(rows), "items": [gallery_value(row) for row in rows[offset:offset + limit]], "offset": offset, "counts": counts}
 
     @app.get("/api/avatars/{avatar_id}/resources")
-    def resources(avatar_id: str, status: Literal["all", "pending", "approved", "rejected", "used"] = "all",
+    def resources(avatar_id: str, status: Literal["all", "pending", "approved", "rejected", "used", "unused", "reserved"] = "all",
                   kind: Literal["all", "identity", "uploaded", "search"] = "all", query: str = "", offset: int = 0, limit: int = 48,
-                  batch_id: str | None = None):
+                  batch_id: str | None = None, tab_id: str | None = None):
         check_id(avatar_id)
         if batch_id and not avatar_gallery_jobs.load_batch(str(root), avatar_id, batch_id):
             raise ValueError("Gallery batch not found")
-        rows = avatar_resources.collect(root, avatar_id, service.chats, batch_id)
+        if tab_id:
+            saved = avatar_gallery_jobs.load_batch(str(root), avatar_id, tab_id)
+            if saved and saved.get("resource_deleted") and saved.get("role") in {None, "", "resource_tab"}:
+                if batch_id and saved.get("owner_batch_id", saved["id"]) != batch_id:
+                    raise ValueError("Resource tab does not belong to the selected batch")
+                return {"total": 0, "items": [], "deleted": True,
+                        "counts": {key: 0 for key in ("all", "pending", "approved", "rejected", "used", "unused", "reserved")}}
+        rows = avatar_resources.collect(root, avatar_id, service.chats, batch_id, tab_id)
         counts = {"all": len(rows), **{state: sum(row["state"] == state for row in rows) for state in ("pending", "approved", "rejected")},
-                  "used": sum(row["used"] for row in rows)}
-        rows = [row for row in rows if (status == "all" or (row["used"] if status == "used" else row["state"] == status))
+                  "used": sum(row["used"] for row in rows), "reserved": sum(row.get("reserved", False) for row in rows),
+                  "unused": sum(not row["used"] and not row.get("reserved") and row["state"] != "rejected" for row in rows)}
+        def status_matches(row):
+            if status == "all":
+                return True
+            if status == "used":
+                return row["used"]
+            if status == "reserved":
+                return row.get("reserved", False)
+            if status == "unused":
+                return not row["used"] and not row.get("reserved") and row["state"] != "rejected"
+            return row["state"] == status
+        rows = [row for row in rows if status_matches(row)
                 and (kind == "all" or row["kind"] == kind)
                 and query.casefold() in " ".join(str(row.get(key, "")) for key in ("name", "reason", "check_state", "source_url")).casefold()]
         offset, limit = max(0, offset), max(1, min(100, limit))
         return {"total": len(rows), "counts": counts, "items": [{key: value for key, value in row.items() if key != "path"} | {"image": info(row.get("path"))} for row in rows[offset:offset + limit]]}
+
+    @app.get("/api/avatars/{avatar_id}/resource-tabs")
+    def resource_tabs(avatar_id: str, batch_id: str | None = None):
+        check_id(avatar_id)
+        if batch_id and not avatar_gallery_jobs.load_batch(str(root), avatar_id, batch_id):
+            raise ValueError("Gallery batch not found")
+        return {"items": avatar_resource_tabs.list_tabs(str(root), avatar_id, batch_id)}
+
+    @app.delete("/api/avatars/{avatar_id}/resource-tabs/{tab_id}")
+    def delete_resource_tab(avatar_id: str, tab_id: str):
+        with mutation_lock:
+            ensure_idle(check_id(avatar_id))
+            result = avatar_resource_tabs.delete(str(root), avatar_id, tab_id)
+            jobs.flush()
+            return result
 
     @app.post("/api/avatars/{avatar_id}/gallery/{item_id}/approve")
     def approve_gallery_image(avatar_id: str, item_id: str):
@@ -634,7 +670,9 @@ def create_app(root=None, persist=None, token=None):
         if batch_id and not avatar_gallery_jobs.load_batch(str(root), avatar_id, batch_id):
             raise ValueError("Gallery batch not found")
         snapshot = avatar_gallery_jobs.safe_snapshot(str(root), avatar_id, status, batch_id)
-        catalog = avatar_gallery_jobs.batch_references(str(root), avatar_id, snapshot["job"])
+        catalog = (avatar_resource_tabs.family_references(str(root), avatar_id, snapshot["job"]["id"])
+            if snapshot["job"] and not snapshot["job"].get("role")
+            else avatar_gallery_jobs.batch_references(str(root), avatar_id, snapshot["job"]))
         def matching(row):
             return status == "All findings" or (status == "Approved" and row["state"] == "approved") or (status == "Rejected" and row["state"] == "rejected") or (status == "Awaiting checks" and row["state"] in {"found", "downloaded"})
         return {"counts": snapshot["counts"], "job": snapshot["job"], "events": snapshot["events"], "error": snapshot.get("error"),
@@ -818,11 +856,27 @@ def create_app(root=None, persist=None, token=None):
         with mutation_lock:
             saved_jobs = jobs.list()
             previous = next((row for row in saved_jobs if row["request_key"] == idempotency_key), None)
+            if body.kind in {"resource_search", "resource_generate"}:
+                if body.kind == "resource_generate":
+                    generation.dimensions(body.aspect)
+                if body.resource_tab_id:
+                    source, owner = avatar_resource_tabs.get(str(root), body.avatar_id, body.resource_tab_id)
+                    if body.batch_id and owner["id"] != body.batch_id:
+                        raise ValueError("Resource tab does not belong to the selected batch")
+                    if owner.get("archived"):
+                        raise ValueError("Restore this batch before using its resource tabs")
+                    if body.kind == "resource_search" and body.theme.strip() and body.theme.strip() != source["theme"]:
+                        raise ValueError("Create a new resource tab for a different search description")
+                    args["batch_id"] = owner["id"]
+                elif body.kind == "resource_generate":
+                    raise ValueError("Select a resource tab before generating")
+                elif not body.batch_id or not body.theme.strip():
+                    raise ValueError("Choose a batch and write a resource search description")
             if body.kind == "gallery" and body.batch_id and previous is None:
                 if body.new_batch:
                     raise ValueError("Choose either a new batch or an existing batch")
                 batch = avatar_gallery_jobs.load_batch(str(root), check_id(body.avatar_id), body.batch_id)
-                if not batch or batch.get("archived") or batch["status"] in {"complete", "exhausted"}:
+                if not batch or batch.get("role") or batch.get("archived") or batch["status"] in {"complete", "exhausted"}:
                     raise ValueError("Select an unfinished, unarchived batch to resume")
             for pending in saved_jobs:
                 if previous is None and pending["request_key"] != idempotency_key and pending["status"] in {"queued", "running"}:
@@ -851,6 +905,14 @@ def create_app(root=None, persist=None, token=None):
                         body.theme, body.require_face, body.batch_name, batch_id, body.avatar_gender)
                     avatar_gallery_jobs.update_batch(str(root), body.avatar_id, batch_id=batch_id, status="pending", phase="pending")
                     args["batch_id"] = batch["id"]
+            if body.kind == "resource_search" and not body.resource_tab_id:
+                if previous:
+                    args["resource_tab_id"] = previous["payload"]["resource_tab_id"]
+                else:
+                    service.ready_avatar(body.avatar_id)
+                    identifier = hashlib.sha256((body.avatar_id + idempotency_key + ":resource").encode()).hexdigest()[:12]
+                    tab = avatar_resource_tabs.create_tab(str(root), body.avatar_id, body.batch_id, identifier, body.theme, body.resource_tab_name)
+                    args["resource_tab_id"] = tab["id"]
             job = jobs.submit(body.kind, args, idempotency_key)
             if body.kind in {"generate", "console"} and body.new_chat:
                 service.chats.append(args["chat_id"], scope, {"id": job["id"] + "-user", "role": "user", "text": body.prompt, "images": body.images})

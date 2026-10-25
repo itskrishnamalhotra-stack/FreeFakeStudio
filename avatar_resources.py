@@ -5,27 +5,31 @@ from pathlib import Path
 import avatar_gallery_jobs as batches
 import avatar_studio as studio
 import avatar_identity as identity
+import avatar_resource_tabs as tabs
 
 
-def collect(root, avatar_id, chats, batch_id=None):
+def collect(root, avatar_id, chats, batch_id=None, tab_id=None):
     root = Path(root).resolve()
     avatar = studio.load_avatar(str(root), avatar_id)
     catalog_path = studio.avatar_path(str(root), avatar_id) / "gallery/references/catalog.json"
     if not catalog_path.exists():
         batches.import_legacy_references(str(root), avatar_id)
-    catalog = batches.load_catalog(str(root), avatar_id)["references"]
+    catalog = tabs.family_references(str(root), avatar_id, batch_id)
     outputs = studio.load_gallery_items(str(root), avatar_id)
-    used = batches._used_references(str(root), avatar_id)
+    used, reserved = tabs.reference_usage(str(root), avatar_id)
+    if tab_id:
+        selected, owner = tabs.get(str(root), avatar_id, tab_id)
+        if batch_id and owner["id"] != batch_id:
+            raise ValueError("Resource tab does not belong to the selected batch")
+        catalog = tabs.tab_rows(str(root), avatar_id, selected)
     if batch_id:
-        job = batches.load_batch(str(root), avatar_id, batch_id)
-        catalog = batches.batch_references(str(root), avatar_id, job)
         outputs = [row for row in outputs if row.get("batch_id") == batch_id]
-        used = {str(row.get(key)) for row in outputs if row.get("generated_path")
-                for key in ("reference_id", "reference_url", "reference_path") if row.get(key)}
-    committed = {str(row.get("reference_id")) for row in outputs if row.get("reference_id")}
+    committed = {str(row[key]) for row in outputs for key in ("reference_id", "source_reference_id") if row.get(key)}
     rows, by_path = [], {}
 
     def add(identifier, path, **values):
+        if tab_id and values.get("resource_tab_id") != tab_id:
+            return
         if batch_id and values.get("batch_id") != batch_id:
             return
         resolved = (root / path).resolve() if path else None
@@ -55,14 +59,23 @@ def collect(root, avatar_id, chats, batch_id=None):
         add("identity-" + candidate["id"], candidate["path"], name=candidate["view"].replace("-", " ") + " reference", kind="identity",
             state="approved" if approved else "pending", check_state="human_approved" if approved else "awaiting_approval",
             reason="Approved identity-pack reference" if approved else "Identity candidate; awaiting human approval", used=consumed)
+    sources = {}
     for row in catalog:
         state = row.get("state", "found")
+        source_id = row.get("batch_id") or tab_id
+        if source_id not in sources:
+            sources[source_id] = batches.load_batch(str(root), avatar_id, source_id) if source_id else {}
+        source = sources[source_id]
+        owner_id = (source or {}).get("owner_batch_id", source_id)
+        keys = tabs.reference_keys(row)
+        consumed = bool(keys & used)
+        held = bool(keys & reserved and not consumed)
         add("search-" + row["id"], row.get("path"), name=row.get("title") or "Search reference", kind="search",
-            batch_id=row.get("batch_id") or (batch_id if batch_id else None),
+            batch_id=owner_id or batch_id, resource_tab_id=source_id, reserved=held,
             state=state if state in {"approved", "rejected"} else "pending", check_state=state,
             reason=row.get("reason", ""), source_url=row.get("source_url") or row.get("image_url"),
             validation=row.get("validation"), committed=row["id"] in committed,
-            used=any(str(row.get(key)) in used for key in ("id", "path", "image_url") if row.get(key)))
+            used=consumed)
 
     def uploaded(path, consumed):
         if path:
