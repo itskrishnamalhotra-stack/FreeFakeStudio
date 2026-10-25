@@ -50,7 +50,8 @@ class ResourceTabTests(unittest.TestCase):
                 row = {"path": str(path), "image_url": f"https://example.test/{tab_id}/{index}.png",
                        "pixel_hash": f"pixels-{tab_id}-{index}"}
                 jobs.add_references(self.temp, self.aid, [row], source["theme"])
-                jobs.update_reference(self.temp, self.aid, jobs._reference_id(row), state="approved", validation=approval())
+                jobs.update_reference(self.temp, self.aid, jobs._reference_id(row), state="approved",
+                    validation=approval(**gallery.reference_policy(source["theme"], source["require_face"], source.get("avatar_gender", "any"))))
         finally:
             jobs._batch_scope.reset(token)
         return tabs.tab_rows(self.temp, self.aid, source)

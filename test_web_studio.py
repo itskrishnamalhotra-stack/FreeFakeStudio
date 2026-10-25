@@ -428,6 +428,34 @@ class StudioTests(unittest.TestCase):
         self.assertEqual(invalid.status_code, 400)
         self.assertEqual(len(self.client.get(f"/api/avatars/{avatar_id}/resource-tabs").json()["items"]), 3)
 
+    def test_resource_review_rechecks_legacy_approvals_without_search_or_generation(self):
+        import avatar_gallery as gallery
+        import avatar_gallery_jobs as batches
+        avatar_id = self.ready()
+        original = self.job("gallery", avatar_id=avatar_id, new_batch=True, quantity=1, theme="Studio")
+        parent = original["payload"]["batch_id"]
+        found = self.job("resource_search", avatar_id=avatar_id, batch_id=parent, theme="Beach swimwear", quantity=2)
+        tab_id = found["payload"]["resource_tab_id"]
+        base = f"/api/avatars/{avatar_id}"
+        tab = batches.load_batch(str(self.root), avatar_id, tab_id)
+        rows = batches.batch_references(str(self.root), avatar_id, tab)
+        for row in rows:
+            batches.update_reference(str(self.root), avatar_id, row["id"], validation={"accept": True, "score": 100})
+        counts = self.client.get(base + f"/resource-tabs?batch_id={parent}").json()["items"]
+        stale = next(row for row in counts if row["id"] == tab_id)
+        self.assertEqual(stale["counts"]["available"], 0)
+        self.assertEqual(stale["counts"]["pending"], len(rows))
+        with patch.object(gallery, "_tavily_search", side_effect=AssertionError("Review cannot search")), \
+             patch.object(gallery, "gemini_json", side_effect=AssertionError("Local preview must use mock checks")):
+            reviewed = self.job("resource_review", avatar_id=avatar_id, batch_id=parent, resource_tab_id=tab_id)
+        self.assertTrue(reviewed["result"]["review_only"])
+        self.assertEqual(self.client.get(base + "/gallery").json()["total"], 1)
+        resources = self.client.get(base + f"/resources?tab_id={tab_id}&status=approved").json()
+        self.assertEqual(resources["total"], len(rows))
+        missing = self.client.post("/api/jobs", json={"kind": "resource_review", "avatar_id": avatar_id},
+                                   headers={"Idempotency-Key": "review-without-source"})
+        self.assertEqual(missing.status_code, 400)
+
     def test_batch_gender_round_trips_through_api_and_persists_independently(self):
         avatar_id = self.ready()
         first = self.job("gallery", avatar_id=avatar_id, new_batch=True, quantity=1, avatar_gender="female")
@@ -551,14 +579,15 @@ class StudioTests(unittest.TestCase):
         search = self.client.get(base + "?kind=search").json()
         self.assertEqual(search["total"], 3)
         pending = self.client.get(base + "?kind=search&status=pending").json()
-        self.assertEqual(pending["total"], 1)
-        self.assertIsNone(pending["items"][0]["image"])
+        self.assertEqual(pending["total"], 2)
+        self.assertTrue(any(row["image"] is None for row in pending["items"]))
+        self.assertTrue(any("Recheck required" in row["reason"] for row in pending["items"]))
         rejected = self.client.get(base + "?status=rejected&query=blurred").json()
         self.assertEqual(rejected["items"][0]["reason"], "Blurred face")
         used = self.client.get(base + "?status=used&kind=search").json()
         self.assertEqual(used["total"], 1)
         self.assertTrue(used["items"][0]["committed"])
-        self.assertEqual(self.client.get(base + "?status=approved&kind=search").json()["total"], 1)
+        self.assertEqual(self.client.get(base + "?status=approved&kind=search").json()["total"], 0)
         other = self.avatar()
         self.assertEqual(self.client.get(f"/api/avatars/{other}/resources").json()["total"], 0)
 

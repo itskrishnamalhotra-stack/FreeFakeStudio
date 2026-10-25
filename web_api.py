@@ -107,7 +107,7 @@ class Approval(StrictModel):
 
 
 class JobRequest(StrictModel):
-    kind: Literal["generate", "reference", "confirm", "guide", "console", "gallery", "resource_search", "resource_generate", "regenerate", "enhance", "mask_preview", "encoder", "unload", "identity_view", "calibrate", "benchmark", "quality_check", "caption", "publish", "reconcile"]
+    kind: Literal["generate", "reference", "confirm", "guide", "console", "gallery", "resource_search", "resource_generate", "resource_review", "regenerate", "enhance", "mask_preview", "encoder", "unload", "identity_view", "calibrate", "benchmark", "quality_check", "caption", "publish", "reconcile"]
     avatar_id: str | None = None
     batch_id: str | None = None
     new_batch: bool = False
@@ -673,6 +673,7 @@ def create_app(root=None, persist=None, token=None):
         catalog = (avatar_resource_tabs.family_references(str(root), avatar_id, snapshot["job"]["id"])
             if snapshot["job"] and not snapshot["job"].get("role")
             else avatar_gallery_jobs.batch_references(str(root), avatar_id, snapshot["job"]))
+        catalog = avatar_gallery_jobs.project_references(str(root), avatar_id, catalog)
         def matching(row):
             return status == "All findings" or (status == "Approved" and row["state"] == "approved") or (status == "Rejected" and row["state"] == "rejected") or (status == "Awaiting checks" and row["state"] in {"found", "downloaded"})
         return {"counts": snapshot["counts"], "job": snapshot["job"], "events": snapshot["events"], "error": snapshot.get("error"),
@@ -853,10 +854,12 @@ def create_app(root=None, persist=None, token=None):
                 raise ValueError("Select a saved image first")
         if body.kind == "regenerate" and not body.item_id:
             raise ValueError("Select a saved image first")
+        if (body.kind == "resource_search" and not body.resource_tab_id) or (body.kind == "gallery" and body.new_batch):
+            avatar_gallery._search_query(body.theme, avatar_gender=body.avatar_gender)
         with mutation_lock:
             saved_jobs = jobs.list()
             previous = next((row for row in saved_jobs if row["request_key"] == idempotency_key), None)
-            if body.kind in {"resource_search", "resource_generate"}:
+            if body.kind in {"resource_search", "resource_generate", "resource_review"}:
                 if body.kind == "resource_generate":
                     generation.dimensions(body.aspect)
                 if body.resource_tab_id:
@@ -868,8 +871,8 @@ def create_app(root=None, persist=None, token=None):
                     if body.kind == "resource_search" and body.theme.strip() and body.theme.strip() != source["theme"]:
                         raise ValueError("Create a new resource tab for a different search description")
                     args["batch_id"] = owner["id"]
-                elif body.kind == "resource_generate":
-                    raise ValueError("Select a resource tab before generating")
+                elif body.kind in {"resource_generate", "resource_review"}:
+                    raise ValueError("Select a resource tab first")
                 elif not body.batch_id or not body.theme.strip():
                     raise ValueError("Choose a batch and write a resource search description")
             if body.kind == "gallery" and body.batch_id and previous is None:

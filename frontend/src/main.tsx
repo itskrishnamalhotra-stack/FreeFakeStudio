@@ -1897,6 +1897,10 @@ function App() {
           {isResources && <ResourceTabs tabs={resourceTabs} selected={resourceTab} busy={busy} jobs={jobs}
             select={id => selectResourceTab(id)} search={openResourceSearch}
             generate={tab => setResourceGeneration({tab, quantity: 6})} remove={setResourceDelete}
+            review={async tab => {
+              const job = await action({kind: "resource_review", avatar_id: avatarId, batch_id: tab.batch_id, resource_tab_id: tab.id});
+              if (job) setResourceFilter("all");
+            }}
             resume={job => write("/jobs/" + job.id + "/resume").then(refresh).catch(fail)} />}
           <div className="gallery-filters">
             <div className="search-box">

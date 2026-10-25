@@ -550,7 +550,13 @@ that preserves batch selection in the URL.
 
 Local file checks reject unreadable, undersized, blank, oversized, and exact
 duplicate images. Gemini then checks clarity, adult-subject confidence, and useful
-outfit/pose visibility. **Require visible face** is optional and off by default:
+outfit/pose visibility against the **selected resource tab's exact description**.
+Clothing, scene, subject requirements, source-name attribution and dominant text
+overlays are separate checks. Mismatches, uncertain evidence and missing answers
+cannot pass solely because a photo is clear. For a named source person, titles,
+descriptions and source URLs provide attribution evidence; faces are not used to
+identify people, and source attribution is not proof of identity.
+**Require visible face** is optional and off by default:
 a hidden face can still provide a useful clothing or pose reference. These checks
 are estimates, so inspect their findings and generated results yourself.
 
@@ -607,6 +613,23 @@ description, and create another independent resource tab. **Search more** in a
 selected tab searches again using its saved description and a fresh bounded search
 budget. Search jobs only gather/check references; they do not generate images.
 Each tab inherits the batch's avatar-gender and visible-face rules.
+
+Search descriptions are preserved instead of rewritten into broad fashion queries.
+Keep them within 400 characters, the [Tavily query limit](https://help.tavily.com/articles/5504684071-optimizing-your-query-parameter).
+The entire saved description is still used for visual checks. Search findings are
+not approvals. In **Resources**, select the tab and click **Review resources** to
+check its existing unused findings without another search or FLUX generation.
+Checks remain bounded by the download budget; repeat review if undownloaded
+findings remain. A Gemini outage preserves downloaded images and saved verdicts;
+**Resume saved work** continues the check.
+
+Approvals from earlier releases appear as awaiting recheck, not Ready unused.
+**Generate more** automatically rechecks them before committing any new image.
+Resuming an old unfinished generation queue also rechecks references before new
+generation: rejected references are skipped, not silently used. Completed images
+are retained. Valid checks are scoped to their exact saved description, gender
+selection, face rule and check version; they cannot be reused for a different tab
+request. The tab heading displays the selected search's name, not its parent batch.
 
 The Ready unused, Awaiting checks, Used and Reserved counters distinguish usable
 resources from work still to do. References already generated for this avatar are

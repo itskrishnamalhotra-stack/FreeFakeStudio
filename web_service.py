@@ -128,7 +128,7 @@ class StudioService:
             return self.console(args, context)
         if kind == "gallery":
             return self.gallery(args, context)
-        if kind in {"resource_search", "resource_generate"}:
+        if kind in {"resource_search", "resource_generate", "resource_review"}:
             return self.resource_operation(kind, args, context)
         if kind == "regenerate":
             return self.regenerate(args, context)
@@ -311,7 +311,8 @@ class StudioService:
         return avatar_resource_tabs.run(str(self.root), args["avatar_id"], args["resource_tab_id"],
             args["quantity"], args["aspect"], context, self.gallery_prompt,
             lambda *items: self.gallery_image(*items, context), self.validate, repair,
-            search=kind == "resource_search", mock_discover=self.mock_references if model_manager.DEV_MODE else None)
+            search=kind == "resource_search", review_only=kind == "resource_review",
+            mock_discover=self.mock_references if model_manager.DEV_MODE else None)
 
     def regenerate(self, args, context):
         item = studio.gallery_item_by_id(str(self.root), args["avatar_id"], args["item_id"])

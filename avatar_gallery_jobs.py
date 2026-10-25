@@ -16,7 +16,7 @@ import avatar_studio as studio
 
 _run_lock = threading.Lock()
 _state_lock = threading.RLock()
-TERMINAL = {"passed", "needs_review"}
+TERMINAL = {"passed", "needs_review", "reference_rejected"}
 # A running generator must never follow another batch's active UI pointer.
 _batch_scope = ContextVar("gallery_batch_scope", default=None)
 
@@ -182,6 +182,27 @@ def batch_references(save_dir, avatar_id, job):
             (row["id"] in ids or row.get("theme", "") in ("", job["theme"]))]
 
 
+def reference_ready(row, job):
+    return row.get("state") == "approved" and gallery.reference_passes(
+        row.get("validation") or {}, job.get("require_face", False), job.get("avatar_gender", "any"), job.get("theme", ""))
+
+
+def project_references(save_dir, avatar_id, rows, states=None):
+    """Old approvals are pending until checked against their own saved tab request."""
+    states = dict(states or {})
+    result = []
+    for row in rows:
+        owner_id = row.get("batch_id")
+        if owner_id not in states:
+            states[owner_id] = load_batch(save_dir, avatar_id, owner_id) if owner_id else None
+        owner = states[owner_id] or {"theme": row.get("theme", "")}
+        if row.get("state") == "approved" and not reference_ready(row, owner):
+            row = {**row, "state": "downloaded" if os.path.isfile(row.get("path") or "") else "found",
+                   "reason": "Recheck required: earlier approval did not verify this tab's current request"}
+        result.append(row)
+    return result
+
+
 def list_batches(save_dir, avatar_id):
     items = studio.load_gallery_items(save_dir, avatar_id)
     result = []
@@ -195,7 +216,7 @@ def list_batches(save_dir, avatar_id):
         all_ids = job.get("item_ids", []) + [key for child in children for key in child.get("item_ids", [])]
         rows = [row for row in items if row.get("batch_id") == job["id"] and row.get("origin") == "auto"]
         from avatar_resource_tabs import family_references
-        references = family_references(save_dir, avatar_id, job["id"], states, catalog)
+        references = project_references(save_dir, avatar_id, family_references(save_dir, avatar_id, job["id"], states, catalog), states)
         result.append({**job, "quantity": job["quantity"] + sum(child["quantity"] for child in children),
                        "name": job.get("name") or job.get("theme") or "Untitled batch",
                        "counts": {"found": len(references), "approved": sum(r.get("state") == "approved" for r in references),
@@ -279,9 +300,17 @@ def _available(save_dir, avatar_id, job):
 
 def _approved(save_dir, avatar_id, job):
     return [row for row in _available(save_dir, avatar_id, job)
-            if row.get("state") == "approved" and os.path.isfile(row.get("path") or "")
-            and gallery.reference_presentation_matches(row.get("validation") or {}, job.get("avatar_gender", "any"))
-            and (not job["require_face"] or (row.get("validation") or {}).get("face_visible") is True)]
+            if reference_ready(row, job) and os.path.isfile(row.get("path") or "")]
+
+
+def _mock_reference_check(job):
+    return {"accept": True, "score": 100, "face_visible": True, "image_clear": True,
+            "adult_confidence": 100, "adult_person_visible": True, "outfit_or_pose_visible": True,
+            "person_large_enough": True, "major_obstruction": False,
+            "request_match": "match", "request_reason": "Mock request check; no real visual analysis",
+            **{key: "not_requested" for key in ("clothing_match", "scene_match", "subject_match", "source_name_match")},
+            "text_overlay": "none", "avatar_gender": job.get("avatar_gender", "any"), "presentation_match": "match",
+            **gallery.reference_policy(job["theme"], job["require_face"], job.get("avatar_gender", "any"))}
 
 
 def _create_batch(save_dir, avatar_id, quantity, aspect, theme, require_face, name="", batch_id=None, avatar_gender="any"):
@@ -294,13 +323,14 @@ def _create_batch(save_dir, avatar_id, quantity, aspect, theme, require_face, na
            "avatar_gender": avatar_gender,
            "identity_fingerprint": studio.identity_fingerprint(avatar), "item_ids": [],
            "reference_ids": [], "queries": [], "round": 0, "downloads": 0, "events": [],
+           "search_query_version": 2,
            "stop_requested": False, "created_at": studio._now(), "message": "Gathering references"}
     studio._atomic_json(_batch_path(save_dir, avatar_id, job["id"]), job)
     studio._atomic_json(_root(save_dir, avatar_id) / "active_batch.json", {"id": job["id"]})
     return job
 
 
-def _discover(save_dir, avatar_id, job, mock_discover=None, target_quantity=None, allow_search=True):
+def _discover(save_dir, avatar_id, job, mock_discover=None, target_quantity=None, allow_search=True, reference_ids=None, mock_validate=False):
     target = job["quantity"] if target_quantity is None else target_quantity
     if job.get("version", 1) < 2:
         import_legacy_references(save_dir, avatar_id)
@@ -311,9 +341,15 @@ def _discover(save_dir, avatar_id, job, mock_discover=None, target_quantity=None
         add_references(save_dir, avatar_id, references, job["theme"])
         for row in references:
             update_reference(save_dir, avatar_id, _reference_id(row), state="approved", reason="Mock visual check",
-                             validation={"accept": True, "score": 100, "face_visible": True, "image_clear": True,
-                                         "avatar_gender": job.get("avatar_gender", "any"), "presentation_match": "match"})
+                             validation=_mock_reference_check(job))
         return
+    if allow_search and job.get("search_query_version") != 2:
+        job = update_batch(save_dir, avatar_id, search_query_version=2, round=0, queries=[],
+                           previous_queries=job.get("previous_queries", []) + job.get("queries", []))
+    def available():
+        if reference_ids is not None:
+            return [row for row in batch_references(save_dir, avatar_id, job) if row["id"] in reference_ids]
+        return _available(save_dir, avatar_id, job)
     rounds = gallery._env_int("FFS_AVATAR_SEARCH_ROUNDS", 3, 1, 5)
     maximum = gallery._env_int("FFS_AVATAR_MAX_CANDIDATE_DOWNLOADS", 60, 10, 120)
     while True:
@@ -321,12 +357,15 @@ def _discover(save_dir, avatar_id, job, mock_discover=None, target_quantity=None
         job = load_batch(save_dir, avatar_id)
         if len(_approved(save_dir, avatar_id, job)) >= target:
             return
-        rows = _available(save_dir, avatar_id, job)
+        rows = available()
         for row in rows:
             if row.get("state") in {"downloaded", "approved"} and not os.path.isfile(row.get("path") or ""):
                 update_reference(save_dir, avatar_id, row["id"], state="found", reason="Saved reference missing; download pending")
-        rows = _available(save_dir, avatar_id, job)
-        pending = [row for row in rows if row.get("state") == "found"]
+        rows = available()
+        waiting_for_visual = any(os.path.isfile(row.get("path") or "") and (
+            row.get("state") == "downloaded" or (row.get("state") == "approved" and not reference_ready(row, job))) for row in rows)
+        # Review already-downloaded evidence before spending another network/download budget.
+        pending = [] if waiting_for_visual else [row for row in rows if row.get("state") == "found"]
         for row in pending:
             if job["downloads"] >= maximum:
                 break
@@ -347,16 +386,15 @@ def _discover(save_dir, avatar_id, job, mock_discover=None, target_quantity=None
             except (gallery.requests.RequestException, OSError, ValueError, Image.DecompressionBombError) as exc:
                 update_reference(save_dir, avatar_id, row["id"], state="rejected", reason=f"Download/file check: {type(exc).__name__}: {str(exc)[:300]}")
             yield "Reference file checked"
-        rows = _available(save_dir, avatar_id, job)
+        rows = available()
         visual = [row for row in rows if row.get("state") == "downloaded" or (
-            row.get("state") == "approved" and (
-                (job["require_face"] and (row.get("validation") or {}).get("face_visible") is not True)
-                or not gallery.reference_presentation_matches(row.get("validation") or {}, job.get("avatar_gender", "any"))))]
+            row.get("state") == "approved" and not reference_ready(row, job))]
+        visual.sort(key=lambda row: row.get("state") != "approved")
         for start in range(0, len(visual), 8):
             if len(_approved(save_dir, avatar_id, job)) >= target:
                 return
             gallery.check_cancelled()
-            note(save_dir, avatar_id, "Gemini is checking clarity, subject and reference suitability", "cleaning")
+            note(save_dir, avatar_id, "Checking requested clothing, subject, scene, clarity and overlays", "cleaning")
             batch = []
             for row in visual[start:start + 8]:
                 if not os.path.isfile(row.get("path") or ""):
@@ -386,20 +424,29 @@ def _discover(save_dir, avatar_id, job, mock_discover=None, target_quantity=None
 
             def checked(row, validation, accepted):
                 reason = ("Visible face required" if job["require_face"] and validation.get("face_visible") is not True
-                          else validation.get("reason") or ("Approved" if accepted else "Visual check failed"))
+                          else (validation.get("request_reason") if accepted else validation.get("reason"))
+                          or ("Approved" if accepted else "Visual check failed"))
                 if not gallery.reference_presentation_matches(validation, job.get("avatar_gender", "any")):
                     verdict = validation.get("presentation_match", "unclear")
                     reason = (f"Reference presentation {verdict} for {job['avatar_gender']} avatar: "
                               + str(validation.get("presentation_reason") or "No confident suitable match"))
+                elif not gallery.reference_relevance_matches(validation):
+                    reason = "Request mismatch or uncertain evidence: " + str(validation.get("request_reason") or "Missing request-specific checks")
                 update_reference(save_dir, avatar_id, row["id"], state="approved" if accepted else "rejected",
                                  validation=validation, reason=reason)
 
             if batch:
-                gallery._validate_references(batch, on_result=checked, require_face=job["require_face"],
-                                             avatar_gender=job.get("avatar_gender", "any"))
+                if mock_validate:
+                    for row in batch:
+                        checked(row, _mock_reference_check(job), True)
+                else:
+                    gallery._validate_references(batch, on_result=checked, require_face=job["require_face"],
+                                                 avatar_gender=job.get("avatar_gender", "any"), theme=job["theme"])
             yield "Reference visual checks saved"
         if len(_approved(save_dir, avatar_id, job)) >= target:
             return
+        if waiting_for_visual and job["downloads"] < maximum and any(row.get("state") == "found" for row in available()):
+            continue
         if not allow_search:
             return
         if job["round"] >= rounds or job["downloads"] >= maximum:
@@ -407,8 +454,11 @@ def _discover(save_dir, avatar_id, job, mock_discover=None, target_quantity=None
         note(save_dir, avatar_id, f"Searching reference round {job['round'] + 1}/{rounds}", "finding")
         queries = job["queries"]
         if len(queries) <= job["round"]:
-            variation = job["theme"] if job["round"] == 0 else f"{job['theme']}; different outfit, pose and setting"
+            variation = job["theme"]
             query = gallery._search_query(variation, avatar_gender=job.get("avatar_gender", "any"))
+            suffix = (" high resolution photograph" if job["round"] % 2 else " editorial photograph") if job["round"] else ""
+            if len(query) + len(suffix) <= 400:
+                query += suffix
             queries = queries + [query]
             job = update_batch(save_dir, avatar_id, queries=queries)
         payload = gallery._tavily_search(queries[job["round"]], max_results=20)
@@ -483,6 +533,12 @@ def _run(save_dir, avatar_id, quantity, aspect, theme, require_face, make_prompt
                 if job.get("role") != "generation_run":
                     for message in _discover(save_dir, avatar_id, job, mock_discover):
                         yield note(save_dir, avatar_id, message)
+                else:
+                    # Old saved runs may have reserved references before request-aware checks existed.
+                    for message in _discover(save_dir, avatar_id, job, target_quantity=1_000_000,
+                                             allow_search=False, reference_ids=set(job.get("reference_ids", [])) or None,
+                                             mock_validate=mock_discover is not None):
+                        yield note(save_dir, avatar_id, message)
                 job = load_batch(save_dir, avatar_id)
                 references = _approved(save_dir, avatar_id, job)[:job["quantity"]]
                 if not references:
@@ -509,10 +565,27 @@ def _run(save_dir, avatar_id, quantity, aspect, theme, require_face, make_prompt
                 job = update_batch(save_dir, avatar_id, item_ids=item_ids,
                                    reference_ids=[row["id"] for row in references], phase="prompting")
                 yield note(save_dir, avatar_id, f"Committed {len(item_ids)} approved references to the batch")
+            pending = [_item(save_dir, avatar_id, identifier) for identifier in job["item_ids"]]
+            reference_ids = {item["reference_id"] for item in pending if item["status"] != "reference_rejected"
+                             and (item["status"] not in TERMINAL or not os.path.isfile(item.get("generated_path") or ""))}
+            if reference_ids:
+                for message in _discover(save_dir, avatar_id, job, target_quantity=1_000_000,
+                                         allow_search=False, reference_ids=reference_ids, mock_validate=mock_discover is not None):
+                    yield note(save_dir, avatar_id, message)
+                references = {row["id"]: row for row in batch_references(save_dir, avatar_id, job)}
+                for item in pending:
+                    if item["reference_id"] in reference_ids and not reference_ready(references.get(item["reference_id"], {}), job):
+                        reason = references.get(item["reference_id"], {}).get("reason") or "Reference no longer passes request checks"
+                        studio.update_gallery_item(save_dir, avatar_id, item["id"], queue_closed=True,
+                            status="needs_review" if item.get("generated_path") else "reference_rejected",
+                            reference_error=reason)
+                        yield note(save_dir, avatar_id, f"Skipped unrelated reference: {reason}")
             # All prompts are durably prepared before any new image is generated.
             for index, item_id in enumerate(job["item_ids"], 1):
                 gallery.check_cancelled()
                 item = _item(save_dir, avatar_id, item_id)
+                if item["status"] == "reference_rejected":
+                    continue
                 if item.get("prompt"):
                     continue
                 yield note(save_dir, avatar_id, f"Preparing prompt {index}/{len(job['item_ids'])}", "prompting")
@@ -526,6 +599,8 @@ def _run(save_dir, avatar_id, quantity, aspect, theme, require_face, make_prompt
             def generate_and_check(item_id, index):
                 gallery.check_cancelled()
                 item = _item(save_dir, avatar_id, item_id)
+                if item["status"] == "reference_rejected":
+                    return
                 reference = next(row for row in load_catalog(save_dir, avatar_id)["references"] if row["id"] == item["reference_id"])
                 if item["status"] != "checking" or not os.path.isfile(item.get("generated_path") or ""):
                     yield note(save_dir, avatar_id, f"Generating image {index}/{len(job['item_ids'])}", "generating")
@@ -565,7 +640,11 @@ def _run(save_dir, avatar_id, quantity, aspect, theme, require_face, make_prompt
                     yield from generate_and_check(item_id, index)
             items = [_item(save_dir, avatar_id, item_id) for item_id in job["item_ids"]]
             passed = sum(item["status"] == "passed" for item in items)
-            message = f"Saved {len(items)} image(s): {passed} passed, {len(items) - passed} need review."
+            generated = sum(bool(item.get("generated_path")) for item in items)
+            skipped = sum(item["status"] == "reference_rejected" for item in items)
+            message = f"Saved {generated} image(s): {passed} passed, {generated - passed} need review."
+            if skipped:
+                message += f" Skipped {skipped} references that failed the resource-tab request checks."
             if len(items) < job["quantity"]:
                 message += (f" {job['quantity'] - len(items)} fewer unused references were usable in the selected resource tab."
                             if job.get("role") == "generation_run" else
@@ -608,6 +687,7 @@ def snapshot(save_dir, avatar_id, filter_value="All findings", batch_id=None):
         catalog = family_references(save_dir, avatar_id, job["id"])
     else:
         catalog = batch_references(save_dir, avatar_id, job)
+    catalog = project_references(save_dir, avatar_id, catalog)
     items = studio.load_gallery_items(save_dir, avatar_id)
     batch_items = [row for row in items if job and (row["id"] in job.get("item_ids", []) or (
         not job.get("role") and row.get("batch_id") == job["id"] and row.get("origin") == "auto"))]

@@ -121,6 +121,7 @@ export type ResourceTab = {
   batch_name: string;
   name: string;
   description: string;
+  queries?: string[];
   avatar_gender: AvatarGender;
   archived: boolean;
   status: string;

@@ -85,23 +85,22 @@ def list_tabs(root, avatar_id, batch_id=None):
         if batch_id and owner_id != batch_id:
             continue
         owner = jobs.load_batch(root, avatar_id, owner_id)
-        rows = tab_rows(root, avatar_id, tab)
+        rows = jobs.project_references(root, avatar_id, tab_rows(root, avatar_id, tab), {tab["id"]: tab})
         counts = {"found": len(rows), "used": 0, "reserved": 0, "available": 0, "pending": 0, "rejected": 0}
         for row in rows:
             keys = reference_keys(row)
             counts["used"] += bool(keys & consumed)
             counts["reserved"] += bool(keys & reserved and not keys & consumed)
-            valid = (row.get("state") == "approved" and os.path.isfile(row.get("path") or "")
-                     and gallery.reference_presentation_matches(row.get("validation") or {}, tab.get("avatar_gender", "any"))
-                     and (not tab.get("require_face") or (row.get("validation") or {}).get("face_visible") is True))
+            valid = jobs.reference_ready(row, tab) and os.path.isfile(row.get("path") or "")
             counts["available"] += bool(valid and not keys & (consumed | reserved))
-            counts["pending"] += row.get("state") in {"found", "downloaded"}
+            counts["pending"] += bool(row.get("state") in {"found", "downloaded"} and not keys & (consumed | reserved))
             counts["rejected"] += row.get("state") == "rejected"
         result.append({"id": tab["id"], "batch_id": owner_id, "batch_name": owner.get("name") or owner.get("theme") or "Untitled batch",
             "name": tab.get("name") or tab.get("theme") or "Original search", "description": tab.get("theme", ""),
             "avatar_gender": tab.get("avatar_gender", "any"), "require_face": tab.get("require_face", False),
             "archived": owner.get("archived", False), "counts": counts,
             "status": tab.get("resource_status", tab.get("status", "saved")),
+            "queries": tab.get("queries", []),
             "error": tab.get("resource_error"), "created_at": tab["created_at"]})
     return sorted(result, key=lambda row: (row["created_at"], row["id"]))
 
@@ -143,7 +142,7 @@ def _write_run(root, avatar_id, source, owner, run_id, references, quantity, asp
 
 
 def run(root, avatar_id, tab_id, quantity, aspect, context, make_prompt, generate, validate, repair,
-        search=False, mock_discover=None):
+        search=False, mock_discover=None, review_only=False):
     source, owner = get(root, avatar_id, tab_id)
     if owner.get("archived"):
         raise ValueError("Restore this batch before using its resources")
@@ -169,17 +168,17 @@ def run(root, avatar_id, tab_id, quantity, aspect, context, make_prompt, generat
                     changes.update(round=0, downloads=0, queries=[], resource_search_history=history,
                                    resource_target=len(jobs._approved(root, avatar_id, source)) + quantity)
                 else:
-                    changes.update(resource_target=quantity)
+                    changes.update(resource_target=1_000_000 if review_only else quantity)
                 source = jobs.update_batch(root, avatar_id, **changes)
             context.checkpoint(resource_tab_id=tab_id, owner_batch_id=owner["id"])
             with gallery.api_context(context.emit, lambda: context.store.stopping.is_set() or context.store.get(context.id).get("cancel_requested", False)):
                 for message in jobs._discover(root, avatar_id, source, mock_discover if search else None,
-                        target_quantity=source["resource_target"], allow_search=search):
+                        target_quantity=source["resource_target"], allow_search=search, mock_validate=mock_discover is not None):
                     context.emit(message)
                     context.checkpoint(resource_tab_id=tab_id)
             jobs.update_batch(root, avatar_id, resource_status="ready", resource_error=None)
-            if search:
-                return {"resource_tab_id": tab_id, "batch_id": owner["id"], "search_only": True}
+            if search or review_only:
+                return {"resource_tab_id": tab_id, "batch_id": owner["id"], "search_only": search, "review_only": review_only}
             source = jobs.load_batch(root, avatar_id, tab_id)
             references = jobs._approved(root, avatar_id, source)[:quantity]
             if not references:
@@ -200,7 +199,7 @@ def run(root, avatar_id, tab_id, quantity, aspect, context, make_prompt, generat
     if saved_run and saved_run["status"] in {"complete", "exhausted"}:
         return {"batch_id": owner["id"], "resource_tab_id": tab_id, "generation_batch_id": run_id}
     iterator = jobs.run(root, avatar_id, quantity, aspect, source["theme"], source.get("require_face", False),
-                        make_prompt, generate, validate, repair, batch_id=run_id)
+                        make_prompt, generate, validate, repair, batch_id=run_id, mock_discover=mock_discover)
     try:
         for state in iterator:
             context.emit(state["message"], phase=state["phase"], resource_tab_id=tab_id)

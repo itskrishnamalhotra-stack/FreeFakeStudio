@@ -26,7 +26,10 @@ def approval(**changes):
     return {"index": 1, "accept": True, "score": 90, "adult_confidence": 95,
             "adult_person_visible": True, "outfit_or_pose_visible": True,
             "person_large_enough": True, "major_obstruction": False,
-            "image_clear": True, "face_visible": True, "reason": "Clear outfit reference", **changes}
+            "image_clear": True, "face_visible": True, "reason": "Clear outfit reference",
+            "request_match": "match", "request_reason": "Requested outfit and scene visible",
+            "clothing_match": "match", "scene_match": "match", "subject_match": "match",
+            "source_name_match": "not_requested", "text_overlay": "none", **changes}
 
 
 def response(status, payload=None, headers=None):
@@ -135,12 +138,14 @@ class APIRetryTests(unittest.TestCase):
             gallery.reference_presentation_matches(approval(), "invalid")
 
     def test_gender_is_used_in_search_without_claiming_real_person_gender_identity(self):
-        with mock.patch.object(gallery, "gemini_json", return_value={"search_query": "adult women's editorial portraits"}) as call:
-            gallery._search_query("Cafe", avatar_gender="female")
-        prompt = call.call_args.args[0]
-        self.assertIn("user-selected gender is female", prompt)
-        self.assertIn("feminine", prompt)
-        self.assertIn("not the real person's gender identity", prompt)
+        with mock.patch.object(gallery, "gemini_json") as call:
+            query = gallery._search_query("Tara Sutaria wearing a bikini at the beach", avatar_gender="female")
+        call.assert_not_called()
+        self.assertIn("Tara Sutaria wearing a bikini at the beach", query)
+        self.assertIn("adult woman", query)
+        self.assertLessEqual(len(query), 400)
+        with self.assertRaisesRegex(ValueError, "400 characters"):
+            gallery._search_query("x" * 401)
 
     def test_visual_check_saves_gender_policy_and_rejects_high_scoring_mismatch(self):
         checks = [approval(index=1, presentation_match="mismatch", presentation_reason="Masculine main-subject presentation"),
@@ -524,7 +529,9 @@ class GalleryJobTests(unittest.TestCase):
         self.assertEqual(jobs.batch_references(self.root, self.avatar_id, second)[0]["state"], "approved")
         self.execute(batch_id=first["id"])
         self.assertEqual(jobs.load_batch(self.root, self.avatar_id, second["id"]), second_before)
-        self.assertEqual(jobs.snapshot(self.root, self.avatar_id, batch_id=first["id"])["counts"]["generated"], 3)
+        self.assertEqual(jobs.snapshot(self.root, self.avatar_id, batch_id=first["id"])["counts"]["generated"], 2)
+        skipped = [row for row in studio.load_gallery_items(self.root, self.avatar_id) if row.get("status") == "reference_rejected"]
+        self.assertEqual(len(skipped), 1)
         self.assertEqual(jobs.snapshot(self.root, self.avatar_id, batch_id=second["id"])["counts"]["generated"], 1)
 
     def test_worker_does_not_follow_changed_active_pointer(self):

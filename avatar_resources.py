@@ -60,7 +60,7 @@ def collect(root, avatar_id, chats, batch_id=None, tab_id=None):
             state="approved" if approved else "pending", check_state="human_approved" if approved else "awaiting_approval",
             reason="Approved identity-pack reference" if approved else "Identity candidate; awaiting human approval", used=consumed)
     sources = {}
-    for row in catalog:
+    for row in batches.project_references(str(root), avatar_id, catalog):
         state = row.get("state", "found")
         source_id = row.get("batch_id") or tab_id
         if source_id not in sources:
