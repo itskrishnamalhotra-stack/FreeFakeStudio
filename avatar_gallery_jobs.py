@@ -5,7 +5,7 @@ import json
 import os
 import threading
 import uuid
-from contextvars import copy_context
+from contextvars import ContextVar, copy_context
 from pathlib import Path
 
 from PIL import Image
@@ -17,6 +17,19 @@ import avatar_studio as studio
 _run_lock = threading.Lock()
 _state_lock = threading.RLock()
 TERMINAL = {"passed", "needs_review"}
+# A running generator must never follow another batch's active UI pointer.
+_batch_scope = ContextVar("gallery_batch_scope", default=None)
+
+
+def _scoped_id(save_dir, avatar_id):
+    value = _batch_scope.get()
+    return value[2] if value and value[:2] == (str(Path(save_dir).resolve()), avatar_id) else None
+
+
+def _check_batch_id(batch_id):
+    if not isinstance(batch_id, str) or len(batch_id) != 12 or any(c not in "0123456789abcdef" for c in batch_id):
+        raise ValueError("Invalid gallery batch identifier")
+    return batch_id
 
 
 def _read(path, default=None):
@@ -42,7 +55,9 @@ def _save_catalog(save_dir, avatar_id, catalog):
 
 
 def _reference_id(row):
-    return hashlib.sha256(str(row.get("image_url") or row.get("path")).encode("utf-8")).hexdigest()[:20]
+    scope = _batch_scope.get()
+    prefix = scope[2] + ":" if scope else ""
+    return hashlib.sha256((prefix + str(row.get("image_url") or row.get("path"))).encode("utf-8")).hexdigest()[:20]
 
 
 def update_reference(save_dir, avatar_id, reference_id, **changes):
@@ -65,6 +80,8 @@ def add_references(save_dir, avatar_id, references, theme="", legacy=False):
         row.update(id=reference_id, theme=theme, state="downloaded" if row.get("path") else "found",
                    reason="Previously gathered reference" if legacy else "Awaiting download",
                    created_at=studio._now())
+        if batch_id := _scoped_id(save_dir, avatar_id):
+            row["batch_id"] = batch_id
         catalog["references"].append(row)
         known.add(reference_id)
     _save_catalog(save_dir, avatar_id, catalog)
@@ -92,24 +109,30 @@ def import_legacy_references(save_dir, avatar_id):
 
 
 def _batch_path(save_dir, avatar_id, batch_id):
-    return _root(save_dir, avatar_id) / "batches" / f"{batch_id}.json"
+    return _root(save_dir, avatar_id) / "batches" / f"{_check_batch_id(batch_id)}.json"
 
 
-def load_batch(save_dir, avatar_id):
+def load_batch(save_dir, avatar_id, batch_id=None):
     if not avatar_id:
         return None
-    active = _read(_root(save_dir, avatar_id) / "active_batch.json")
-    if not active:
+    explicit = batch_id is not None
+    batch_id = batch_id or _scoped_id(save_dir, avatar_id)
+    active = {"id": batch_id} if batch_id else _read(_root(save_dir, avatar_id) / "active_batch.json")
+    if not active or not active.get("id"):
         return None
     job = _read(_batch_path(save_dir, avatar_id, active["id"]))
     if job is None:
+        if explicit:
+            return None
         raise RuntimeError("The active gallery batch file is missing. Preserve the gallery folder for diagnosis.")
+    if job.get("id") != active["id"] or job.get("avatar_id") != avatar_id:
+        raise RuntimeError("Saved batch identity does not match the selected avatar and batch. Preserve the file for diagnosis.")
     return job
 
 
-def update_batch(save_dir, avatar_id, **changes):
+def update_batch(save_dir, avatar_id, batch_id=None, **changes):
     with _state_lock:
-        job = load_batch(save_dir, avatar_id)
+        job = load_batch(save_dir, avatar_id, batch_id)
         job.update(changes)
         job["updated_at"] = studio._now()
         studio._atomic_json(_batch_path(save_dir, avatar_id, job["id"]), job)
@@ -124,22 +147,85 @@ def note(save_dir, avatar_id, message, phase=None):
                         **({"phase": phase} if phase else {}))
 
 
-def stop_batch(save_dir, avatar_id):
-    job = load_batch(save_dir, avatar_id)
+def stop_batch(save_dir, avatar_id, batch_id=None):
+    job = load_batch(save_dir, avatar_id, batch_id)
     if job and job["status"] != "complete":
-        return update_batch(save_dir, avatar_id, stop_requested=True, message="Stopping after the current operation")
+        return update_batch(save_dir, avatar_id, batch_id=job["id"], stop_requested=True, message="Stopping after the current operation")
     return job
 
 
 def new_search(save_dir, avatar_id):
     if _run_lock.locked():
         raise RuntimeError("Wait for the current gallery operation to finish stopping.")
-    job = load_batch(save_dir, avatar_id)
-    if job and job.get("item_ids") and job["status"] != "complete":
-        raise ValueError("Resume the committed batch before starting another search.")
-    if job and job["status"] != "complete":
-        update_batch(save_dir, avatar_id, status="complete", phase="closed_search")
-        note(save_dir, avatar_id, "Search closed; reference findings retained")
+    studio._atomic_json(_root(save_dir, avatar_id) / "active_batch.json", {})
+
+
+def batch_references(save_dir, avatar_id, job):
+    rows = load_catalog(save_dir, avatar_id)["references"]
+    if not job:
+        return rows
+    if job.get("version", 1) >= 2:
+        return [row for row in rows if row.get("batch_id") == job["id"]]
+    ids = set(job.get("reference_ids", []))
+    return [row for row in rows if not row.get("batch_id") and
+            (row["id"] in ids or row.get("theme", "") in ("", job["theme"]))]
+
+
+def list_batches(save_dir, avatar_id):
+    items = studio.load_gallery_items(save_dir, avatar_id)
+    result = []
+    for path in (_root(save_dir, avatar_id) / "batches").glob("*.json"):
+        job = load_batch(save_dir, avatar_id, path.stem)
+        rows = [row for row in items if row.get("batch_id") == job["id"] and row.get("origin") == "auto"]
+        references = batch_references(save_dir, avatar_id, job)
+        result.append({**job, "name": job.get("name") or job.get("theme") or "Untitled batch",
+                       "counts": {"found": len(references), "approved": sum(r.get("state") == "approved" for r in references),
+                                  "rejected": sum(r.get("state") == "rejected" for r in references),
+                                  "committed": len(job.get("item_ids", [])), "generated": sum(bool(r.get("generated_path")) for r in rows),
+                                  "passed": sum(r.get("status") == "passed" for r in rows),
+                                  "review": sum(r.get("status") == "needs_review" for r in rows),
+                                  "pending": sum(r.get("status") not in TERMINAL for r in rows)},
+                       "legacy_shared_references": job.get("version", 1) < 2})
+    return sorted(result, key=lambda row: (row.get("created_at", ""), row["id"]), reverse=True)
+
+
+def manage_batch(save_dir, avatar_id, batch_id, action, name=""):
+    job = load_batch(save_dir, avatar_id, batch_id)
+    if not job:
+        raise ValueError("Gallery batch not found")
+    changes = {}
+    if action == "rename":
+        if not str(name).strip() or len(name) > 120:
+            raise ValueError("Use a batch name between 1 and 120 characters")
+        changes["name"] = name.strip()
+    elif action in {"archive", "restore"}:
+        changes["archived"] = action == "archive"
+    elif action == "finish":
+        changes.update(status="complete", phase="closed_by_user", completion_reason="finished_by_user",
+                       message="Finished by user; saved images and unused references retained")
+    else:
+        raise ValueError("Unknown batch action")
+    return update_batch(save_dir, avatar_id, batch_id=batch_id, **changes)
+
+
+def _isolate_legacy(save_dir, avatar_id, job):
+    if job.get("version", 1) >= 2:
+        return job
+    catalog = load_catalog(save_dir, avatar_id)
+    known = {row["id"] for row in catalog["references"]}
+    mapping = {}
+    for row in batch_references(save_dir, avatar_id, job):
+        identifier = hashlib.sha256((job["id"] + ":" + row["id"]).encode()).hexdigest()[:20]
+        mapping[row["id"]] = identifier
+        if identifier not in known:
+            catalog["references"].append({**row, "id": identifier, "batch_id": job["id"], "legacy_reference_id": row["id"]})
+            known.add(identifier)
+    _save_catalog(save_dir, avatar_id, catalog)
+    for item in studio.load_gallery_items(save_dir, avatar_id):
+        if item.get("batch_id") == job["id"] and item.get("reference_id") in mapping:
+            studio.update_gallery_item(save_dir, avatar_id, item["id"], reference_id=mapping[item["reference_id"]])
+    return update_batch(save_dir, avatar_id, batch_id=job["id"], version=2, legacy_imported=True,
+                        reference_ids=[mapping.get(key, key) for key in job.get("reference_ids", [])])
 
 
 def _used_references(save_dir, avatar_id):
@@ -149,8 +235,10 @@ def _used_references(save_dir, avatar_id):
 
 
 def _available(save_dir, avatar_id, job):
-    used = _used_references(save_dir, avatar_id)
-    return [row for row in load_catalog(save_dir, avatar_id)["references"]
+    items = studio.load_gallery_items(save_dir, avatar_id)
+    used = {str(row.get(key)) for row in items if row.get("batch_id") == job["id"] and row.get("generated_path")
+            for key in ("reference_id", "reference_url", "reference_path") if row.get(key)}
+    return [row for row in batch_references(save_dir, avatar_id, job)
             if row.get("theme", "") in ("", job["theme"])
             and not any(str(row.get(key)) in used for key in ("id", "image_url", "path") if row.get(key))]
 
@@ -161,9 +249,10 @@ def _approved(save_dir, avatar_id, job):
             and (not job["require_face"] or (row.get("validation") or {}).get("face_visible") is True)]
 
 
-def _create_batch(save_dir, avatar_id, quantity, aspect, theme, require_face):
+def _create_batch(save_dir, avatar_id, quantity, aspect, theme, require_face, name="", batch_id=None):
     avatar = studio.load_avatar(save_dir, avatar_id)
-    job = {"version": 1, "id": uuid.uuid4().hex[:12], "avatar_id": avatar_id,
+    job = {"version": 2, "id": _check_batch_id(batch_id) if batch_id else uuid.uuid4().hex[:12], "avatar_id": avatar_id,
+           "name": str(name or theme or "Untitled batch").strip()[:120], "archived": False,
            "status": "running", "phase": "finding", "quantity": max(1, min(20, int(quantity))),
            "aspect": aspect, "theme": str(theme or "").strip(), "require_face": bool(require_face),
            "identity_fingerprint": studio.identity_fingerprint(avatar), "item_ids": [],
@@ -175,8 +264,9 @@ def _create_batch(save_dir, avatar_id, quantity, aspect, theme, require_face):
 
 
 def _discover(save_dir, avatar_id, job, mock_discover=None):
-    import_legacy_references(save_dir, avatar_id)
-    folder = _root(save_dir, avatar_id) / "references"
+    if job.get("version", 1) < 2:
+        import_legacy_references(save_dir, avatar_id)
+    folder = _root(save_dir, avatar_id) / "references" / job["id"]
     folder.mkdir(parents=True, exist_ok=True)
     if mock_discover:
         references, _ = mock_discover(avatar_id, job["quantity"], job["theme"])
@@ -205,7 +295,7 @@ def _discover(save_dir, avatar_id, job, mock_discover=None):
                     raise ValueError("Saved reference is missing and has no downloadable URL")
                 downloaded = gallery._download_candidate(row, folder)
                 clean = {key: value for key, value in downloaded.items() if key != "validation_bytes"}
-                duplicates = {other.get("pixel_hash") for other in load_catalog(save_dir, avatar_id)["references"]
+                duplicates = {other.get("pixel_hash") for other in batch_references(save_dir, avatar_id, job)
                               if other["id"] != row["id"] and other.get("state") != "rejected"}
                 reason = ("Blank or nearly uniform image" if clean.get("local_quality", {}).get("blank") else
                           "Exact duplicate pixels" if clean.get("pixel_hash") and clean["pixel_hash"] in duplicates else "")
@@ -235,7 +325,7 @@ def _discover(save_dir, avatar_id, job, mock_discover=None):
                         thumbnail = image.convert("RGB")
                     deviation = gallery.ImageStat.Stat(thumbnail.convert("L").resize((64, 64))).stddev[0]
                     stored_hash = hashlib.sha256(str(thumbnail.size).encode("ascii") + thumbnail.tobytes()).hexdigest()
-                    other_hashes = {other.get("stored_pixel_hash") for other in load_catalog(save_dir, avatar_id)["references"]
+                    other_hashes = {other.get("stored_pixel_hash") for other in batch_references(save_dir, avatar_id, job)
                                     if other["id"] != row["id"] and other.get("state") != "rejected"}
                     if deviation < 2.0 or stored_hash in other_hashes:
                         reason = "Blank or nearly uniform image" if deviation < 2.0 else "Exact duplicate pixels"
@@ -296,19 +386,31 @@ def run(*args, **kwargs):
 
 
 def _run(save_dir, avatar_id, quantity, aspect, theme, require_face, make_prompt, generate, validate, repair,
-         mock_discover=None):
+         mock_discover=None, batch_id=None, new_batch=False, name=""):
     if not _run_lock.acquire(blocking=False):
         raise RuntimeError("A gallery operation is still finishing. Wait before resuming.")
     job = None
+    scope_token = None
     try:
         avatar = studio.load_avatar(save_dir, avatar_id)
         if not avatar.get("face_locked") or not avatar.get("body_locked"):
             raise ValueError("Confirm the face and body before generating a gallery.")
-        job = load_batch(save_dir, avatar_id)
-        if not job or job["status"] == "complete":
-            job = _create_batch(save_dir, avatar_id, quantity, aspect, theme, require_face)
+        if batch_id:
+            job = load_batch(save_dir, avatar_id, batch_id)
+        elif not new_batch:
+            job = load_batch(save_dir, avatar_id)
+        if batch_id and not job and not new_batch:
+            raise ValueError("Gallery batch not found")
+        if job and job.get("archived"):
+            raise ValueError("Restore this archived batch before resuming")
+        if batch_id and job and job["status"] in {"complete", "exhausted"}:
+            raise ValueError("This batch is finished. Create a new batch instead.")
+        if not job or job["status"] in {"complete", "exhausted"}:
+            job = _create_batch(save_dir, avatar_id, quantity, aspect, theme, require_face, name, batch_id)
         elif job["identity_fingerprint"] != studio.identity_fingerprint(avatar):
             raise ValueError("This batch belongs to a different confirmed identity. Restore its references before resuming.")
+        job = _isolate_legacy(save_dir, avatar_id, job)
+        scope_token = _batch_scope.set((str(Path(save_dir).resolve()), avatar_id, job["id"]))
         import avatar_identity as identity
         if job.get("identity_version"):
             avatar = identity.pin(save_dir, avatar, job["identity_version"])
@@ -332,7 +434,9 @@ def _run(save_dir, avatar_id, quantity, aspect, theme, require_face, make_prompt
                 job = load_batch(save_dir, avatar_id)
                 references = _approved(save_dir, avatar_id, job)[:job["quantity"]]
                 if not references:
-                    raise RuntimeError("No references passed the saved cleaning checks. Inspect the reference findings.")
+                    update_batch(save_dir, avatar_id, status="exhausted", phase="complete", completion_reason="no_usable_references")
+                    yield note(save_dir, avatar_id, "Search budget exhausted: no usable references. Create another batch or inspect the rejected findings.")
+                    return
                 item_ids = []
                 for reference in references:
                     item_id = f"{job['id']}-{reference['id']}"
@@ -408,38 +512,41 @@ def _run(save_dir, avatar_id, quantity, aspect, theme, require_face, make_prompt
             message = f"Saved {len(items)} image(s): {passed} passed, {len(items) - passed} need review."
             if len(items) < job["quantity"]:
                 message += f" {job['quantity'] - len(items)} fewer references passed the configured search budget."
-            update_batch(save_dir, avatar_id, status="complete", phase="complete")
+            update_batch(save_dir, avatar_id, status="complete", phase="complete",
+                         completion_reason="queue_processed" if len(items) == job["quantity"] else "search_budget_exhausted")
             yield note(save_dir, avatar_id, message)
     except gallery.GalleryCancelled as exc:
-        if job:
+        if job and scope_token is not None:
             update_batch(save_dir, avatar_id, status="stopped")
             yield note(save_dir, avatar_id, str(exc))
     except Exception as exc:
-        if job:
+        if job and scope_token is not None:
             update_batch(save_dir, avatar_id, status="paused", last_error=str(exc))
             note(save_dir, avatar_id, str(exc))
         raise
     finally:
         try:
-            if job:
+            if job and scope_token is not None:
                 current = load_batch(save_dir, avatar_id)
                 if current and current["status"] == "running":
                     update_batch(save_dir, avatar_id, status="stopped", message="Batch stopped; pending work saved")
         finally:
+            if scope_token is not None:
+                _batch_scope.reset(scope_token)
             _run_lock.release()
 
 
-def snapshot(save_dir, avatar_id, filter_value="All findings"):
+def snapshot(save_dir, avatar_id, filter_value="All findings", batch_id=None):
     """Read-only UI projection; images and their reasons share the same records."""
     if not avatar_id:
         return {"job": None, "counts": {}, "images": [], "rows": [], "events": []}
     path = _root(save_dir, avatar_id) / "references" / "catalog.json"
     if not path.exists():
         import_legacy_references(save_dir, avatar_id)
-    catalog = load_catalog(save_dir, avatar_id)["references"]
-    job = load_batch(save_dir, avatar_id)
+    job = load_batch(save_dir, avatar_id, batch_id)
+    catalog = batch_references(save_dir, avatar_id, job)
     items = studio.load_gallery_items(save_dir, avatar_id)
-    batch_items = [row for row in items if job and row.get("batch_id") == job["id"]]
+    batch_items = [row for row in items if job and row["id"] in job.get("item_ids", [])]
     counts = {"found": len(catalog), "approved": sum(row["state"] == "approved" for row in catalog),
               "rejected": sum(row["state"] == "rejected" for row in catalog),
               "queued": len(job.get("item_ids", [])) if job else 0,
@@ -447,7 +554,8 @@ def snapshot(save_dir, avatar_id, filter_value="All findings"):
               "generated": sum(bool(row.get("generated_path")) for row in batch_items),
               "passed": sum(row.get("status") == "passed" for row in batch_items),
               "review": sum(row.get("status") == "needs_review" for row in batch_items)}
-    used = _used_references(save_dir, avatar_id)
+    used = {str(item.get(key)) for item in batch_items if item.get("generated_path")
+            for key in ("reference_id", "reference_url", "reference_path") if item.get(key)}
     images, rows = [], []
     for row in catalog:
         state = row["state"]
@@ -469,8 +577,8 @@ def snapshot(save_dir, avatar_id, filter_value="All findings"):
             "events": (job or {}).get("events", [])[-6:]}
 
 
-def safe_snapshot(save_dir, avatar_id, filter_value="All findings"):
+def safe_snapshot(save_dir, avatar_id, filter_value="All findings", batch_id=None):
     try:
-        return snapshot(save_dir, avatar_id, filter_value)
+        return snapshot(save_dir, avatar_id, filter_value, batch_id)
     except (RuntimeError, OSError, KeyError, TypeError) as exc:
         return {"job": None, "counts": {}, "images": [], "rows": [], "events": [], "error": str(exc)}

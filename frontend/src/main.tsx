@@ -68,9 +68,11 @@ import {
   GalleryCounts,
   GalleryPage,
   ResourcePage,
+  GalleryBatch,
 } from "./api";
 import "./styles.css";
 import { InfluencerWorkspace } from "./InfluencerWorkspace";
+import { GalleryBatches } from "./GalleryBatches";
 
 const FLUX = "FLUX.2-klein 4B";
 const GALLERY_SECTIONS = [
@@ -243,6 +245,7 @@ function Range({
 }
 function App() {
   const location = useLocation();
+  const batchFilter = new URLSearchParams(location.search).get("batch") || "";
   const navigate = useNavigate();
   const routeKey = useRef(location.key);
   routeKey.current = location.key;
@@ -326,6 +329,9 @@ function App() {
     [origin, setOrigin] = useState("all"),
     [query, setQuery] = useState(""),
     [batchOpen, setBatchOpen] = useState(false),
+    [batchManagerOpen, setBatchManagerOpen] = useState(false),
+    [batchName, setBatchName] = useState(""),
+    [batches, setBatches] = useState<GalleryBatch[]>([]),
     [batchQuantity, setBatchQuantity] = useState(20),
     [batchTheme, setBatchTheme] = useState(""),
     [requireFace, setRequireFace] = useState(false),
@@ -385,6 +391,7 @@ function App() {
   };
   const galleryContext = useRef({
     avatarId,
+    batchFilter,
     gallerySection,
     filter,
     origin,
@@ -394,6 +401,7 @@ function App() {
   });
   galleryContext.current = {
     avatarId,
+    batchFilter,
     gallerySection,
     filter,
     origin,
@@ -544,10 +552,12 @@ function App() {
     setNewAvatar(false);
     setMaskEditor(false);
     setFindingsOpen(false);
+    setBatchManagerOpen(false);
     setBatchOpen(false);
     setDetails("");
     setCandidateUpload(null);
   }, [location.pathname]);
+  useEffect(() => {setBatches([]);}, [avatarId]);
   async function refreshConversations() {
     const current = { ...chatContext.current };
     const rows = await api<ChatSummary[]>("/chats" + scopeQuery(current.scope));
@@ -689,6 +699,7 @@ function App() {
     await refreshConversations();
     if (avatarId && chatContext.current.scope === avatarId)
       await loadGallery(0, true);
+    if (avatarId && chatContext.current.scope === avatarId) await loadBatches();
     if (avatarId && chatContext.current.scope === avatarId) {
       const found = a.find((v) => v.id === avatarId);
       if (found) {
@@ -825,6 +836,7 @@ function App() {
     resourceFilter,
     resourceKind,
     chatId,
+    batchFilter,
     boot,
   ]);
   useEffect(() => {
@@ -860,11 +872,12 @@ function App() {
     setResourceKind("all");
     setGallery([]);
     setResources([]);
-  }, [avatarId, gallerySection]);
+  }, [avatarId, gallerySection, batchFilter]);
   useEffect(() => {
     if (!boot && isAvatar && avatarId) {
       loadGallery(0);
       loadFindings();
+      loadBatches();
     }
   }, [
     isAvatar,
@@ -873,6 +886,7 @@ function App() {
     origin,
     query,
     gallerySection,
+    batchFilter,
     resourceFilter,
     resourceKind,
     boot,
@@ -989,6 +1003,7 @@ function App() {
               status: context.filter,
               origin: context.origin,
               query: context.query,
+              ...(context.batchFilter ? {batch_id: context.batchFilter} : {}),
             }),
         ),
         context.gallerySection === "resources"
@@ -1002,6 +1017,7 @@ function App() {
                   status: context.resourceFilter,
                   kind: context.resourceKind,
                   query: context.query,
+                  ...(context.batchFilter ? {batch_id: context.batchFilter} : {}),
                 }),
             )
           : Promise.resolve(null),
@@ -1028,7 +1044,7 @@ function App() {
   }
   function changeGallerySection(value: GallerySection) {
     if (value === gallerySection) return;
-    go(avatarPath(avatarId, "gallery", value));
+    go(avatarPath(avatarId, "gallery", value) + (batchFilter ? "?batch=" + encodeURIComponent(batchFilter) : ""));
     setFilter("all");
     setOrigin("all");
     setQuery("");
@@ -1039,19 +1055,36 @@ function App() {
     setGalleryLoading(true);
   }
   async function loadFindings() {
-    if (!avatarId) return;
+    if (!avatarId || !batchFilter) {setFindings(null); return;}
+    const target = avatarId;
+    const selected = batchFilter;
     try {
-      setFindings(
-        await api(
+      const data = await api(
           "/avatars/" +
             avatarId +
             "/references?status=" +
-            encodeURIComponent(referenceFilter),
-        ),
-      );
+            encodeURIComponent(referenceFilter) + (selected ? "&batch_id=" + encodeURIComponent(selected) : ""),
+        );
+      if (galleryContext.current.avatarId === target && galleryContext.current.batchFilter === selected) setFindings(data);
     } catch (e) {
       fail(e);
     }
+  }
+  async function loadBatches() {
+    if (!avatarId) return;
+    const target = avatarId;
+    try {
+      const data = await api<{items: GalleryBatch[]}>("/avatars/" + target + "/gallery/batches");
+      if (galleryContext.current.avatarId === target) setBatches(data.items);
+    } catch (e) { fail(e); }
+  }
+  function selectBatch(id: string) {
+    setFindings(null);
+    go(avatarPath(avatarId, "gallery", gallerySection) + (id ? "?batch=" + encodeURIComponent(id) : ""));
+  }
+  async function resumeBatch(id: string) {
+    const job = await action({kind: "gallery", avatar_id: avatarId, batch_id: id});
+    if (job) { selectBatch(id); setBatchManagerOpen(false); setFindingsOpen(true); }
   }
   useEffect(() => {
     if (findingsOpen) loadFindings();
@@ -1739,8 +1772,10 @@ function App() {
             </h2>
           </div>
           <div className="button-row">
+            <button onClick={() => {loadBatches(); setBatchManagerOpen(true);}}><Columns2 size={16} /> Batches</button>
             <button
               onClick={() => {
+                if (!batchFilter) {loadBatches(); setBatchManagerOpen(true); return;}
                 loadFindings();
                 setFindingsOpen(true);
               }}
@@ -1751,13 +1786,19 @@ function App() {
             <button
               className="primary"
               disabled={busy || !avatar?.body_locked}
-              onClick={() => setBatchOpen(true)}
+              onClick={() => {setBatchName(""); setBatchOpen(true);}}
             >
               <Plus size={16} />
               Create batch
             </button>
           </div>
         </div>
+        <Field label="Gallery batch">
+          <select value={batchFilter} onChange={(e) => selectBatch(e.target.value)}>
+            <option value="">All batches and console images</option>
+            {batches.map((batch) => <option value={batch.id} key={batch.id}>{batch.name}{batch.archived ? " (archived)" : ""}</option>)}
+          </select>
+        </Field>
         <div
           className="gallery-categories"
           role="tablist"
@@ -3495,9 +3536,22 @@ function App() {
             </div>
           </Modal>
         )}
+        {batchManagerOpen && <Modal title="Gallery batches" wide onClose={() => setBatchManagerOpen(false)}>
+          <div className="settings-content">
+            <button className="primary" disabled={busy || !avatar?.body_locked} onClick={() => {setBatchManagerOpen(false); setBatchName(""); setBatchOpen(true);}}><Plus size={16} /> Create batch</button>
+            <GalleryBatches batches={batches} busy={busy} open={(id) => {selectBatch(id); setBatchManagerOpen(false);}}
+              resume={resumeBatch} manage={async (id, operation, name) => {
+                try {
+                  await write("/avatars/" + avatarId + "/gallery/batches/" + id, {action: operation, name: name || ""});
+                  await loadBatches(); await loadFindings();
+                } catch (e) { fail(e); }
+              }} />
+          </div>
+        </Modal>}
         {batchOpen && (
           <Modal title="Gallery batch" onClose={() => setBatchOpen(false)}>
             <div className="settings-content">
+              <Field label="Batch name"><input value={batchName} onChange={(e) => setBatchName(e.target.value)} maxLength={120} /></Field>
               <Range
                 label="Photographs"
                 value={batchQuantity}
@@ -3524,45 +3578,28 @@ function App() {
               <button
                 className="primary"
                 disabled={busy}
-                onClick={() =>
-                  action(
+                onClick={async () => {
+                  const job = await action(
                     {
                       kind: "gallery",
                       avatar_id: avatarId,
+                      new_batch: true,
+                      batch_name: batchName,
                       quantity: batchQuantity,
                       aspect,
                       theme: batchTheme,
                       require_face: requireFace,
                     },
-                    () => {
+                  );
+                  if (job) {
+                      selectBatch(String(job.payload.batch_id));
                       setBatchOpen(false);
                       setFindingsOpen(true);
-                    },
-                  )
-                }
-              >
-                <ArrowRight size={16} />
-                {findings?.job ? "Continue saved batch" : "Start batch"}
-              </button>
-              <button
-                disabled={busy}
-                onClick={async () => {
-                  if (
-                    !confirm(
-                      "Start a fresh search? Saved reference files and generated images will be retained.",
-                    )
-                  )
-                    return;
-                  try {
-                    await write("/avatars/" + avatarId + "/gallery/new-search");
-                    await loadFindings();
-                  } catch (e) {
-                    fail(e);
                   }
                 }}
               >
-                <Search size={16} />
-                New search
+                <ArrowRight size={16} />
+                Start batch
               </button>
             </div>
           </Modal>
@@ -3584,6 +3621,7 @@ function App() {
               </div>
               <div className="view-toolbar">
                 <span>
+                  {findings?.job?.name && <strong>{findings.job.name}: </strong>}
                   {findings?.job?.message ||
                     findings?.job?.phase ||
                     "No active batch"}
@@ -3593,14 +3631,11 @@ function App() {
                     <RefreshCw />
                   </IconButton>
                   <button
-                    disabled={busy}
-                    onClick={() => {
-                      setFindingsOpen(false);
-                      setBatchOpen(true);
-                    }}
+                    disabled={busy || !findings?.job || findings.job.archived || ["complete", "exhausted"].includes(findings.job.status)}
+                    onClick={() => resumeBatch(findings.job.id)}
                   >
                     <ArrowRight size={15} />
-                    Continue batch
+                    Resume batch
                   </button>
                 </div>
               </div>

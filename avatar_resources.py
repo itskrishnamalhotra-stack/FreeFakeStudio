@@ -7,7 +7,7 @@ import avatar_studio as studio
 import avatar_identity as identity
 
 
-def collect(root, avatar_id, chats):
+def collect(root, avatar_id, chats, batch_id=None):
     root = Path(root).resolve()
     avatar = studio.load_avatar(str(root), avatar_id)
     catalog_path = studio.avatar_path(str(root), avatar_id) / "gallery/references/catalog.json"
@@ -16,10 +16,18 @@ def collect(root, avatar_id, chats):
     catalog = batches.load_catalog(str(root), avatar_id)["references"]
     outputs = studio.load_gallery_items(str(root), avatar_id)
     used = batches._used_references(str(root), avatar_id)
+    if batch_id:
+        job = batches.load_batch(str(root), avatar_id, batch_id)
+        catalog = batches.batch_references(str(root), avatar_id, job)
+        outputs = [row for row in outputs if row.get("batch_id") == batch_id]
+        used = {str(row.get(key)) for row in outputs if row.get("generated_path")
+                for key in ("reference_id", "reference_url", "reference_path") if row.get(key)}
     committed = {str(row.get("reference_id")) for row in outputs if row.get("reference_id")}
     rows, by_path = [], {}
 
     def add(identifier, path, **values):
+        if batch_id and values.get("batch_id") != batch_id:
+            return
         resolved = (root / path).resolve() if path else None
         if resolved is not None and not resolved.is_relative_to(root):
             return
@@ -50,6 +58,7 @@ def collect(root, avatar_id, chats):
     for row in catalog:
         state = row.get("state", "found")
         add("search-" + row["id"], row.get("path"), name=row.get("title") or "Search reference", kind="search",
+            batch_id=row.get("batch_id") or (batch_id if batch_id else None),
             state=state if state in {"approved", "rejected"} else "pending", check_state=state,
             reason=row.get("reason", ""), source_url=row.get("source_url") or row.get("image_url"),
             validation=row.get("validation"), committed=row["id"] in committed,

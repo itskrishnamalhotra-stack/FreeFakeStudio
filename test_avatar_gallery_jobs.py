@@ -307,15 +307,18 @@ class GalleryJobTests(unittest.TestCase):
         self.assertTrue(first.is_file() and second.is_file())
         self.assertTrue(all(row["state"] == "downloaded" for row in rows))
 
-    def test_existing_approved_unused_references_are_consumed_before_search(self):
+    def test_new_batch_does_not_consume_unassigned_approved_references(self):
         references, _ = self.references(self.avatar_id, 3, "editorial")
         jobs.add_references(self.root, self.avatar_id, references, "editorial")
         for row in jobs.load_catalog(self.root, self.avatar_id)["references"]:
             jobs.update_reference(self.root, self.avatar_id, row["id"], state="approved", validation=approval())
-        with mock.patch.object(gallery, "_search_query") as search:
-            self.execute(mock_discover=None)
-        search.assert_not_called()
-        self.discover.assert_not_called()
+        self.execute(new_batch=True)
+        self.discover.assert_called_once()
+        job = jobs.load_batch(self.root, self.avatar_id)
+        scoped = jobs.batch_references(self.root, self.avatar_id, job)
+        self.assertEqual(len(scoped), 3)
+        self.assertTrue(all(row.get("batch_id") == job["id"] for row in scoped))
+        self.assertEqual(len(jobs.load_catalog(self.root, self.avatar_id)["references"]), 6)
 
     def test_snapshot_shows_found_approved_rejected_and_generated_counts(self):
         self.execute()
@@ -343,12 +346,17 @@ class GalleryJobTests(unittest.TestCase):
         view = jobs.safe_snapshot(self.root, self.avatar_id)
         self.assertIn("cannot be read", view["error"])
 
-    def test_new_search_cannot_discard_a_committed_unfinished_queue(self):
+    def test_new_search_preserves_but_does_not_force_committed_queue(self):
         with self.assertRaises(RuntimeError):
             self.execute(make_prompt=mock.Mock(side_effect=RuntimeError("Busy")))
-        with self.assertRaisesRegex(ValueError, "Resume the committed batch"):
-            jobs.new_search(self.root, self.avatar_id)
-        self.assertEqual(len(jobs.load_batch(self.root, self.avatar_id)["item_ids"]), 3)
+        original = jobs.load_batch(self.root, self.avatar_id)
+        jobs.new_search(self.root, self.avatar_id)
+        self.assertIsNone(jobs.load_batch(self.root, self.avatar_id))
+        self.assertEqual(len(jobs.load_batch(self.root, self.avatar_id, original["id"])["item_ids"]), 3)
+        self.execute(new_batch=True)
+        self.assertNotEqual(jobs.load_batch(self.root, self.avatar_id)["id"], original["id"])
+        self.execute(batch_id=original["id"])
+        self.assertEqual(jobs.load_batch(self.root, self.avatar_id, original["id"])["status"], "complete")
 
     def real_discovery(self, candidates, validations, **options):
         def downloaded(row, folder):
@@ -405,12 +413,89 @@ class GalleryJobTests(unittest.TestCase):
                 mock.patch.object(gallery, "_tavily_search", return_value={"images": candidates}), \
                 mock.patch.object(gallery, "_download_candidate", side_effect=ValueError("Bad image")) as download, \
                 mock.patch.dict(gallery.os.environ, {"FFS_AVATAR_MAX_CANDIDATE_DOWNLOADS": "10"}):
-            with self.assertRaisesRegex(RuntimeError, "No references passed"):
-                self.execute(mock_discover=None)
+            result = self.execute(mock_discover=None)
+        self.assertEqual(result[-1]["status"], "exhausted")
         self.assertEqual(download.call_count, 10)
         self.assertEqual(len(jobs.load_catalog(self.root, self.avatar_id)["references"]), 20)
         jobs.new_search(self.root, self.avatar_id)
         self.assertEqual(len(jobs.load_catalog(self.root, self.avatar_id)["references"]), 20)
+
+    def test_batches_with_same_theme_and_urls_have_independent_queues(self):
+        with self.assertRaisesRegex(RuntimeError, "Busy"):
+            self.execute(make_prompt=mock.Mock(side_effect=RuntimeError("Busy")), name="First")
+        first = jobs.load_batch(self.root, self.avatar_id)
+        first_refs = jobs.batch_references(self.root, self.avatar_id, first)
+        self.execute(new_batch=True, quantity=1, name="Second")
+        second = jobs.load_batch(self.root, self.avatar_id)
+        second_before = json.loads(json.dumps(second))
+        second_refs = jobs.batch_references(self.root, self.avatar_id, second)
+        self.assertTrue(set(row["id"] for row in first_refs).isdisjoint(row["id"] for row in second_refs))
+        jobs.update_reference(self.root, self.avatar_id, first_refs[0]["id"], state="rejected", reason="Human rejected")
+        self.assertEqual(jobs.batch_references(self.root, self.avatar_id, second)[0]["state"], "approved")
+        self.execute(batch_id=first["id"])
+        self.assertEqual(jobs.load_batch(self.root, self.avatar_id, second["id"]), second_before)
+        self.assertEqual(jobs.snapshot(self.root, self.avatar_id, batch_id=first["id"])["counts"]["generated"], 3)
+        self.assertEqual(jobs.snapshot(self.root, self.avatar_id, batch_id=second["id"])["counts"]["generated"], 1)
+
+    def test_worker_does_not_follow_changed_active_pointer(self):
+        iterator = jobs.run(self.root, self.avatar_id, 1, "864x1152 (3:4)", "editorial", False,
+                            self.prompt, self.generate, self.validate, self.repair, self.discover)
+        first = next(iterator)
+        second = jobs._create_batch(self.root, self.avatar_id, 2, "864x1152 (3:4)", "other", False)
+        rest = list(iterator)
+        self.assertTrue(all(row["id"] == first["id"] for row in rest))
+        self.assertEqual(jobs.load_batch(self.root, self.avatar_id, second["id"])["item_ids"], [])
+
+    def test_archiving_and_finishing_preserve_files_and_other_batches(self):
+        with self.assertRaises(RuntimeError):
+            self.execute(make_prompt=mock.Mock(side_effect=RuntimeError("Stop")))
+        job = jobs.load_batch(self.root, self.avatar_id)
+        jobs.manage_batch(self.root, self.avatar_id, job["id"], "rename", "Kept batch")
+        jobs.manage_batch(self.root, self.avatar_id, job["id"], "archive")
+        with self.assertRaisesRegex(ValueError, "archived"):
+            self.execute(batch_id=job["id"])
+        self.assertTrue(jobs.load_batch(self.root, self.avatar_id, job["id"])["archived"])
+        jobs.manage_batch(self.root, self.avatar_id, job["id"], "restore")
+        jobs.manage_batch(self.root, self.avatar_id, job["id"], "finish")
+        saved = jobs.load_batch(self.root, self.avatar_id, job["id"])
+        self.assertEqual(saved["completion_reason"], "finished_by_user")
+        self.assertTrue(all(Path(row["path"]).is_file() for row in jobs.batch_references(self.root, self.avatar_id, saved)))
+        self.assertEqual(jobs.list_batches(self.root, self.avatar_id)[0]["name"], "Kept batch")
+        with self.assertRaisesRegex(ValueError, "finished"):
+            self.execute(batch_id=job["id"])
+
+    def test_legacy_batch_is_migrated_without_overwriting_original_references(self):
+        with self.assertRaises(RuntimeError):
+            self.execute(make_prompt=mock.Mock(side_effect=RuntimeError("Pause")))
+        job = jobs.load_batch(self.root, self.avatar_id)
+        catalog = jobs.load_catalog(self.root, self.avatar_id)
+        for row in catalog["references"]:
+            row.pop("batch_id", None)
+        jobs._save_catalog(self.root, self.avatar_id, catalog)
+        jobs.update_batch(self.root, self.avatar_id, version=1)
+        self.execute(batch_id=job["id"])
+        migrated = jobs.load_batch(self.root, self.avatar_id, job["id"])
+        self.assertEqual(migrated["version"], 2)
+        self.assertTrue(migrated["legacy_imported"])
+        self.assertEqual(len(jobs.batch_references(self.root, self.avatar_id, migrated)), 3)
+        self.assertEqual(len(jobs.load_catalog(self.root, self.avatar_id)["references"]), 6)
+
+    def test_batch_identifiers_cannot_escape_avatar_folder(self):
+        for value in ("../outside", "A" * 12, "x" * 12):
+            with self.assertRaises(ValueError):
+                jobs.load_batch(self.root, self.avatar_id, value)
+
+    def test_mismatched_manifest_cannot_overwrite_another_batch(self):
+        self.execute(quantity=1)
+        first = jobs.load_batch(self.root, self.avatar_id)
+        self.execute(quantity=1, new_batch=True)
+        second = jobs.load_batch(self.root, self.avatar_id)
+        path = jobs._batch_path(self.root, self.avatar_id, first["id"])
+        payload = {**first, "id": second["id"]}
+        studio._atomic_json(path, payload)
+        with self.assertRaisesRegex(RuntimeError, "does not match"):
+            jobs.manage_batch(self.root, self.avatar_id, first["id"], "finish")
+        self.assertEqual(jobs.load_batch(self.root, self.avatar_id, second["id"]), second)
 
 
 if __name__ == "__main__":

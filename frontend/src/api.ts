@@ -59,12 +59,28 @@ export type GalleryItem = {
   prompt: string;
   status: string;
   origin: string;
+  batch_id?: string | null;
   regenerable: boolean;
   seed: string;
   diagnostics?: Record<string, unknown>;
   processing_passes?: number;
   manual_review?: unknown;
   validation?: unknown;
+};
+export type GalleryBatch = {
+  id: string;
+  name: string;
+  theme: string;
+  quantity: number;
+  status: string;
+  phase: string;
+  archived?: boolean;
+  created_at: string;
+  completion_reason?: string;
+  last_error?: string;
+  message?: string;
+  legacy_shared_references?: boolean;
+  counts: Record<string, number>;
 };
 export type Resource = {
   id: string;

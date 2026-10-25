@@ -368,6 +368,76 @@ class StudioTests(unittest.TestCase):
         self.assertGreaterEqual(snapshot["counts"]["generated"], 2)
         self.assertEqual(self.client.get(f"/api/avatars/{avatar_id}/gallery").json()["total"], 2)
 
+    def test_batch_management_and_scoped_gallery_resources(self):
+        avatar_id = self.ready()
+        base = f"/api/avatars/{avatar_id}"
+        first = self.job("gallery", avatar_id=avatar_id, new_batch=True, batch_name="Batch A", quantity=2, theme="Cafe")
+        second = self.job("gallery", avatar_id=avatar_id, new_batch=True, batch_name="Batch B", quantity=1, theme="Cafe")
+        a, b = first["checkpoint"]["batch_id"], second["checkpoint"]["batch_id"]
+        self.assertNotEqual(a, b)
+        self.assertEqual(first["payload"]["batch_id"], a)
+        batches = self.client.get(base + "/gallery/batches").json()["items"]
+        self.assertEqual({row["name"] for row in batches}, {"Batch A", "Batch B"})
+        self.assertEqual(self.client.get(base + f"/gallery?batch_id={a}").json()["total"], 2)
+        self.assertEqual(self.client.get(base + f"/gallery?batch_id={b}").json()["total"], 1)
+        self.assertEqual(self.client.get(base + f"/resources?batch_id={a}").json()["total"], 2)
+        self.assertEqual(self.client.get(base + f"/resources?batch_id={b}").json()["total"], 1)
+        for batch_id, count in ((a, 2), (b, 1)):
+            findings = self.client.get(base + f"/references?batch_id={batch_id}").json()
+            self.assertEqual(findings["job"]["id"], batch_id)
+            self.assertEqual(findings["counts"]["found"], count)
+            self.assertEqual(findings["counts"]["generated"], count)
+        self.assertEqual(self.client.post(base + f"/gallery/batches/{a}", json={"action": "rename", "name": "Renamed A"}).status_code, 200)
+        self.assertEqual(self.client.post(base + f"/gallery/batches/{a}", json={"action": "archive"}).status_code, 200)
+        archived = next(row for row in self.client.get(base + "/gallery/batches").json()["items"] if row["id"] == a)
+        self.assertTrue(archived["archived"])
+        self.assertEqual(archived["name"], "Renamed A")
+        self.assertEqual(self.client.get(base + f"/gallery?batch_id={a}").json()["total"], 2)
+        self.assertEqual(self.client.post(base + f"/gallery/batches/{a}", json={"action": "restore"}).status_code, 200)
+        source = self.client.get(base + f"/gallery?batch_id={b}").json()["items"][0]
+        self.job("enhance", avatar_id=avatar_id, item_id=source["id"], enhancement_profile="general")
+        enhanced = self.client.get(base + f"/gallery?batch_id={b}&category=enhancements").json()
+        self.assertEqual(enhanced["total"], 1)
+        self.assertEqual(enhanced["items"][0]["batch_id"], b)
+        self.assertEqual(self.client.get(base + f"/references?batch_id={b}").json()["counts"]["generated"], 1)
+        avatar_studio.update_gallery_item(str(self.root), avatar_id, enhanced["items"][0]["id"], batch_id=None)
+        self.assertEqual(self.client.get(base + f"/gallery?batch_id={b}&category=enhancements").json()["total"], 1)
+
+    def test_fresh_batch_can_start_after_unfinished_batch_and_resume_explicitly(self):
+        from web_service import StudioService
+        avatar_id = self.ready()
+        with patch.object(StudioService, "gallery_prompt", side_effect=RuntimeError("Prompt provider unavailable")):
+            first = self.job("gallery", expect="failed", avatar_id=avatar_id, new_batch=True, quantity=2, batch_name="Paused A")
+        a = first["checkpoint"]["batch_id"]
+        second = self.job("gallery", avatar_id=avatar_id, new_batch=True, quantity=1, batch_name="Independent B")
+        b = second["checkpoint"]["batch_id"]
+        resumed = self.job("gallery", avatar_id=avatar_id, batch_id=a)
+        self.assertEqual(resumed["checkpoint"]["batch_id"], a)
+        rows = {row["id"]: row for row in self.client.get(f"/api/avatars/{avatar_id}/gallery/batches").json()["items"]}
+        self.assertEqual(rows[a]["counts"]["generated"], 2)
+        self.assertEqual(rows[b]["counts"]["generated"], 1)
+        self.assertEqual(rows[b]["status"], "complete")
+
+    def test_new_batch_submission_is_idempotent_and_invalid_ids_do_not_escape(self):
+        avatar_id = self.ready()
+        body = {"kind": "gallery", "avatar_id": avatar_id, "new_batch": True, "quantity": 1}
+        headers = {"Idempotency-Key": "fresh-batch-repeat"}
+        first = self.client.post("/api/jobs", json=body, headers=headers)
+        second = self.client.post("/api/jobs", json=body, headers=headers)
+        self.assertEqual(first.status_code, 200, first.text)
+        self.assertEqual(second.status_code, 200, second.text)
+        self.assertEqual(first.json()["id"], second.json()["id"])
+        self.assertEqual(len(self.client.get(f"/api/avatars/{avatar_id}/gallery/batches").json()["items"]), 1)
+        for _ in range(300):
+            if self.app.state.jobs.get(first.json()["id"])["status"] not in {"queued", "running"}:
+                break
+            time.sleep(.02)
+        other = self.ready()
+        batch_id = first.json()["payload"]["batch_id"]
+        self.assertEqual(self.client.get(f"/api/avatars/{other}/references?batch_id={batch_id}").status_code, 400)
+        self.assertEqual(self.client.get(f"/api/avatars/{avatar_id}/references?batch_id=..%2Foutside").status_code, 400)
+        self.assertEqual(self.client.post(f"/api/avatars/{avatar_id}/gallery/batches/{batch_id}", json={"action": "delete"}).status_code, 422)
+
     def test_gallery_sections_and_manual_review_preserve_sources(self):
         avatar_id = self.ready()
         self.job("console", avatar_id=avatar_id, prompt="Gallery separation test")

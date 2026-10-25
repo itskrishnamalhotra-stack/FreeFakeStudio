@@ -2434,3 +2434,14 @@ details p {
   margin: 8px 0;
   overflow-wrap: anywhere;
 }
+.batch-manager { display: grid; gap: 16px; min-width: 0; }
+.batch-row { padding: 16px 0; border-top: 1px solid var(--border); min-width: 0; }
+.batch-row p { overflow-wrap: anywhere; margin: 8px 0; }
+.batch-heading { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.batch-heading h3 { font-size: 16px; margin: 0; overflow-wrap: anywhere; }
+.batch-heading form { display: flex; align-items: center; gap: 6px; flex: 1; min-width: 0; }
+.batch-heading input { min-width: 0; width: 100%; }
+.batch-meta { font-size: 12px; }
+.batch-counts { display: flex; flex-wrap: wrap; gap: 8px 18px; font-size: 13px; margin: 12px 0; }
+.batch-counts strong { margin-right: 3px; }
+.batch-row .button-row { flex-wrap: wrap; }

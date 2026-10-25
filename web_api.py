@@ -82,6 +82,11 @@ class AppSettings(StrictModel):
     gpu_memory_management: StrictBool
 
 
+class BatchAction(StrictModel):
+    action: Literal["rename", "archive", "restore", "finish"]
+    name: str = Field(default="", max_length=120)
+
+
 class Persona(StrictModel):
     niche: str = Field(default="", max_length=1000)
     tone: str = Field(default="", max_length=1000)
@@ -103,6 +108,9 @@ class Approval(StrictModel):
 class JobRequest(StrictModel):
     kind: Literal["generate", "reference", "confirm", "guide", "console", "gallery", "regenerate", "enhance", "mask_preview", "encoder", "unload", "identity_view", "calibrate", "benchmark", "quality_check", "caption", "publish", "reconcile"]
     avatar_id: str | None = None
+    batch_id: str | None = None
+    new_batch: bool = False
+    batch_name: str = Field(default="", max_length=120)
     chat_id: str | None = None
     new_chat: bool = False
     item_id: str | None = None
@@ -317,7 +325,7 @@ def create_app(root=None, persist=None, token=None):
 
     def gallery_value(row):
         return {key: row.get(key) for key in ("id", "status", "origin", "prompt", "seed", "attempt", "validation", "source_id", "diagnostics",
-                                             "working_size", "output_size", "processing_passes", "method", "strength", "steps", "manual_review", "identity_version", "recipe")} | {
+                                             "working_size", "output_size", "processing_passes", "method", "strength", "steps", "manual_review", "identity_version", "recipe", "batch_id")} | {
             "image": info(row.get("generated_path")), "source": info(row.get("source_path")),
             "reference": info(row.get("reference_path")), "regenerable": row.get("origin") not in {"enhancement", "legacy"} and bool(row.get("prompt"))}
 
@@ -561,14 +569,24 @@ def create_app(root=None, persist=None, token=None):
 
     @app.get("/api/avatars/{avatar_id}/gallery")
     def gallery(avatar_id: str, offset: int = 0, limit: int = 60, status: str = "all", origin: str = "all", query: str = "",
-                category: Literal["all", "generations", "enhancements", "review"] = "all"):
+                category: Literal["all", "generations", "enhancements", "review"] = "all", batch_id: str | None = None):
         check_id(avatar_id)
         rows = studio.visible_gallery_items(str(root), avatar_id, limit=None)
+        by_id = {row["id"]: row for row in rows}
+        by_path = {row.get("generated_path"): row for row in rows if row.get("generated_path")}
+        for row in rows:
+            if row.get("origin") == "enhancement" and not row.get("batch_id"):
+                parent = by_id.get(row.get("source_id")) or by_path.get(row.get("source_path")) or {}
+                row["batch_id"] = parent.get("batch_id")
+        if batch_id:
+            if not avatar_gallery_jobs.load_batch(str(root), avatar_id, batch_id):
+                raise ValueError("Gallery batch not found")
+            rows = [row for row in rows if row.get("batch_id") == batch_id]
         review_states = {"needs_review", "unchecked", "no_change", "failed", "stopped"}
         counts = {"generations": sum(row.get("origin") != "enhancement" for row in rows),
                   "enhancements": sum(row.get("origin") == "enhancement" for row in rows),
                   "review": sum(row.get("status") in review_states for row in rows),
-                  "resources": len(avatar_resources.collect(root, avatar_id, service.chats))}
+                  "resources": len(avatar_resources.collect(root, avatar_id, service.chats, batch_id))}
         rows = [row for row in rows if category == "all"
                 or (category == "generations" and row.get("origin") != "enhancement")
                 or (category == "enhancements" and row.get("origin") == "enhancement")
@@ -580,8 +598,12 @@ def create_app(root=None, persist=None, token=None):
 
     @app.get("/api/avatars/{avatar_id}/resources")
     def resources(avatar_id: str, status: Literal["all", "pending", "approved", "rejected", "used"] = "all",
-                  kind: Literal["all", "identity", "uploaded", "search"] = "all", query: str = "", offset: int = 0, limit: int = 48):
-        rows = avatar_resources.collect(root, check_id(avatar_id), service.chats)
+                  kind: Literal["all", "identity", "uploaded", "search"] = "all", query: str = "", offset: int = 0, limit: int = 48,
+                  batch_id: str | None = None):
+        check_id(avatar_id)
+        if batch_id and not avatar_gallery_jobs.load_batch(str(root), avatar_id, batch_id):
+            raise ValueError("Gallery batch not found")
+        rows = avatar_resources.collect(root, avatar_id, service.chats, batch_id)
         counts = {"all": len(rows), **{state: sum(row["state"] == state for row in rows) for state in ("pending", "approved", "rejected")},
                   "used": sum(row["used"] for row in rows)}
         rows = [row for row in rows if (status == "all" or (row["used"] if status == "used" else row["state"] == status))
@@ -604,17 +626,31 @@ def create_app(root=None, persist=None, token=None):
             return gallery_value(updated)
 
     @app.get("/api/avatars/{avatar_id}/references")
-    def references(avatar_id: str, status: str = "All findings"):
+    def references(avatar_id: str, status: str = "All findings", batch_id: str | None = None):
         check_id(avatar_id)
         if status not in {"All findings", "Approved", "Rejected", "Awaiting checks"}:
             raise ValueError("Unknown reference filter")
-        snapshot = avatar_gallery_jobs.safe_snapshot(str(root), avatar_id, status)
-        catalog = avatar_gallery_jobs.load_catalog(str(root), avatar_id)["references"]
+        if batch_id and not avatar_gallery_jobs.load_batch(str(root), avatar_id, batch_id):
+            raise ValueError("Gallery batch not found")
+        snapshot = avatar_gallery_jobs.safe_snapshot(str(root), avatar_id, status, batch_id)
+        catalog = avatar_gallery_jobs.batch_references(str(root), avatar_id, snapshot["job"])
         def matching(row):
             return status == "All findings" or (status == "Approved" and row["state"] == "approved") or (status == "Rejected" and row["state"] == "rejected") or (status == "Awaiting checks" and row["state"] in {"found", "downloaded"})
         return {"counts": snapshot["counts"], "job": snapshot["job"], "events": snapshot["events"], "error": snapshot.get("error"),
                 "items": [{"id": row["id"], "state": row["state"], "reason": row.get("reason", ""), "image": info(row.get("path")),
                            "source_url": row.get("source_url") or row.get("image_url"), "validation": row.get("validation")} for row in catalog if matching(row)]}
+
+    @app.get("/api/avatars/{avatar_id}/gallery/batches")
+    def gallery_batches(avatar_id: str):
+        return {"items": avatar_gallery_jobs.list_batches(str(root), check_id(avatar_id))}
+
+    @app.post("/api/avatars/{avatar_id}/gallery/batches/{batch_id}")
+    def manage_gallery_batch(avatar_id: str, batch_id: str, body: BatchAction):
+        with mutation_lock:
+            ensure_idle(check_id(avatar_id))
+            result = avatar_gallery_jobs.manage_batch(str(root), avatar_id, batch_id, body.action, body.name)
+            jobs.flush()
+            return result
 
     @app.post("/api/avatars/{avatar_id}/gallery/new-search")
     def new_search(avatar_id: str):
@@ -781,6 +817,12 @@ def create_app(root=None, persist=None, token=None):
         with mutation_lock:
             saved_jobs = jobs.list()
             previous = next((row for row in saved_jobs if row["request_key"] == idempotency_key), None)
+            if body.kind == "gallery" and body.batch_id and previous is None:
+                if body.new_batch:
+                    raise ValueError("Choose either a new batch or an existing batch")
+                batch = avatar_gallery_jobs.load_batch(str(root), check_id(body.avatar_id), body.batch_id)
+                if not batch or batch.get("archived") or batch["status"] in {"complete", "exhausted"}:
+                    raise ValueError("Select an unfinished, unarchived batch to resume")
             for pending in saved_jobs:
                 if previous is None and pending["request_key"] != idempotency_key and pending["status"] in {"queued", "running"}:
                     if pending["payload"].get("avatar_id") == body.avatar_id:
@@ -798,6 +840,16 @@ def create_app(root=None, persist=None, token=None):
                         args["chat_id"] = service.chats.create(scope)["id"]
                 else:
                     args["chat_id"] = service.chats.get(body.chat_id, scope)["id"]
+            if body.kind == "gallery" and body.new_batch:
+                if previous:
+                    args["batch_id"] = previous["payload"]["batch_id"]
+                else:
+                    service.ready_avatar(body.avatar_id)
+                    batch_id = hashlib.sha256((body.avatar_id + idempotency_key).encode()).hexdigest()[:12]
+                    batch = avatar_gallery_jobs._create_batch(str(root), body.avatar_id, body.quantity, body.aspect,
+                        body.theme, body.require_face, body.batch_name, batch_id)
+                    avatar_gallery_jobs.update_batch(str(root), body.avatar_id, batch_id=batch_id, status="pending", phase="pending")
+                    args["batch_id"] = batch["id"]
             job = jobs.submit(body.kind, args, idempotency_key)
             if body.kind in {"generate", "console"} and body.new_chat:
                 service.chats.append(args["chat_id"], scope, {"id": job["id"] + "-user", "role": "user", "text": body.prompt, "images": body.images})
@@ -815,7 +867,7 @@ def create_app(root=None, persist=None, token=None):
         if action == "resume":
             ensure_idle(row["payload"].get("avatar_id"))
         elif row["kind"] == "gallery" and row["payload"].get("avatar_id"):
-            avatar_gallery_jobs.stop_batch(str(root), row["payload"]["avatar_id"])
+            avatar_gallery_jobs.stop_batch(str(root), row["payload"]["avatar_id"], row.get("checkpoint", {}).get("batch_id") or row["payload"].get("batch_id"))
         return jobs.cancel(job_id) if action == "cancel" else jobs.resume(job_id)
 
     @app.get("/api/jobs/{job_id}/events")

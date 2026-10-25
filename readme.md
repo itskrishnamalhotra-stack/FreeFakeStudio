@@ -18,6 +18,8 @@ calibration, resumable consistency tests, caption/export workflow and optional
 Instagram publishing. No LoRA training, video or voice providers are required.
 
 **Scene-aware enhancement:** [ENHANCEMENT_PROFILES.md](ENHANCEMENT_PROFILES.md)
+
+**Independent gallery batches:** [GALLERY_BATCHES.md](GALLERY_BATCHES.md)
 lists the 15 editable prompt profiles, automatic subject/focus routing, saved
 analysis details and review limitations. Background people no longer turn a
 landscape into a portrait; artwork and documents retain their original medium.
@@ -519,9 +521,10 @@ does not guarantee photorealism or preservation of every detail.
 ### Reference Review And Batch Recovery
 
 The Gallery workspace shows live Finding, Cleaning, Prompting, Generating, and
-Checking stages. Open **References** to inspect all findings, approved images,
-rejections with reasons, and images awaiting checks. Findings without a downloaded
-file still appear in the source table. **Results** contains generated images.
+Checking stages. Open **Batches** to manage separate named batches, then use
+**Pipeline** to inspect the selected batch's findings and rejection reasons.
+**Resources** and **Generations** remain separate, with a **Gallery batch** filter
+that preserves batch selection in the URL.
 
 Local file checks reject unreadable, undersized, blank, oversized, and exact
 duplicate images. Gemini then checks clarity, adult-subject confidence, and useful
@@ -542,16 +545,21 @@ batch retains its original theme, quantity, aspect, and face requirement. **Stop
 preserves the batch; an in-progress inference/API request may finish first.
 
 The avatar's `gallery/references/catalog.json` retains findings and rejection
-reasons; `gallery/batches/` retains checkpoints, with `gallery/active_batch.json`
-pointing to the current batch. Existing `search_*.json` reports and reference files
-are imported without deletion. Unused matching references are consumed before a
-new search. References associated with existing generated images are not repeated.
+reasons with batch ownership; `gallery/batches/` retains independent checkpoints.
+Each new batch starts its own search/cleaning budget without consuming cached
+references from another batch. The same public image can be returned by separate
+searches, but its validation and consumption state are isolated per batch. Existing
+`search_*.json` reports and reference files are retained. Legacy shared findings
+are labeled and copied into owned records when an older batch is resumed.
 Runs made before batch checkpoints existed can recover their saved references and
 images, but not prompts or progress that the old code never saved.
 
-If an empty search is paused after exhausting its budget, **New search** closes
-that search while retaining its findings. A committed unfinished batch must be
-resumed first. A changed confirmed identity cannot silently resume an older batch.
+An idle unfinished batch never forces you to resume it before creating another.
+Use **Finish batch** to close unwanted pending work, or **Archive batch** to hide
+it reversibly without deleting files. Empty searches become **Exhausted**. Automatic
+completion means the usable queue was processed, not that every output passed
+quality review or that the requested count was reached. Only one GPU operation
+runs at a time. A changed confirmed identity cannot silently resume an older batch.
 
 Auto Gallery reads `GEMINI_API_KEY` and `TAVILY_API_KEY` from the uploaded keys
 txt, the single Colab cell form, Colab Secrets (the key icon in Colab's left

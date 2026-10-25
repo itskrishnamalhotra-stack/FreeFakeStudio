@@ -284,12 +284,14 @@ class StudioService:
         repair = (lambda prompt, result: prompt + " Correct identity and anatomy.") if model_manager.DEV_MODE else avatar_gallery.repair_generation_prompt
         iterator = avatar_gallery_jobs.run(str(self.root), args["avatar_id"], args["quantity"], args["aspect"], args["theme"],
             args.get("require_face", False), self.gallery_prompt, make, self.validate, repair,
-            mock_discover=self.mock_references if model_manager.DEV_MODE else None)
+            mock_discover=self.mock_references if model_manager.DEV_MODE else None,
+            batch_id=context.saved.get("batch_id") or args.get("batch_id") or (context.id[:12] if args.get("new_batch") else None),
+            new_batch=args.get("new_batch", False), name=args.get("batch_name", ""))
         try:
             previous_phase = None
             for row in iterator:
                 if context.store.get(context.id).get("cancel_requested"):
-                    avatar_gallery_jobs.stop_batch(str(self.root), args["avatar_id"])
+                    avatar_gallery_jobs.stop_batch(str(self.root), args["avatar_id"], row["id"])
                 context.emit(row["message"], phase=row["phase"], batch_id=row["id"])
                 marker = (row["phase"], row.get("updated_at"), row["message"])
                 if marker != previous_phase:
@@ -423,7 +425,10 @@ class StudioService:
             seed = secrets.randbelow(2**63)
         context.checkpoint(seed=seed)
         if avatar_id:
+            parent = next((row for row in studio.load_gallery_items(str(self.root), avatar_id)
+                           if row.get("generated_path") == source_path), {})
             studio.record_gallery_item(str(self.root), avatar_id, {"id": item_id, "origin": "enhancement", "source_id": source_id,
+                "batch_id": parent.get("batch_id"),
                 "source_path": source_path, "status": "enhancing", "attempt": 1, "prompt": args["reconstruction_prompt"],
                 "method": args["method"], "strength": args["strength"], "steps": args["steps"], "scale": args["scale"], "seed": str(seed)})
         def edit(tile, whole, prompt, seed, strength):
