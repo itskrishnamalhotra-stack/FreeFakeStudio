@@ -435,6 +435,9 @@ images are retained; an image awaiting vision validation is checked again rather
 than generated again. Do not start a new batch to recover the old one. Instagram
 login/rate-limit responses and non-image download rejections are separate source
 download failures; installing bitsandbytes does not make those URLs downloadable.
+Historical job errors remain visible in **Activity** and the affected batch, but
+opening the app or reconnecting no longer replays them as new global error
+banners. New failures are still reported, including failures after resuming work.
 
 Guided setup uses FLUX and the local SmolVLM analyzer without requiring Gemini or
 Tavily keys:

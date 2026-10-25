@@ -73,6 +73,7 @@ import {
 import "./styles.css";
 import { InfluencerWorkspace } from "./InfluencerWorkspace";
 import { GalleryBatches } from "./GalleryBatches";
+import { JobFailureNotifications } from "./job-notifications";
 
 const FLUX = "FLUX.2-klein 4B";
 const GALLERY_SECTIONS = [
@@ -373,6 +374,7 @@ function App() {
     thread = useRef<HTMLDivElement>(null),
     follow = useRef(true),
     lastJobs = useRef(""),
+    jobNotifications = useRef(new JobFailureNotifications()),
     requestBusy = useRef(false);
   const busy = jobs.some(active) || sending,
     isAvatar = section === "avatars",
@@ -681,6 +683,11 @@ function App() {
     document.documentElement.dataset.theme = theme;
     localStorage.setItem("ffs-theme", theme);
   }, [theme]);
+  function receiveJobs(rows: Job[]) {
+    const failures = jobNotifications.current.consume(rows);
+    setJobs(rows);
+    if (failures.length) setError(failures[0].error || failures[0].message);
+  }
   async function refresh() {
     const settingsEpoch = appSettingsEpoch.current;
     const [c, a, j] = await Promise.all([
@@ -695,7 +702,7 @@ function App() {
         : c,
     );
     setAvatars(a);
-    setJobs(j);
+    receiveJobs(j);
     await refreshConversations();
     if (avatarId && chatContext.current.scope === avatarId)
       await loadGallery(0, true);
@@ -754,12 +761,11 @@ function App() {
     const consume = (j: Job[]) => {
       if (!alive) return;
       lastEvent = Date.now();
-      setJobs(j);
+      receiveJobs(j);
       const stamp = j.map((row) => row.id + ":" + row.status).join();
       if (stamp !== lastJobs.current) {
         lastJobs.current = stamp;
         update();
-        if (j[0]?.status === "failed") setError(j[0].error || j[0].message);
       }
       setNotice((value) =>
         value.startsWith("Connection interrupted.") ? "" : value,
