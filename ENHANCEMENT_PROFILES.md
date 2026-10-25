@@ -2,7 +2,8 @@
 
 Automatic image-aware enhancement uses **one standalone profile + targeted focus
 rules + any user-provided additional reconstruction instructions**. All 15 profile
-bodies use the supplied final AI-image repair prompts (`user-refinement-v2`). No
+bodies use the supplied concise AI-image repair prompts (`user-refinement-v3`),
+prioritizing gentle correction, fidelity and avoidance of over-enhancement. No
 universal preservation prompt is prepended or appended, and no second category's
 full prompt is added. Each profile balances conservative defect repair, appropriate
 texture reconstruction and preservation of correct details. The final applied

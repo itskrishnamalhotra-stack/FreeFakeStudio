@@ -29,8 +29,8 @@ class AnalysisTests(unittest.TestCase):
         value = analysis.analyze(self.image, self.root, ask=self.replies())
         prompt = analysis.plan(value, avatar_enhance.PHOTO_PROMPT)["prompt"]
         self.assertEqual(value["profile_id"], "female_portrait")
-        self.assertIn("without inventing freckles, wrinkles, blemishes, pigmentation, or signs of aging", prompt)
-        self.assertIn("Replace waxy skin, artificial smoothing", prompt)
+        self.assertIn("Do not introduce new freckles, spots, wrinkles, pigmentation, or facial features", prompt)
+        self.assertIn("clear, smooth, and healthy-looking, with only subtle realistic surface texture", prompt)
         self.assertFalse(any(key.startswith("skin_") for key in value["answers"]))
         self.assertNotIn("fine irregular pores", prompt)
 
@@ -38,8 +38,8 @@ class AnalysisTests(unittest.TestCase):
         ask = self.ask({"landscape_visible": "yes", "compression_blocks": "yes"})
         value = analysis.analyze(self.image, self.root, ask=ask)
         prompt = analysis.plan(value, avatar_enhance.PHOTO_PROMPT)["prompt"]
-        self.assertIn("Correct inconsistent reflections, lighting, shadows, and depth relationships", prompt)
-        self.assertIn("existing grass, leaves, bark, soil, rocks, water, and clouds", prompt)
+        self.assertIn("Gently correct obvious AI-rendering artifacts", prompt)
+        self.assertIn("plants, rocks, clouds, water, and environmental surfaces", prompt)
         self.assertNotIn("compression_blocks", value["answers"])
         self.assertNotIn("edge_halos", value["answers"])
         self.assertNotIn("Reduce edge halos", prompt)
@@ -214,23 +214,23 @@ class AnalysisTests(unittest.TestCase):
     def test_user_supplied_refinement_prompts_match_approved_text(self):
         import hashlib
         expected = {
-            "female_portrait": "64d03ee8dc5c55a3327becdf7510f1c3a204db894c73a78612f6b59b3dc9f0da",
-            "male_portrait": "ed8f537622736307c3b5a86fba595bc2f461a55fee48aa4d08de66d63bc1f881",
-            "female_body": "5507d3c36582f9ced7e1ea88266cd5e6a2e3aab34b79271547057a91697797d8",
-            "male_body": "0d5cff68ddb09ddabb1a2a22bb2dab715de3c5cd8ad744326725548c1ca78d62",
-            "group": "2e2ef0613ca2781aa04796132ea596b3fe2d8faeaa64c71b1fdcf9b3cccf6291",
-            "person_unspecified": "ffb2029d63b9aa19d45af8da91f67d13e90f16758921746975e9ffb6b7671f13",
-            "landscape": "ab81faff6cd3ddeb8d23041d4d90f47e5cc9f1c1d93ad8ed6f31518c5cd53ab9",
-            "architecture": "6a0cccf85b95b4662c5a2b00aeb6c942d96da9601db8ef2f430082e7e12f5b7a",
-            "product": "8c6ffb3c5a68859cfd0989a3802bb0b8448f735b79170fe7b2ae55f2404e3d42",
-            "animal": "aa6680116d7dd2bdd3f256b53013f5a2245f03a6cc6da58f10d7ca655dd54b0c",
-            "food": "8aee717533c1b110eb8050180dbb7521d3fb22786d234218146f0d60b71c3844",
-            "macro": "37cd5a011055948e24a687413bb89a39d8d3fc9fb0c82f521d0e0cf4dd9591c8",
-            "artwork": "408a34fc9932e96a3fa7381a213746bb870b3eccf471a60ae7e44ab4a08e51cc",
-            "document": "43b916451e470b4d97df7730a567401ff4c73545e2687bdfce1a41385de2c52f",
-            "general": "547a42440ee3ef1875867cd0f55617a5aaec5ef98dd791a5973ebbd94c14ded2",
+            "female_portrait": "0eb52c7fc6131cdc3938cff8c3473335599427ff623ad1baefed31027ede629e",
+            "male_portrait": "3baeabc088a5bccc7ce335dad868e3d4ea1f55af0610f6027f044278ea3869c3",
+            "female_body": "98759baf41ac7e1709eb2e948ca5d7d26e7b20dba70d39cb3528d6047cf1f308",
+            "male_body": "4e174fb9eeac14e04979993ce2a993018bcf2bd43901b14db4912a40436a7ebd",
+            "group": "2507ca73a374a7229458f0a7b7db45a95a297fb9cc05dcccd9adda255a0abe78",
+            "person_unspecified": "77d1f770b1c2ab79e763694e9ad43174a9bc755158a9d016e6e875d1ad909e7c",
+            "landscape": "f5482abd7154758ee0cdafb7c4cfb1dc9ef972257cfe29bd83d658d1343ac831",
+            "architecture": "38ab00d51a4ec0486144c875073c48078474b38755bdb8490b59fc194df8652f",
+            "product": "75443db99296e14d4f6c7dadd45e4d53650860ba8a77940097f899691366ab50",
+            "animal": "1e555d57e11769aa9ad14a6e3eeaef9a4eb1a3747ccea498e462e5ed3d0e77ab",
+            "food": "1cf3c56dd41709949fae526f6dafa7cf231a75ed79446d888ce31768fdd3f53d",
+            "macro": "ce3f9d059f70764f78ec7458eea0072b2223380eba72a034ed69046d7da0dfb5",
+            "artwork": "8737002ea682666c2a85357bf6b58f99e7d31469ce00136dad4600953a0177bc",
+            "document": "10f60c2e1115fb91e184d4c584a1a50f26d7d8e3a6db6bb21eea8e5e6d667923",
+            "general": "11880ffc2a2cd9d205209a6a1415cc30ffa048e821ec607c0d1947e4a6322ae2",
         }
-        self.assertEqual(profiles.PROMPT_VERSION, "user-refinement-v2")
+        self.assertEqual(profiles.PROMPT_VERSION, "user-refinement-v3")
         self.assertEqual({key: hashlib.sha256(value["prompt"].encode()).hexdigest()
                           for key, value in profiles.PROFILES.items()}, expected)
         self.assertNotIn("Important:", profiles.PROFILES["document"]["prompt"])
