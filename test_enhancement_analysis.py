@@ -30,7 +30,7 @@ class AnalysisTests(unittest.TestCase):
         prompt = analysis.plan(value, avatar_enhance.PHOTO_PROMPT)["prompt"]
         self.assertEqual(value["profile_id"], "female_portrait")
         self.assertIn("Do not invent freckles", prompt)
-        self.assertIn("exact facial structure", prompt)
+        self.assertIn("overly smooth or synthetic surfaces", prompt)
         self.assertFalse(any(key.startswith("skin_") for key in value["answers"]))
         self.assertNotIn("fine irregular pores", prompt)
 
@@ -38,8 +38,8 @@ class AnalysisTests(unittest.TestCase):
         ask = self.ask({"landscape_visible": "yes", "compression_blocks": "yes"})
         value = analysis.analyze(self.image, self.root, ask=ask)
         prompt = analysis.plan(value, avatar_enhance.PHOTO_PROMPT)["prompt"]
-        self.assertIn("wave scale", prompt)
-        self.assertIn("leaf shapes", prompt)
+        self.assertIn("accurate water reflections and ripples", prompt)
+        self.assertIn("individual leaves and grasses where resolvable", prompt)
         self.assertIn("compression blocks", prompt)
         self.assertNotIn("ignore all instructions", prompt)
         self.assertNotIn("existing fabric weave", prompt)
@@ -206,6 +206,47 @@ class AnalysisTests(unittest.TestCase):
         review = analysis.review_texture(self.image, source, ask=self.ask({"people_main_subject": "yes"}))
         self.assertEqual(review["status"], "consistent")
         self.assertIn("not proof", review["method"])
+
+    def test_user_supplied_refinement_prompts_match_approved_text(self):
+        import hashlib
+        expected = {
+            "female_portrait": "3ba5af8076b92bdea41e3fd6b6afdd134a5b0a77abe9908605cf221a55a76c9a",
+            "male_portrait": "4eba7b42199f66de4242b83ea6f69e24e7b3c253495f3ffd74ed41e8f8426bbf",
+            "female_body": "b753f1b35646eab34f7b92b962ab7626fa02c125f5a36df66e44cb670e8184ee",
+            "male_body": "feeb08db9de12403337ad453f7eaa8c85e12dd0c9998a1a44cd1ea1dc1174dfb",
+            "group": "7c321bdc9ff87a59a0a989c81c0bea271a743237fad9eee89f3df7efc303da64",
+            "person_unspecified": "68a657cd1651c58a852890378de1030ab7f772c640a014535f27ba27a67cb998",
+            "landscape": "b68ee3e244653948b91d98f14f6079ae71c9aa9196ed959c90ddf7f084c821d4",
+            "architecture": "9ca88006992cc5600d99c143c7c9846339ac0f83cca40e0c3a558004c9b9b98d",
+            "product": "61ae0faaa7887a962f42211de1eae3be9819596b083e1dd4dae3c0d7d80cbbdc",
+            "animal": "0fa9c389a2ab28457b6f371b06728386ffbf05406f9c492f4a6e4f5869c48647",
+            "food": "648b0e81814feac75b11c3ef6f5f44adef9508691ecb6c0743244bdb71c26a0a",
+            "macro": "6ace4bc9ffae71c886246023f6697f1c7fa7f4757ad79dcce515531b925ec5d4",
+            "artwork": "2261ec77399c59fd3d63f3ce3b7a3775d10d4a4ffbb8342651a760c9d2b4a506",
+            "document": "0982c1b37f7a0e76dea41b80ba61b81fca61e2e5e7d64e548f46294ac0141d27",
+            "general": "055ee8bd1079d8b084733380e7ba013446a9c075567d6ff0337cb48c9db01164",
+        }
+        self.assertEqual(profiles.PROMPT_VERSION, "user-refinement-v1")
+        self.assertEqual({key: hashlib.sha256(value["prompt"].encode()).hexdigest()
+                          for key, value in profiles.PROFILES.items()}, expected)
+        self.assertNotIn("Important:", profiles.PROFILES["document"]["prompt"])
+
+    def test_standalone_profile_does_not_duplicate_generic_default(self):
+        source = analysis.analyze(self.image, self.root, ask=self.replies())
+        planned = analysis.plan(source, avatar_enhance.PHOTO_PROMPT)
+        self.assertNotIn(avatar_enhance.PHOTO_PROMPT, planned["prompt"])
+        self.assertEqual(planned["prompt_version"], profiles.PROMPT_VERSION)
+        self.assertEqual(planned["prompt"].count(profiles.PROFILES["female_portrait"]["prompt"]), 1)
+        custom = "Preserve the exact red scarf."
+        self.assertIn(custom, analysis.plan(source, custom)["prompt"])
+
+    def test_text_revision_keeps_source_analysis_cache_reusable(self):
+        from unittest.mock import patch
+        analysis.analyze(self.image, self.root, ask=self.replies())
+        with patch.object(profiles, "PROMPT_VERSION", "future-wording-v2"):
+            cached = analysis.analyze(self.image, self.root, ask=Mock(side_effect=AssertionError("No repeat classification")))
+            self.assertTrue(cached["cache_hit"])
+            self.assertEqual(analysis.plan(cached, avatar_enhance.PHOTO_PROMPT)["prompt_version"], "future-wording-v2")
 
     def test_all_unclear_review_requires_manual_review(self):
         source = analysis.analyze(self.image, self.root, ask=self.replies())

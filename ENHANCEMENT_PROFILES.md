@@ -1,7 +1,9 @@
 # Enhancement Prompt Profiles
 
 Automatic image-aware enhancement uses **shared preservation instructions + one
-profile + focus rules + your reconstruction instructions**. Source preservation
+standalone profile + focus rules + any custom reconstruction instructions**. The
+15 profile bodies use the supplied detailed refinement prompts (`user-refinement-v1`).
+The old generic default is not added again on top of a standalone profile. Source preservation
 and the original medium take precedence over conflicting requests for generic
 texture. The final applied prompt is saved with the output.
 
@@ -60,9 +62,13 @@ The exact 15 prompt texts, names and short descriptions live in
 `enhancement_profiles.py` (`PROFILES`). Shared constraints are in `PRESERVATION`
 and focus instructions in `FOCUS_RULES`. Supply a replacement using the profile
 name or ID; no model checkpoint or notebook changes are needed to edit its text.
-Version the library when changing routing or classification semantics.
+Version the library when changing routing or classification semantics. Text-only
+revisions use `PROMPT_VERSION` and are saved in each new plan as `prompt_version`;
+they do not invalidate compatible source classifications or force model downloads.
 
-The existing editable Reconstruction prompt remains an additional instruction.
+The existing editable Reconstruction prompt remains an additional instruction
+when you change it from the default. Leaving the default uses the selected full
+profile with shared preservation/focus rules instead of duplicating generic text.
 Switch **Automatic image-aware prompt** off to use that text without automatic
 profiles. Start a new enhancement after updating: resuming an existing job keeps
 its saved prompt, source and generated image rather than silently rerunning it.
@@ -74,6 +80,9 @@ These are advisory; consistency is not proof of identity, realism, exact text or
 better quality. Unclear checks or detected mismatches require review. Pixel/detail
 metrics and before/after comparisons remain available. Documents require careful
 visual verification because generative editing cannot guarantee exact lettering.
+For legal records, screenshots and other character-perfect work, use deterministic
+restoration rather than relying solely on FLUX. This warning is documentation,
+not an instruction embedded in the document profile's model prompt.
 
 Legacy jobs keep their original prompts and texture-review metadata. The API
 retains `texture_review` for older consumers; new plans also record the same

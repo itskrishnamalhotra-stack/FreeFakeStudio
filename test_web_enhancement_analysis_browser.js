@@ -39,6 +39,8 @@ async (page) => {
   if (!enhanced.reconstruction_prompt.includes('Do not invent freckles')) throw new Error('Preservation guard not applied');
   if (!enhanced.diagnostics.enhancement_plan.analysis.mock_not_quality_evidence) throw new Error('Mock analysis not labeled');
   if (enhanced.diagnostics.enhancement_plan.version !== 'scene-profiles-v1') throw new Error('Old skin-first planner is still active');
+  if (enhanced.diagnostics.enhancement_plan.prompt_version !== 'user-refinement-v1') throw new Error('User-supplied prompt revision not applied');
+  if (!enhanced.reconstruction_prompt.includes('Apply restrained texture reconstruction only where it improves the original image')) throw new Error('Supplied standalone fallback prompt is missing');
   if (enhanced.diagnostics.enhancement_plan.profile_id !== 'general') throw new Error('Mock preview must use a labeled fallback, not fabricated recognition');
   if (!enhanced.diagnostics.content_review) throw new Error('Scene content review missing');
   if (!enhanced.diagnostics.tone_anchor.enabled) throw new Error('Tone preservation was not applied');
