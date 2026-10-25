@@ -600,6 +600,38 @@ runs at a time. A changed confirmed identity cannot silently resume an older bat
 
 ### Resource Search Tabs and More Images
 
+**Search source** is selectable in **Create batch**, **New resource search** and
+**Search more**. The existing **Tavily** source remains the default; saved older
+batches still use Tavily. Nothing is migrated automatically.
+
+- **Google Images (experimental)** uses the pinned `icrawler==0.6.10` Google parser
+  to discover original image URLs. It needs no Google search API key, GPU model or
+  browser installation. Google searches use the exact description, search photo/large
+  results, and do not inherit Tavily's `AVATAR_REFERENCE_DOMAINS` Instagram filter.
+- **Google Images, then Tavily on failure** explicitly permits fallback when Google
+  is blocked, changes its page format or provides no parseable original URLs. Actual
+  source labels and **Search source results** show which source supplied findings;
+  fallback results are never described as Google results. Tavily still needs its key
+  and uses its existing domain/time filters.
+- **Tavily (existing)** keeps the previous API path, keys and filters unchanged.
+
+This is a staged integration, not a claim that Google crawling works from every
+Colab/Kaggle IP. A live development smoke test received a JavaScript verification
+page, so Google-only mode reports that limitation and pauses resumably instead of
+pretending that it found images. No CAPTCHA, consent or browser verification is
+bypassed. Try the fallback mode first, then inspect its source results before
+choosing Google-only. Google rankings need not match a logged-in browser.
+
+All sources share the existing bounded downloader, duplicate checks, request-aware
+Gemini approval, saved catalog, no-reuse rules and generation queue. Search is not
+approval. Source attribution is retained where available; missing titles/source
+evidence are not filled with the search query. Named-person requests can therefore
+fail attribution checks when Google exposes only bare image URLs. Gemini remains
+required for approval and prompts. Existing tab contents and generations remain;
+changing the source in **Search more** affects only that new search. Interrupted
+searches resume their saved source/query. **Generate more** and **Review resources**
+never switch sources or start an extra search.
+
 Open an avatar's **Gallery > Resources**. Each original batch search appears as a
 resource tab. Select it and click **Generate more** to request another 6, 10 or 20
 images (or choose 1-20). This processes unused findings from that tab: missing

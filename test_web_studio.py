@@ -456,6 +456,27 @@ class StudioTests(unittest.TestCase):
                                    headers={"Idempotency-Key": "review-without-source"})
         self.assertEqual(missing.status_code, 400)
 
+    def test_google_source_is_optional_saved_and_switchable_only_on_a_new_search(self):
+        avatar_id = self.ready()
+        original = self.job("gallery", avatar_id=avatar_id, new_batch=True, quantity=1, search_provider="google")
+        parent = original["payload"]["batch_id"]
+        base = f"/api/avatars/{avatar_id}"
+        batch = self.client.get(base + "/gallery/batches").json()["items"][0]
+        self.assertEqual(batch["search_provider"], "google")
+        found = self.job("resource_search", avatar_id=avatar_id, batch_id=parent, theme="New beach references",
+                         search_provider="google_fallback", quantity=1)
+        tab_id = found["payload"]["resource_tab_id"]
+        tabs = self.client.get(base + "/resource-tabs").json()["items"]
+        self.assertEqual(next(row for row in tabs if row["id"] == tab_id)["search_provider"], "google_fallback")
+        self.assertEqual(next(row for row in tabs if row["id"] == parent)["search_provider"], "google")
+        self.job("resource_search", avatar_id=avatar_id, batch_id=parent, resource_tab_id=tab_id,
+                 search_provider="tavily", quantity=1)
+        tabs = self.client.get(base + "/resource-tabs").json()["items"]
+        self.assertEqual(next(row for row in tabs if row["id"] == tab_id)["search_provider"], "tavily")
+        response = self.client.post("/api/jobs", json={"kind": "resource_search", "avatar_id": avatar_id,
+            "batch_id": parent, "theme": "Test", "search_provider": "invalid"}, headers={"Idempotency-Key": "invalid-provider-test"})
+        self.assertEqual(response.status_code, 422)
+
     def test_batch_gender_round_trips_through_api_and_persists_independently(self):
         avatar_id = self.ready()
         first = self.job("gallery", avatar_id=avatar_id, new_batch=True, quantity=1, avatar_gender="female")

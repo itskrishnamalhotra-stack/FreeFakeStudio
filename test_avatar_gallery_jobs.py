@@ -471,6 +471,49 @@ class GalleryJobTests(unittest.TestCase):
         self.assertIn("presentation mismatch for female avatar", rows[0]["reason"])
         self.assertEqual(rows[1]["state"], "approved")
 
+    def test_google_discovery_uses_exact_query_and_the_existing_download_and_validation_pipeline(self):
+        import reference_search
+        def downloaded(row, folder):
+            path = folder / "google-fixture.png"
+            image_fixture().save(path)
+            return {**row, "path": str(path)}
+        with mock.patch.object(reference_search, "google_images", return_value=[{
+                "image_url": "https://example.test/google.jpg", "title": "Beach swimwear photograph", "search_provider": "google"}]) as google, \
+             mock.patch.object(gallery, "_tavily_search") as tavily, \
+             mock.patch.object(gallery, "_download_candidate", side_effect=downloaded) as download, \
+             mock.patch.object(gallery, "gemini_json", return_value={"results": [approval()]}) as visual:
+            self.execute(mock_discover=None, search_provider="google", quantity=1, theme="Woman wearing swimwear at the beach")
+        google.assert_called_once_with("Woman wearing swimwear at the beach", offset=0)
+        tavily.assert_not_called()
+        download.assert_called_once()
+        self.assertIn("Woman wearing swimwear at the beach", visual.call_args.args[0])
+        job = jobs.load_batch(self.root, self.avatar_id)
+        self.assertEqual(job["search_provider"], "google")
+        self.assertEqual(job["search_attempts"][0]["status"], "success")
+        self.assertEqual(jobs.load_catalog(self.root, self.avatar_id)["references"][0]["search_provider"], "google")
+        self.assertEqual(jobs.snapshot(self.root, self.avatar_id)["counts"]["generated"], 1)
+
+    def test_blocked_google_batch_resumes_same_provider_and_query_without_resetting_work(self):
+        import reference_search
+        with mock.patch.object(reference_search, "google_images", side_effect=reference_search.ImageSearchError("Google blocked")):
+            with self.assertRaisesRegex(reference_search.ImageSearchError, "blocked"):
+                self.execute(mock_discover=None, search_provider="google", quantity=1, theme="Beach")
+        saved = jobs.load_batch(self.root, self.avatar_id)
+        self.assertEqual(saved["status"], "paused")
+        self.assertEqual(saved["round"], 0)
+        def downloaded(row, folder):
+            path = folder / "resume-fixture.png"
+            image_fixture().save(path)
+            return {**row, "path": str(path)}
+        with mock.patch.object(reference_search, "google_images", return_value=[{"image_url": "https://example.test/a.jpg"}]) as google, \
+             mock.patch.object(gallery, "_tavily_search") as tavily, \
+             mock.patch.object(gallery, "_download_candidate", side_effect=downloaded), \
+             mock.patch.object(gallery, "gemini_json", return_value={"results": [approval()]}):
+            self.execute(mock_discover=None, batch_id=saved["id"], search_provider="tavily", theme="Ignore this on resume")
+        google.assert_called_once_with("Beach", offset=0)
+        tavily.assert_not_called()
+        self.assertEqual(jobs.load_batch(self.root, self.avatar_id)["search_provider"], "google")
+
     def test_previously_approved_reference_without_matching_policy_is_not_committed(self):
         saved = jobs._create_batch(self.root, self.avatar_id, 1, "864x1152 (3:4)", "editorial", False, avatar_gender="female")
         token = jobs._batch_scope.set((str(Path(self.root).resolve()), self.avatar_id, saved["id"]))

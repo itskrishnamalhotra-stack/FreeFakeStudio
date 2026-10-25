@@ -313,7 +313,8 @@ def _mock_reference_check(job):
             **gallery.reference_policy(job["theme"], job["require_face"], job.get("avatar_gender", "any"))}
 
 
-def _create_batch(save_dir, avatar_id, quantity, aspect, theme, require_face, name="", batch_id=None, avatar_gender="any"):
+def _create_batch(save_dir, avatar_id, quantity, aspect, theme, require_face, name="", batch_id=None, avatar_gender="any", search_provider="tavily"):
+    from reference_search import normalize_provider
     avatar_gender = gallery.normalize_avatar_gender(avatar_gender)
     avatar = studio.load_avatar(save_dir, avatar_id)
     job = {"version": 2, "id": _check_batch_id(batch_id) if batch_id else uuid.uuid4().hex[:12], "avatar_id": avatar_id,
@@ -321,6 +322,7 @@ def _create_batch(save_dir, avatar_id, quantity, aspect, theme, require_face, na
            "status": "running", "phase": "finding", "quantity": max(1, min(20, int(quantity))),
            "aspect": aspect, "theme": str(theme or "").strip(), "require_face": bool(require_face),
            "avatar_gender": avatar_gender,
+           "search_provider": normalize_provider(search_provider), "search_attempts": [],
            "identity_fingerprint": studio.identity_fingerprint(avatar), "item_ids": [],
            "reference_ids": [], "queries": [], "round": 0, "downloads": 0, "events": [],
            "search_query_version": 2,
@@ -456,13 +458,22 @@ def _discover(save_dir, avatar_id, job, mock_discover=None, target_quantity=None
         if len(queries) <= job["round"]:
             variation = job["theme"]
             query = gallery._search_query(variation, avatar_gender=job.get("avatar_gender", "any"))
-            suffix = (" high resolution photograph" if job["round"] % 2 else " editorial photograph") if job["round"] else ""
+            if job.get("search_provider", "tavily") != "tavily" and job["theme"].strip():
+                query = job["theme"].strip()
+            suffix = ((" high resolution photograph" if job["round"] % 2 else " editorial photograph")
+                      if job["round"] and job.get("search_provider", "tavily") == "tavily" else "")
             if len(query) + len(suffix) <= 400:
                 query += suffix
             queries = queries + [query]
             job = update_batch(save_dir, avatar_id, queries=queries)
-        payload = gallery._tavily_search(queries[job["round"]], max_results=20)
-        add_references(save_dir, avatar_id, gallery._candidate_images(payload), job["theme"])
+        import reference_search
+        def attempted(attempt):
+            current = load_batch(save_dir, avatar_id)
+            update_batch(save_dir, avatar_id, search_attempts=(current.get("search_attempts", []) + [attempt])[-100:])
+            note(save_dir, avatar_id, f"{attempt['provider']}: " + (attempt["message"] or f"Found {attempt['found']} image candidates"), "finding")
+        candidates = reference_search.search(queries[job["round"]], job.get("search_provider", "tavily"),
+                                             offset=job["round"] * 100, on_attempt=attempted)
+        add_references(save_dir, avatar_id, candidates, job["theme"])
         job = update_batch(save_dir, avatar_id, round=job["round"] + 1)
         yield "Search findings saved"
 
@@ -487,7 +498,7 @@ def run(*args, **kwargs):
 
 
 def _run(save_dir, avatar_id, quantity, aspect, theme, require_face, make_prompt, generate, validate, repair,
-         mock_discover=None, batch_id=None, new_batch=False, name="", avatar_gender="any"):
+         mock_discover=None, batch_id=None, new_batch=False, name="", avatar_gender="any", search_provider="tavily"):
     if not _run_lock.acquire(blocking=False):
         raise RuntimeError("A gallery operation is still finishing. Wait before resuming.")
     job = None
@@ -507,7 +518,7 @@ def _run(save_dir, avatar_id, quantity, aspect, theme, require_face, make_prompt
         if batch_id and job and job["status"] in {"complete", "exhausted"}:
             raise ValueError("This batch is finished. Create a new batch instead.")
         if not job or job["status"] in {"complete", "exhausted"}:
-            job = _create_batch(save_dir, avatar_id, quantity, aspect, theme, require_face, name, batch_id, avatar_gender)
+            job = _create_batch(save_dir, avatar_id, quantity, aspect, theme, require_face, name, batch_id, avatar_gender, search_provider)
         elif job["identity_fingerprint"] != studio.identity_fingerprint(avatar):
             raise ValueError("This batch belongs to a different confirmed identity. Restore its references before resuming.")
         job = _isolate_legacy(save_dir, avatar_id, job)

@@ -289,7 +289,7 @@ class StudioService:
             mock_discover=self.mock_references if model_manager.DEV_MODE else None,
             batch_id=context.saved.get("batch_id") or args.get("batch_id") or (context.id[:12] if args.get("new_batch") else None),
             new_batch=args.get("new_batch", False), name=args.get("batch_name", ""),
-            avatar_gender=args.get("avatar_gender", "any"))
+            avatar_gender=args.get("avatar_gender", "any"), search_provider=args.get("search_provider") or "tavily")
         try:
             previous_phase = None
             for row in iterator:
@@ -312,6 +312,7 @@ class StudioService:
             args["quantity"], args["aspect"], context, self.gallery_prompt,
             lambda *items: self.gallery_image(*items, context), self.validate, repair,
             search=kind == "resource_search", review_only=kind == "resource_review",
+            search_provider=args.get("search_provider"),
             mock_discover=self.mock_references if model_manager.DEV_MODE else None)
 
     def regenerate(self, args, context):

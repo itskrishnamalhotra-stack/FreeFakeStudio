@@ -71,6 +71,7 @@ import {
   ResourcePage,
   GalleryBatch,
   AvatarGender,
+  SearchProvider,
 } from "./api";
 import "./styles.css";
 import { InfluencerWorkspace } from "./InfluencerWorkspace";
@@ -341,11 +342,12 @@ function App() {
     [batches, setBatches] = useState<GalleryBatch[]>([]),
     [batchQuantity, setBatchQuantity] = useState(20),
     [batchTheme, setBatchTheme] = useState(""),
+    [batchSearchProvider, setBatchSearchProvider] = useState<SearchProvider>("tavily"),
     [requireFace, setRequireFace] = useState(false),
     [findings, setFindings] = useState<any>(null),
     [findingsOpen, setFindingsOpen] = useState(false),
     [referenceFilter, setReferenceFilter] = useState("All findings");
-  const [resourceSearch, setResourceSearch] = useState<{tab?: ResourceTab; batchId: string; name: string; description: string; quantity: number} | null>(null);
+  const [resourceSearch, setResourceSearch] = useState<{tab?: ResourceTab; batchId: string; name: string; description: string; quantity: number; provider: SearchProvider} | null>(null);
   const [resourceGeneration, setResourceGeneration] = useState<{tab: ResourceTab; quantity: number} | null>(null);
   const [resourceDelete, setResourceDelete] = useState<ResourceTab | null>(null);
   const [viewer, setViewer] = useState<{
@@ -1128,7 +1130,7 @@ function App() {
   }
   function openResourceSearch(tab?: ResourceTab) {
     setResourceSearch({tab, batchId: tab?.batch_id || batchFilter || resourceTabs.find(row => row.id === resourceTab)?.batch_id || batches.find(row => !row.archived)?.id || "",
-      name: "", description: tab?.description || "", quantity: 20});
+      name: "", description: tab?.description || "", quantity: 20, provider: tab?.search_provider || "tavily"});
   }
   useEffect(() => {
     if (findingsOpen) loadFindings();
@@ -2056,6 +2058,7 @@ function App() {
                       )}
                       {resource.reserved && <span className="status">Reserved</span>}
                       <span className="resource-type">{resource.kind}</span>
+                      {resource.search_provider && <span className="resource-type">{resource.search_provider === "google" ? "Google" : "Tavily"}</span>}
                     </div>
                     <p>
                       {resource.reason ||
@@ -3612,13 +3615,19 @@ function App() {
               onChange={event => setResourceSearch({...resourceSearch, name: event.target.value})} /></Field>}
             <Field label="Search description"><textarea rows={4} value={resourceSearch.description} readOnly={Boolean(resourceSearch.tab)}
               onChange={event => setResourceSearch({...resourceSearch, description: event.target.value})} /></Field>
+            <Field label="Search source"><select value={resourceSearch.provider}
+              onChange={event => setResourceSearch({...resourceSearch, provider: event.target.value as SearchProvider})}>
+              <option value="tavily">Tavily (existing)</option>
+              <option value="google">Google Images (experimental)</option>
+              <option value="google_fallback">Google Images, then Tavily on failure</option>
+            </select></Field>
             <Range label="New approved references" value={resourceSearch.quantity} min={1} max={20}
               onChange={quantity => setResourceSearch({...resourceSearch, quantity})} />
             <button className="primary" disabled={busy || !resourceSearch.batchId || !resourceSearch.description.trim()}
               onClick={async () => {
                 const job = await action({kind: "resource_search", avatar_id: avatarId, batch_id: resourceSearch.batchId,
                   resource_tab_id: resourceSearch.tab?.id, resource_tab_name: resourceSearch.name,
-                  theme: resourceSearch.description, quantity: resourceSearch.quantity});
+                  theme: resourceSearch.description, quantity: resourceSearch.quantity, search_provider: resourceSearch.provider});
                 if (job) {setResourceSearch(null); selectResourceTab(String(job.payload.resource_tab_id), String(job.payload.batch_id));}
               }}><Search size={16} /> Search resources</button>
           </div>
@@ -3682,6 +3691,11 @@ function App() {
                   placeholder="Wardrobe, locations, mood..."
                 />
               </Field>
+              <Field label="Search source"><select value={batchSearchProvider} onChange={event => setBatchSearchProvider(event.target.value as SearchProvider)}>
+                <option value="tavily">Tavily (existing)</option>
+                <option value="google">Google Images (experimental)</option>
+                <option value="google_fallback">Google Images, then Tavily on failure</option>
+              </select></Field>
               <label className="check-field">
                 <input
                   type="checkbox"
@@ -3705,6 +3719,7 @@ function App() {
                       quantity: batchQuantity,
                       aspect,
                       theme: batchTheme,
+                      search_provider: batchSearchProvider,
                       require_face: requireFace,
                     },
                   );

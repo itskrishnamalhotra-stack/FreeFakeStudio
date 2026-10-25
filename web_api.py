@@ -137,6 +137,7 @@ class JobRequest(StrictModel):
     mode: Literal["Identity Strict", "Outfit Focus", "Pose Focus", "Scene Focus", "Group Image"] = "Identity Strict"
     options: dict[str, str] | None = None
     theme: str = Field(default="", max_length=4000)
+    search_provider: Literal["tavily", "google", "google_fallback"] | None = None
     require_face: bool = False
     reason: str = Field(default="", max_length=4000)
     method: Literal["photo", "hd_tiles"] = "photo"
@@ -905,7 +906,7 @@ def create_app(root=None, persist=None, token=None):
                     service.ready_avatar(body.avatar_id)
                     batch_id = hashlib.sha256((body.avatar_id + idempotency_key).encode()).hexdigest()[:12]
                     batch = avatar_gallery_jobs._create_batch(str(root), body.avatar_id, body.quantity, body.aspect,
-                        body.theme, body.require_face, body.batch_name, batch_id, body.avatar_gender)
+                        body.theme, body.require_face, body.batch_name, batch_id, body.avatar_gender, body.search_provider)
                     avatar_gallery_jobs.update_batch(str(root), body.avatar_id, batch_id=batch_id, status="pending", phase="pending")
                     args["batch_id"] = batch["id"]
             if body.kind == "resource_search" and not body.resource_tab_id:
@@ -914,7 +915,7 @@ def create_app(root=None, persist=None, token=None):
                 else:
                     service.ready_avatar(body.avatar_id)
                     identifier = hashlib.sha256((body.avatar_id + idempotency_key + ":resource").encode()).hexdigest()[:12]
-                    tab = avatar_resource_tabs.create_tab(str(root), body.avatar_id, body.batch_id, identifier, body.theme, body.resource_tab_name)
+                    tab = avatar_resource_tabs.create_tab(str(root), body.avatar_id, body.batch_id, identifier, body.theme, body.resource_tab_name, body.search_provider)
                     args["resource_tab_id"] = tab["id"]
             job = jobs.submit(body.kind, args, idempotency_key)
             if body.kind in {"generate", "console"} and body.new_chat:

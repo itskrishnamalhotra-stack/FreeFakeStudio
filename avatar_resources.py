@@ -75,6 +75,7 @@ def collect(root, avatar_id, chats, batch_id=None, tab_id=None):
             state=state if state in {"approved", "rejected"} else "pending", check_state=state,
             reason=row.get("reason", ""), source_url=row.get("source_url") or row.get("image_url"),
             validation=row.get("validation"), committed=row["id"] in committed,
+            search_provider=row.get("search_provider"),
             used=consumed)
 
     def uploaded(path, consumed):

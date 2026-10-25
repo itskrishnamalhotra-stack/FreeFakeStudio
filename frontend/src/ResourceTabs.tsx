@@ -55,9 +55,13 @@ export function ResourceTabs({tabs, selected, busy, jobs, select, search, genera
     </div>
     {tab ? <div className="resource-tab-details">
       <div className="resource-search-summary"><strong>{tab.name}</strong><p title={tab.description || tab.name}>{tab.description || tab.name}</p>
+        <span className="resource-type">{tab.search_provider === "google" ? "Google Images" : tab.search_provider === "google_fallback" ? "Google Images, then Tavily" : "Tavily"}</span>
         <div className="resource-counts"><span><b>{tab.counts.available}</b> Ready unused</span><span><b>{tab.counts.pending}</b> Awaiting checks</span>
           <span><b>{tab.counts.used}</b> Used</span><span><b>{tab.counts.reserved}</b> Reserved</span></div>
         {Boolean(tab.queries?.length) && <details><summary>Search queries</summary><ul>{tab.queries!.map((query, index) => <li key={index}>{query}</li>)}</ul></details>}
+        {Boolean(tab.search_attempts?.length) && <details><summary>Search source results</summary><ul>{tab.search_attempts!.map((attempt, index) => <li key={index}>
+          {attempt.provider}: {attempt.status} / {attempt.found} found{attempt.message ? " / " + attempt.message : ""}
+        </li>)}</ul></details>}
       </div>
       <div className="button-row">
         <button disabled={busy || tab.archived || !tab.counts.pending} onClick={() => review(tab)}><ListChecks size={16} /> Review resources</button>

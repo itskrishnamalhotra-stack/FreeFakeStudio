@@ -878,6 +878,9 @@ ENVIRONMENT_DISTRIBUTIONS = (
     "uvicorn",
     "python-multipart",
     "requests",
+    "icrawler",
+    "beautifulsoup4",
+    "lxml",
     "huggingface-hub",
     "onnxruntime-gpu",
     "opencv-python-headless",
@@ -1675,6 +1678,7 @@ try:
         "uvicorn": "uvicorn>=0.30,<1",
         "multipart": "python-multipart>=0.0.20",
         "requests": "requests>=2.32,<3",
+        "icrawler": "icrawler==0.6.10",
         "rembg": "rembg",
         "cv2": "opencv-python-headless",
         "accelerate": "accelerate",
@@ -1687,6 +1691,8 @@ try:
     missing = [pkg for module, pkg in required.items() if not package_ok(module)]
     if missing:
         pip_install(*missing)
+    if package_version("icrawler") != "0.6.10":
+        pip_install("icrawler==0.6.10")
     from packaging.version import Version
     if Version(package_version("fastapi") or "0") < Version("0.115") or Version(package_version("pydantic") or "0") < Version("2.7"):
         pip_install("fastapi>=0.115,<1", "pydantic>=2.7,<3", "uvicorn>=0.30,<1", "python-multipart>=0.0.20")
@@ -1810,6 +1816,7 @@ try:
             "uvicorn>=0.30,<1",
             "python-multipart>=0.0.20",
             "requests>=2.32,<3",
+            "icrawler==0.6.10",
             "huggingface-hub",
             "onnxruntime-gpu",
             "opencv-python-headless",

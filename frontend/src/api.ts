@@ -93,6 +93,7 @@ export type Resource = {
   kind: "identity" | "uploaded" | "search";
   state: "pending" | "approved" | "rejected";
   check_state: string;
+  search_provider?: string;
   reason: string;
   used: boolean;
   committed: boolean;
@@ -115,6 +116,7 @@ export type ResourcePage = {
   total: number;
   counts: Record<string, number>;
 };
+export type SearchProvider = "tavily" | "google" | "google_fallback";
 export type ResourceTab = {
   id: string;
   batch_id: string;
@@ -122,6 +124,8 @@ export type ResourceTab = {
   name: string;
   description: string;
   queries?: string[];
+  search_provider?: SearchProvider;
+  search_attempts?: {provider: string; query: string; status: string; found: number; message: string}[];
   avatar_gender: AvatarGender;
   archived: boolean;
   status: string;

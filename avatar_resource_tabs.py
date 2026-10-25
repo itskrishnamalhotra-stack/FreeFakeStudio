@@ -98,6 +98,7 @@ def list_tabs(root, avatar_id, batch_id=None):
         result.append({"id": tab["id"], "batch_id": owner_id, "batch_name": owner.get("name") or owner.get("theme") or "Untitled batch",
             "name": tab.get("name") or tab.get("theme") or "Original search", "description": tab.get("theme", ""),
             "avatar_gender": tab.get("avatar_gender", "any"), "require_face": tab.get("require_face", False),
+            "search_provider": tab.get("search_provider", "tavily"), "search_attempts": tab.get("search_attempts", [])[-10:],
             "archived": owner.get("archived", False), "counts": counts,
             "status": tab.get("resource_status", tab.get("status", "saved")),
             "queries": tab.get("queries", []),
@@ -105,7 +106,8 @@ def list_tabs(root, avatar_id, batch_id=None):
     return sorted(result, key=lambda row: (row["created_at"], row["id"]))
 
 
-def create_tab(root, avatar_id, batch_id, identifier, description, name=""):
+def create_tab(root, avatar_id, batch_id, identifier, description, name="", search_provider=None):
+    from reference_search import normalize_provider
     owner = jobs.load_batch(root, avatar_id, batch_id)
     if not owner or owner.get("role") or owner.get("archived"):
         raise ValueError("Choose an unarchived batch for the resource search")
@@ -118,6 +120,7 @@ def create_tab(root, avatar_id, batch_id, identifier, description, name=""):
         "status": "pending", "phase": "finding", "item_ids": [], "reference_ids": [], "queries": [],
         "round": 0, "downloads": 0, "events": [], "stop_requested": False, "resource_deleted": False,
         "resource_status": "pending", "resource_error": None, "created_at": studio._now()}
+    tab.update(search_provider=normalize_provider(search_provider or owner.get("search_provider")), search_attempts=[])
     studio._atomic_json(jobs._batch_path(root, avatar_id, identifier), tab)
     return tab
 
@@ -126,6 +129,7 @@ def _write_run(root, avatar_id, source, owner, run_id, references, quantity, asp
     run = {**owner, "version": 2, "id": run_id, "role": "generation_run", "owner_batch_id": owner["id"],
         "source_tab_id": source["id"], "name": source.get("name") or source["theme"], "theme": source["theme"], "quantity": quantity,
         "aspect": aspect, "avatar_gender": source.get("avatar_gender", "any"), "require_face": source.get("require_face", False),
+        "search_provider": source.get("search_provider", "tavily"),
         "status": "pending", "phase": "prompting", "item_ids": [], "reference_ids": [], "events": [],
         "created_at": studio._now(), "stop_requested": False}
     studio._atomic_json(jobs._batch_path(root, avatar_id, run_id), run)
@@ -142,7 +146,7 @@ def _write_run(root, avatar_id, source, owner, run_id, references, quantity, asp
 
 
 def run(root, avatar_id, tab_id, quantity, aspect, context, make_prompt, generate, validate, repair,
-        search=False, mock_discover=None, review_only=False):
+        search=False, mock_discover=None, review_only=False, search_provider=None):
     source, owner = get(root, avatar_id, tab_id)
     if owner.get("archived"):
         raise ValueError("Restore this batch before using its resources")
@@ -162,10 +166,12 @@ def run(root, avatar_id, tab_id, quantity, aspect, context, make_prompt, generat
                            "resource_error": None, "downloads": 0,
                            "resource_download_total": source.get("resource_download_total", 0) + source.get("downloads", 0)}
                 if search:
+                    from reference_search import normalize_provider
                     history = list(source.get("resource_search_history", []))
                     if source.get("queries"):
                         history.append({"queries": source["queries"], "time": studio._now()})
                     changes.update(round=0, downloads=0, queries=[], resource_search_history=history,
+                                   search_provider=normalize_provider(search_provider or source.get("search_provider")),
                                    resource_target=len(jobs._approved(root, avatar_id, source)) + quantity)
                 else:
                     changes.update(resource_target=1_000_000 if review_only else quantity)
