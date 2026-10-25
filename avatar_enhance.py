@@ -8,20 +8,22 @@ import image_review
 
 
 REALISM_PROMPT = (
-    "Enhance the supplied image with restrained, source-faithful photographic clarity. "
+    "Enhance the supplied image with restrained, source-faithful clarity in its original medium. "
     "Preserve the exact subjects, identity, apparent age, expression, pose, anatomy, clothing, objects, "
     "composition, colors and lighting. Restore only subtle detail supported by visible forms and "
     "materials. Preserve the existing complexion, skin markings and degree of skin smoothness. "
     "Keep naturally soft areas soft and preserve the original depth of field and background blur. "
     "Correct only clear compression or rendering defects whose intended structure is unambiguous. "
     "Restore fine edge separation and natural, non-repeating material detail rather than changing brightness, "
-    "contrast or color grading. Return the same photograph with clearer fine detail, not a redesigned or heavily textured version."
+    "contrast or color grading. Preserve illustration, painting and graphic styles when present; do not force photographic realism. "
+    "Return the same image with clearer fine detail, not a redesigned or heavily textured version."
 )
 TILE_PROMPT = (
     "Image 1 is a cropped detail tile and is the exact editing canvas. Image 2 shows the whole "
-    "original photograph for context only. Return only the same crop as image 1, with unchanged "
-    "geometry. Never draw the whole photograph, a new face, a collage, or a border inside this tile. "
-    "Apply detail instructions only to materials actually visible in this crop; preserve intentional blur. "
+    "original image for context only. Return only the same crop as image 1, with unchanged "
+    "geometry. Never draw the whole image, a new face, a collage, or a border inside this tile. "
+    "Whole-image subject descriptions are context only: do not add people or objects absent from this crop. "
+    "Apply detail instructions only to content actually visible in this crop; preserve intentional blur and the source medium. "
 )
 PHOTO_PROMPT = REALISM_PROMPT
 METHODS = ("photo", "hd_tiles")

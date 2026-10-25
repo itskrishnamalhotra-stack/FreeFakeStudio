@@ -38,12 +38,18 @@ async (page) => {
   if (enhanced.processing_passes !== 1 || enhanced.images.length !== 1) throw new Error('One-pass enhancement created multiple outputs');
   if (!enhanced.reconstruction_prompt.includes('Do not invent freckles')) throw new Error('Preservation guard not applied');
   if (!enhanced.diagnostics.enhancement_plan.analysis.mock_not_quality_evidence) throw new Error('Mock analysis not labeled');
+  if (enhanced.diagnostics.enhancement_plan.version !== 'scene-profiles-v1') throw new Error('Old skin-first planner is still active');
+  if (enhanced.diagnostics.enhancement_plan.profile_id !== 'general') throw new Error('Mock preview must use a labeled fallback, not fabricated recognition');
+  if (!enhanced.diagnostics.content_review) throw new Error('Scene content review missing');
   if (!enhanced.diagnostics.tone_anchor.enabled) throw new Error('Tone preservation was not applied');
   if (enhanced.diagnostics.enhancement_review.quality_verified) throw new Error('Pixel changes must not claim verified quality');
   await page.reload();
   await page.getByAltText('Generated image', {exact:true}).last().click();
   await page.getByText('Enhancement analysis', {exact:true}).click();
   await page.getByText('Local preview simulation', {exact:true}).waitFor();
+  await page.getByText('General-Purpose Fallback', {exact:true}).waitFor();
+  if (await page.getByText('skin texture', {exact:true}).count()) throw new Error('Old skin-centric analysis is still displayed');
+  await page.getByText('Content review: mock', {exact:true}).waitFor();
   await page.getByText('Applied reconstruction prompt', {exact:true}).click();
   for (const width of [1366,390,320]) {
     await page.setViewportSize({width,height:900});

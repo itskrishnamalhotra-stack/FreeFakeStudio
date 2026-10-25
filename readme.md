@@ -17,6 +17,11 @@ for the Identity, Quality and Content tabs, reference-pack approval, CPU identit
 calibration, resumable consistency tests, caption/export workflow and optional
 Instagram publishing. No LoRA training, video or voice providers are required.
 
+**Scene-aware enhancement:** [ENHANCEMENT_PROFILES.md](ENHANCEMENT_PROFILES.md)
+lists the 15 editable prompt profiles, automatic subject/focus routing, saved
+analysis details and review limitations. Background people no longer turn a
+landscape into a portrait; artwork and documents retain their original medium.
+
 This release also fixes identity-pack invalidation, historical policy selection,
 benchmark correction and empty Drive restores. Reference views can be selected
 explicitly; reconstruction has matched-size/detail-crop review; offline captions

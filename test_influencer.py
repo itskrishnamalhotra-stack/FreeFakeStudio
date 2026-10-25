@@ -397,6 +397,10 @@ class InfluencerTests(unittest.TestCase):
         first = self.job("enhance", item_id=item["id"])
         plan = first["checkpoint"]["enhancement_plan"]
         self.assertTrue(plan["automatic"])
+        self.assertEqual(plan["version"], "scene-profiles-v1")
+        self.assertEqual(plan["profile_id"], "general")
+        self.assertEqual(plan["analysis"]["profile_name"], "General-Purpose Fallback")
+        self.assertEqual(first["checkpoint"]["diagnostics"]["content_review"]["status"], "mock")
         self.assertIn("Do not invent freckles", plan["prompt"])
         self.assertEqual(first["payload"]["strength"], .65)
         saved = self.client.get(self.base + "/gallery?category=enhancements").json()["items"][0]

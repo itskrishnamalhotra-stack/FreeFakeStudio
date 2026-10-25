@@ -368,12 +368,14 @@ class StudioService:
             diagnostics = dict(context.saved.get("diagnostics") or {})
             diagnostics["enhancement_plan"] = plan
             if plan["automatic"]:
-                context.emit("Checking reconstruction for added skin texture and markings")
+                context.emit("Checking reconstruction scene, focus and visible artifacts")
                 if not model_manager.DEV_MODE:
                     app_settings.prepare_vision(self.root)
                 result = self.images([context.saved["image"]])[0]
                 diagnostics["texture_review"] = enhancement_analysis.review_texture(result, plan["analysis"],
                     mock=model_manager.DEV_MODE, check=context.check)
+                if plan.get("version") == enhancement_analysis.VERSION:
+                    diagnostics["content_review"] = diagnostics["texture_review"]
             else:
                 diagnostics["texture_review"] = {"status": "disabled", "reasons": []}
             context.checkpoint(diagnostics=diagnostics, texture_done=True)

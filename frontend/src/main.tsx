@@ -421,7 +421,12 @@ function App() {
       }
     | undefined;
   const viewerPlan = viewerDiagnostics?.enhancement_plan as
-    | { automatic: boolean; prompt: string; analysis: Record<string, unknown> }
+    | {
+        automatic: boolean;
+        prompt: string;
+        focus_rules?: string[];
+        analysis: Record<string, unknown>;
+      }
     | undefined;
   const textureReview = viewerDiagnostics?.texture_review as
     { status: string; reasons?: string[] } | undefined;
@@ -3210,16 +3215,14 @@ function App() {
                   </p>
                   {viewerPlan.automatic && (
                     <dl>
-                      {[
-                        "scene",
-                        "materials",
-                        "lighting",
-                        "condition",
-                        "skin_texture",
-                        "skin_marks",
-                      ].map((key) => (
+                      {(viewerPlan.analysis.profile_id
+                        ? ["profile_name", "medium", "scene", "people_role", "people_count", "framing", "presentation", "focus", "condition"]
+                        : ["scene", "materials", "lighting", "condition", "skin_texture", "skin_marks"]
+                      ).map((key) => (
                         <div key={key}>
-                          <dt>{key.replaceAll("_", " ")}</dt>
+                          <dt>
+                            {key === "profile_name" ? "Prompt profile" : key.replaceAll("_", " ")}
+                          </dt>
                           <dd>
                             {(Array.isArray(viewerPlan.analysis[key])
                               ? (viewerPlan.analysis[key] as string[]).join(
@@ -3232,9 +3235,14 @@ function App() {
                       ))}
                     </dl>
                   )}
+                  {viewerPlan.focus_rules && (
+                    <p>
+                      Focus rules: {viewerPlan.focus_rules.map((rule) => rule.replaceAll("_", " ")).join(", ")}
+                    </p>
+                  )}
                   {textureReview && (
                     <p>
-                      Texture review:{" "}
+                      {viewerDiagnostics?.content_review ? "Content review: " : "Texture review: "}
                       {textureReview.status.replaceAll("_", " ")}
                     </p>
                   )}

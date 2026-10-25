@@ -1,4 +1,4 @@
-"""Bounded, cached source observations for conservative image enhancement."""
+"""Scene-first classification and source-preserving enhancement planning."""
 import hashlib
 import json
 from pathlib import Path
@@ -6,61 +6,45 @@ from pathlib import Path
 from PIL import ImageOps
 
 from avatar_studio import _atomic_json
+import enhancement_profiles as profiles
 
-VERSION = "targeted-observations-v2"
+VERSION = profiles.VERSION
 CHOICES = {
     "scene": ("portrait", "people", "landscape", "product", "architecture", "animal", "food", "artwork", "document", "other", "uncertain"),
-    "lighting": ("soft_daylight", "hard_daylight", "indoor", "studio", "low_light", "mixed", "uncertain"),
+    "medium": ("photographic", "artwork", "document", "uncertain"),
+    "people_role": ("main_subject", "background", "not_present", "not_assessed", "uncertain"),
+    "people_count": ("single", "multiple", "not_present", "not_assessed", "uncertain"),
+    "framing": ("portrait", "body", "obscured", "not_applicable", "uncertain"),
+    "presentation": ("female_presenting", "male_presenting", "unspecified", "not_assessed", "uncertain"),
+    "focus": ("in_focus", "soft_subject", "uncertain"),
     "condition": ("clear", "soft", "blurred", "compressed", "oversharpened", "uncertain"),
-    "skin_texture": ("smooth", "natural", "fine_texture", "strong_texture", "not_visible", "uncertain"),
-    "skin_marks": ("none_visible", "sparse_visible", "many_visible", "not_visible", "uncertain"),
 }
-MATERIALS = ("skin", "hair", "fabric", "metal", "glass", "wood", "foliage", "water", "stone", "fur", "food", "plastic", "paper")
 PROBES = {
-    "person_visible": "Is a person clearly visible as the main foreground subject?",
-    "face_visible": "Is the main person's face clearly visible?",
-    "skin_visible": "Can you clearly see bare human skin on the main subject?",
-    "hair_visible": "Can you clearly see hair on the main subject's head?",
-    "fabric_visible": "Is cloth or clothing fabric clearly visible on the main subject?",
+    "document_visible": "Is this primarily a document, screenshot, interface, diagram or text-based graphic rather than a photograph or painting?",
+    "artwork_visible": "Is this deliberately stylized illustration, anime, painting or non-photorealistic CGI rather than a photographic-looking image?",
+    "person_visible": "Is any person visible anywhere in the image, including small people in the background?",
+    "people_main_subject": "Is a person or group of people the main visual subject, rather than incidental background figures?",
+    "multiple_people": "Are at least two people part of the main subject? Do not count incidental background people.",
+    "face_visible": "Is the main person's face clearly visible, rather than hidden, turned away or too small to inspect?",
+    "body_visible": "Does the framing show the main person's torso below the shoulders or more of their body, rather than just a headshot?",
+    "female_presentation": "Does the single main person have clearly feminine visual presentation? Describe visible presentation only, not actual gender identity. If ambiguous, answer unclear.",
+    "male_presentation": "Does the single main person have clearly masculine visual presentation? Describe visible presentation only, not actual gender identity. If ambiguous, answer unclear.",
+    "macro_visible": "Is the main subject shown as an extreme close-up or macro detail, rather than a normal portrait or wider scene?",
     "subject_blurred": "Are the main subject's eyes or outline visibly blurred? Ignore background blur.",
     "compression_blocks": "Are square compression blocks clearly visible on the main subject?",
     "edge_halos": "Are bright or dark sharpening halos clearly visible along the main subject's outline?",
-    "daylight": "Is the main subject outdoors in natural daylight?",
-    "hard_shadows": "Are there sharply edged shadows on the main subject?",
-    "artificial_light": "Is the main subject indoors under artificial lighting?",
+    "new_artifacts": "Does this image contain clear rendering errors such as duplicated body parts or broken object geometry? Do not count intentional artistic stylization.",
     "skin_rough": "Do the visible cheeks or forehead have coarse, strongly pronounced skin texture?",
     "skin_smooth": "Do the visible cheeks or forehead look mostly smooth at this image scale?",
     "skin_many_marks": "Are many clearly visible freckles or dark spots spread across the visible cheeks and forehead?",
     "skin_any_marks": "Can you clearly see any freckles or dark spots on the visible cheeks or forehead?",
-    "landscape_visible": "Is an outdoor landscape the main subject, rather than a person or object?",
+    "landscape_visible": "Is outdoor natural scenery the main subject, rather than a person, animal, building or product?",
     "product_visible": "Is a manufactured object or product the main subject?",
-    "architecture_visible": "Is a building the main subject?",
+    "architecture_visible": "Is architecture, a street or a room interior the main subject, rather than people or a product?",
     "animal_visible": "Is an animal the main subject?",
     "food_visible": "Is food the main subject?",
-    "document_visible": "Is a page of text or a document the main subject?",
 }
-PRESERVATION = (
-    "Image 1 is the authoritative source. Keep identity, apparent age, facial geometry, body proportions, "
-    "expression, pose, clothes, object count, composition, exposure and colors unchanged. "
-    "Keep the existing skin tone, smoothness and markings exactly as shown. Do not invent freckles, "
-    "spots, wrinkles, coarse pores, body hair or age lines. Preserve intentional background blur and bokeh. "
-    "Visible source evidence takes precedence over requests for generic microtexture or extreme sharpness. "
-)
-MATERIAL_RULES = {
-    "skin": "Keep skin detail gentle and at the original scale, with the source's existing smoothness and markings.",
-    "hair": "Resolve the separation of existing hair strands, eyelashes and eyebrow hairs; keep the same hairline, hairstyle and density.",
-    "fabric": "Restore fine existing fabric weave, fibres, seams and fold edges without changing the garment or adding patterns.",
-    "metal": "Keep existing metallic reflections, finish and highlight shape physically consistent.",
-    "glass": "Preserve transparency and existing reflections without inventing objects behind the glass.",
-    "wood": "Clarify only existing wood grain, keeping its direction and scale.",
-    "foliage": "Preserve supported leaf shapes and keep out-of-focus foliage soft.",
-    "water": "Preserve existing water surfaces, reflections and wave scale.",
-    "stone": "Retain existing stone texture at its original scale.",
-    "fur": "Preserve the animal's markings and existing fur direction and density.",
-    "food": "Keep the same food shapes, ingredients, surface finish and moisture.",
-    "plastic": "Retain the original plastic finish and reflection softness.",
-    "paper": "Keep existing lettering, drawings and paper surfaces unchanged; do not invent text.",
-}
+PRESERVATION = profiles.PRESERVATION
 
 
 def choice(answer, options):
@@ -115,16 +99,48 @@ def _crop(image, box):
                        max(int(box[1] * image.height) + 1, round(box[3] * image.height))))
 
 
-def _face_box(image):
-    import avatar_face
-    faces = avatar_face.features(image)
-    if not faces:
-        return None
-    x, y, w, h = max(faces, key=lambda row: row["box"][2] * row["box"][3])["box"]
-    factor = min(1, 1024 / max(image.size))
-    width, height = max(1, round(image.width * factor)), max(1, round(image.height * factor))
-    return [max(0, (x - .15 * w) / width), max(0, (y - .15 * h) / height),
-            min(1, (x + 1.15 * w) / width), min(1, (y + 1.15 * h) / height)]
+def _classify(result, probe):
+    if probe("document_visible") is True:
+        result.update(scene="document", medium="document", people_role="not_assessed", people_count="not_assessed",
+                      framing="not_applicable", presentation="not_assessed")
+        return
+    if probe("artwork_visible") is True:
+        result.update(scene="artwork", medium="artwork", people_role="not_assessed", people_count="not_assessed",
+                      framing="not_applicable", presentation="not_assessed")
+        return
+    if all(result["checks"][key] is False for key in ("document_visible", "artwork_visible")):
+        result["medium"] = "photographic"
+    present = probe("person_visible")
+    main = probe("people_main_subject") if present is not False else False
+    if main is True:
+        result.update(scene="people", people_role="main_subject")
+        multiple = probe("multiple_people")
+        result["people_count"] = "multiple" if multiple is True else "single" if multiple is False else "uncertain"
+        if multiple is True:
+            result.update(presentation="unspecified", framing="not_applicable")
+        else:
+            face, body = probe("face_visible"), probe("body_visible")
+            result["framing"] = "obscured" if face is False else "body" if body is True else "portrait" if face is True and body is False else "uncertain"
+            if result["framing"] == "portrait":
+                result["scene"] = "portrait"
+            if face is True and multiple is False:
+                female, male = probe("female_presentation"), probe("male_presentation")
+                result["presentation"] = ("female_presenting" if female is True and male is False else
+                                          "male_presenting" if male is True and female is False else "unspecified")
+                if female is True and male is True:
+                    result["presentation"] = "uncertain"
+            else:
+                result["presentation"] = "not_assessed"
+        return
+    result.update(people_role="background" if present is True and main is False else "not_present" if present is False else "uncertain",
+                  people_count="not_present" if present is False else "not_assessed", framing="not_applicable", presentation="not_assessed")
+    result["macro"] = probe("macro_visible") is True
+    for scene in ("architecture", "landscape", "animal", "food", "product"):
+        if probe(scene + "_visible") is True:
+            result["scene"] = scene
+            break
+    else:
+        result["scene"] = "other" if all(result["checks"][key + "_visible"] is False for key in ("architecture", "landscape", "animal", "food", "product")) else "uncertain"
 
 
 def analyze(image, root, mock=False, check=lambda: None, emit=lambda message: None, ask=None):
@@ -137,63 +153,32 @@ def analyze(image, root, mock=False, check=lambda: None, emit=lambda message: No
         cached = json.loads(path.read_text(encoding="utf-8"))
         if cached.get("source_sha256") == digest and cached.get("version") == VERSION and cached.get("status") == "complete":
             fields = {name: choice(cached.get(name), options) for name, options in CHOICES.items()}
-            return {**cached, **fields, "materials": [v for v in cached.get("materials", []) if v in MATERIALS], "cache_hit": True}
+            cached = {**cached, **fields, "macro": cached.get("macro") is True, "cache_hit": True}
+            selected = profiles.select(cached)
+            return {**cached, "profile_id": selected, "profile_name": profiles.PROFILES[selected]["name"]}
     except (OSError, ValueError, TypeError, AttributeError):
         pass
     result = {"version": VERSION, "source_sha256": digest, "model": avatar_vision.MODEL_ID,
               "status": "complete", "cache_hit": False, "mock_not_quality_evidence": mock,
-              **{name: "uncertain" for name in CHOICES}, "materials": [], "checks": {}, "answers": {}}
+              **{name: "uncertain" for name in CHOICES}, "macro": False, "checks": {}, "answers": {}}
     if mock:
-        result.update(scene="other", condition="clear", skin_texture="not_visible", skin_marks="not_visible")
+        result.update(scene="other", medium="uncertain", condition="clear", focus="uncertain",
+                      people_role="uncertain", people_count="not_assessed", framing="not_applicable", presentation="not_assessed")
     else:
-        if ask is None:
-            try:
-                result["inspection_box"] = _face_box(source)
-            except Exception as exc:
-                result["focus_note"] = "Face localization unavailable; full image used: " + str(exc)[:200]
         ask = ask or avatar_vision._ask_question
         photo = avatar_vision.prepare_image(source)
-        focused = avatar_vision.prepare_image(_crop(source, result.get("inspection_box")))
         checks = result["checks"]
-        def probe(key, skin=False):
+        def probe(key):
             emit("Analyzing source: " + key.replace("_", " "))
-            checks[key] = _probe(focused if skin else photo, key, ask, result["answers"], check)
+            checks[key] = _probe(photo, key, ask, result["answers"], check)
             return checks[key]
         try:
-            for key in ("person_visible", "face_visible", "skin_visible", "hair_visible", "fabric_visible"):
-                probe(key)
-            human = checks["person_visible"] is True or checks["face_visible"] is True or checks["skin_visible"] is True or bool(result.get("inspection_box"))
-            result["scene"] = "portrait" if human and (checks["face_visible"] is True or result.get("inspection_box")) else "people" if human else "uncertain"
-            if not human:
-                for scene in ("landscape", "product", "architecture", "animal", "food", "document"):
-                    if probe(scene + "_visible") is True:
-                        result["scene"] = scene
-                        break
-                candidates = {"landscape": ("foliage", "water", "stone"), "product": ("metal", "glass", "plastic"),
-                              "architecture": ("wood", "glass", "stone"), "animal": ("fur",), "food": ("food",), "document": ("paper",)}
-                for material in candidates.get(result["scene"], ()):
-                    probe(material + "_visible")
-            result["materials"] = [v for v in MATERIALS if checks.get(v + "_visible") is True]
-            if checks["skin_visible"] is not False or human:
-                if probe("skin_rough", True) is not True:
-                    probe("skin_smooth", True)
-                if probe("skin_many_marks", True) is not True:
-                    probe("skin_any_marks", True)
-                result["skin_texture"], result["skin_marks"] = _skin_summary(checks)
-                if human and checks["skin_visible"] is False:
-                    result["skin_texture"] = result["skin_marks"] = "uncertain"
-                    result["visibility_conflict"] = True
-            else:
-                result.update(skin_texture="not_visible", skin_marks="not_visible")
+            _classify(result, probe)
             for key in ("subject_blurred", "compression_blocks", "edge_halos"):
                 probe(key)
+            result["focus"] = "soft_subject" if checks["subject_blurred"] is True else "in_focus" if checks["subject_blurred"] is False else "uncertain"
             result["condition"] = ("oversharpened" if checks["edge_halos"] is True else "compressed" if checks["compression_blocks"] is True
                                    else "blurred" if checks["subject_blurred"] is True else "clear" if all(checks[v] is False for v in ("subject_blurred", "compression_blocks", "edge_halos")) else "uncertain")
-            if probe("daylight") is True:
-                shadow = probe("hard_shadows")
-                result["lighting"] = "hard_daylight" if shadow is True else "soft_daylight" if shadow is False else "uncertain"
-            elif probe("artificial_light") is True:
-                result["lighting"] = "indoor"
         except RuntimeError as exc:
             from web_jobs import Cancelled
             if isinstance(exc, Cancelled):
@@ -203,36 +188,39 @@ def analyze(image, root, mock=False, check=lambda: None, emit=lambda message: No
     check()
     if not mock and result["status"] == "complete":
         result["unresolved"] = [key for key, value in result["checks"].items() if value is None]
-        if result["scene"] == "uncertain" or result.get("visibility_conflict") or any(result[key] == "uncertain" for key in ("condition", "lighting", "skin_texture", "skin_marks")) or result["unresolved"]:
+        if any(result[key] == "uncertain" for key in CHOICES) or result["unresolved"]:
             result["status"] = "partial" if any(v is not None for v in result["checks"].values()) else "inconclusive"
+    selected = profiles.select(result) if result["status"] in {"complete", "partial"} else "general"
+    result.update(profile_id=selected, profile_name=profiles.PROFILES[selected]["name"])
     if result["status"] == "complete":
         _atomic_json(path, result)
     return result
 
 
 def plan(analysis, instructions):
-    parts = [PRESERVATION, str(instructions).strip()]
+    selected = profiles.select(analysis) if analysis.get("status") in {"complete", "partial"} else "general"
+    profile = profiles.PROFILES[selected]
+    focus = profiles.focus_rules(analysis)
+    parts = [PRESERVATION, str(instructions).strip(), profile["prompt"], *[profiles.FOCUS_RULES[key] for key in focus]]
+    if selected == "macro" and analysis.get("scene") in {"animal", "product", "food", "landscape"}:
+        parts.append(profiles.PROFILES[analysis["scene"]]["prompt"])
     if analysis.get("status") in {"complete", "partial"}:
-        parts += [MATERIAL_RULES[v] for v in analysis.get("materials", []) if v in MATERIAL_RULES]
         if analysis.get("condition") in {"soft", "blurred"}:
             parts.append("Recover only supported subject edges, leaving depth-of-field blur unchanged. Keep uncertain details understated.")
         elif analysis.get("condition") == "compressed":
             parts.append("Reduce visible compression blocks while retaining existing fine detail and smooth tonal transitions.")
         elif analysis.get("condition") == "oversharpened":
             parts.append("Reduce edge halos and brittle texture; retain natural edge softness instead of adding sharpness.")
-        if analysis.get("skin_texture") == "smooth":
-            parts.append("The source skin is smooth. Keep it smooth while recovering delicate non-repeating tonal detail, without coarse pores or spot patterns.")
-        if analysis.get("skin_marks") == "none_visible":
-            parts.append("Keep the clear complexion shown in the source; add no freckles or speckles.")
         if analysis.get("scene") in {"artwork", "document"}:
             parts.append("Preserve the source medium, line work and lettering rather than converting it into a photograph.")
-        if analysis.get("lighting") != "uncertain":
-            parts.append("Retain the source lighting and its existing highlight softness; do not relight the image.")
     parts.append("Preserve the original traits and texture scale even if an earlier instruction asks for extra detail. Return only the edited image.")
-    return {"version": VERSION, "analysis": analysis, "prompt": " ".join(parts), "automatic": True}
+    return {"version": VERSION, "analysis": analysis, "profile_id": selected, "profile_name": profile["name"],
+            "focus_rules": focus, "prompt": " ".join(parts), "automatic": True}
 
 
 def review_texture(image, analysis, mock=False, check=lambda: None, ask=None):
+    if analysis.get("version") == VERSION:
+        return review_content(image, analysis, mock, check, ask)
     if analysis.get("status") not in {"complete", "partial"}:
         return {"status": "uncertain", "reasons": ["Source analysis was unavailable"]}
     if mock:
@@ -270,9 +258,55 @@ def review_texture(image, analysis, mock=False, check=lambda: None, ask=None):
     return result
 
 
+def review_content(image, analysis, mock=False, check=lambda: None, ask=None):
+    """Compare scene observations, not skin categories; this is advisory, not proof."""
+    if mock:
+        return {"status": "mock", "reasons": [], "mock_not_quality_evidence": True}
+    if analysis.get("status") not in {"complete", "partial"}:
+        return {"status": "uncertain", "reasons": ["Source classification was unavailable"]}
+    import avatar_vision
+    photo = avatar_vision.prepare_image(image)
+    ask = ask or avatar_vision._ask_question
+    result = {"status": "consistent", "reasons": [], "answers": {},
+              "method": "scene-category comparison; not proof of identity, text accuracy or realism"}
+    expected = {}
+    if analysis.get("medium") in {"artwork", "document"}:
+        expected[analysis["medium"] + "_visible"] = True
+    elif analysis.get("people_role") == "main_subject":
+        expected["people_main_subject"] = True
+        if analysis.get("people_count") in {"single", "multiple"}:
+            expected["multiple_people"] = analysis["people_count"] == "multiple"
+    elif analysis.get("scene") in {"landscape", "architecture", "product", "animal", "food"}:
+        expected[analysis["scene"] + "_visible"] = True
+    if analysis.get("focus") in {"in_focus", "soft_subject"}:
+        expected["subject_blurred"] = analysis["focus"] == "soft_subject"
+    observed = {}
+    try:
+        for key in (*expected, "edge_halos", "new_artifacts"):
+            observed[key] = _probe(photo, key, ask, result["answers"], check)
+        for key, value in expected.items():
+            if observed[key] is not None and observed[key] != value:
+                result["reasons"].append("Source observation changed: " + key.replace("_", " "))
+        if observed["edge_halos"] is True and analysis.get("checks", {}).get("edge_halos") is False:
+            result["reasons"].append("Sharpening halos appeared in the reconstruction")
+        if observed["new_artifacts"] is True:
+            result["reasons"].append("Possible rendering artifacts require visual review")
+    except RuntimeError as exc:
+        from web_jobs import Cancelled
+        if isinstance(exc, Cancelled):
+            raise
+        return {**result, "status": "uncertain", "error": str(exc)[:500], "reasons": ["Content review unavailable"]}
+    if any(value is None for value in observed.values()) or analysis["status"] != "complete":
+        result["status"] = "uncertain"
+    if result["reasons"]:
+        result["status"] = "needs_review"
+    return result
+
+
 def needs_review(diagnostics):
     data = diagnostics or {}
     return (data.get("texture_review", {}).get("status") in {"uncertain", "needs_review"}
+            or data.get("content_review", {}).get("status") in {"uncertain", "needs_review"}
             or data.get("enhancement_review", {}).get("status") == "needs_review")
 
 
