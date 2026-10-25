@@ -242,6 +242,78 @@ class StudioTests(unittest.TestCase):
         self.assertEqual(self.client.get("/api/chats/" + other["id"]).json()["turns"], [])
         self.assertTrue((self.root / source).is_file())
 
+    def test_default_reconstruction_uses_native_sampling_not_partial_img2img(self):
+        generated = self.job("generate", new_chat=True, prompt="Reconstruction source")
+        engine = model_manager.ensure_model(model_manager.FLUX_MODEL_NAME)
+        with patch.object(engine, "reconstruct_reference", wraps=engine.reconstruct_reference) as native, \
+             patch.object(engine, "img2img", side_effect=AssertionError("Not partial img2img")):
+            enhanced = self.job("enhance", chat_id=generated["payload"]["chat_id"], image=generated["result"]["images"][0])
+        self.assertEqual(native.call_count, 1)
+        self.assertEqual(enhanced["checkpoint"]["diagnostics"]["sampling"]["scheduler"], "Flux2Scheduler")
+        self.assertEqual(enhanced["checkpoint"]["diagnostics"]["sampling"]["denoise"], 1.)
+
+    def test_custom_enhancement_prompt_bypasses_analysis_and_reaches_model_verbatim(self):
+        generated = self.job("generate", new_chat=True, prompt="Custom prompt source")
+        engine = model_manager.ensure_model(model_manager.FLUX_MODEL_NAME)
+        prompt = "Refine only the existing black fabric stitching. Keep the face and background unchanged."
+        with patch("enhancement_analysis.analyze", side_effect=AssertionError("Custom must bypass analysis")), \
+             patch.object(engine, "reconstruct_reference", wraps=engine.reconstruct_reference) as native:
+            enhanced = self.job("enhance", chat_id=generated["payload"]["chat_id"], image=generated["result"]["images"][0],
+                                adaptive_prompt=False, reconstruction_prompt=prompt)
+        self.assertEqual(native.call_args.args[1], prompt)
+        self.assertEqual(enhanced["checkpoint"]["enhancement_plan"]["prompt"], prompt)
+        self.assertEqual(enhanced["checkpoint"]["enhancement_plan"]["selection"], "custom")
+
+    def test_experimental_img2img_explicitly_uses_requested_denoise(self):
+        generated = self.job("generate", new_chat=True, prompt="Low-noise source")
+        engine = model_manager.ensure_model(model_manager.FLUX_MODEL_NAME)
+        with patch.object(engine, "img2img", wraps=engine.img2img) as img2img, \
+             patch.object(engine, "reconstruct_reference", side_effect=AssertionError("Explicit legacy mode must not use native reconstruction")):
+            enhanced = self.job("enhance", chat_id=generated["payload"]["chat_id"], image=generated["result"]["images"][0],
+                                sampling_mode="img2img", strength=.45)
+        self.assertEqual(img2img.call_args.args[5], .45)
+        self.assertEqual(enhanced["checkpoint"]["diagnostics"]["sampling"]["mode"], "img2img")
+        self.assertEqual(enhanced["checkpoint"]["diagnostics"]["sampling"]["denoise"], .45)
+
+    def test_failed_enhancement_keeps_zero_seed_on_resume(self):
+        generated = self.job("generate", new_chat=True, prompt="Zero-seed recovery source")
+        engine = model_manager.ensure_model(model_manager.FLUX_MODEL_NAME)
+        with patch("web_service.secrets.randbelow", return_value=0), \
+             patch.object(engine, "reconstruct_reference", side_effect=RuntimeError("Temporary sampler failure")):
+            failed = self.job("enhance", expect="failed", chat_id=generated["payload"]["chat_id"], image=generated["result"]["images"][0])
+        self.assertEqual(failed["checkpoint"]["seed"], 0)
+        with patch("web_service.secrets.randbelow", side_effect=AssertionError("Must reuse saved zero seed")), \
+             patch.object(engine, "reconstruct_reference", wraps=engine.reconstruct_reference) as native:
+            self.app.state.jobs.resume(failed["id"])
+            for _ in range(300):
+                row = self.app.state.jobs.get(failed["id"])
+                if row["status"] not in {"queued", "running"}:
+                    break
+                time.sleep(.02)
+            self.assertEqual(row["status"], "completed", row)
+        self.assertEqual(native.call_args.args[2], 0)
+
+    def test_automatic_override_and_extra_instructions_are_saved_without_generic_default(self):
+        generated = self.job("generate", new_chat=True, prompt="Automatic override source")
+        enhanced = self.job("enhance", chat_id=generated["payload"]["chat_id"], image=generated["result"]["images"][0],
+                            enhancement_profile="female_body", additional_instructions="Keep the cafe background soft.")
+        plan = enhanced["checkpoint"]["enhancement_plan"]
+        self.assertEqual(plan["profile_id"], "female_body")
+        self.assertEqual(plan["selection"], "manual_override")
+        self.assertEqual(plan["prompt"].count("Keep the cafe background soft."), 1)
+        self.assertEqual(plan["requested_prompt"], "Keep the cafe background soft.")
+        import avatar_enhance
+        self.assertNotIn(avatar_enhance.PHOTO_PROMPT, plan["prompt"])
+
+    def test_invalid_enhancement_modes_fail_before_job_creation(self):
+        for extra in ({"enhancement_profile": "bogus"}, {"steps": 20},
+                      {"adaptive_prompt": False, "additional_instructions": "Hidden conflicting text"},
+                      {"adaptive_prompt": False, "enhancement_profile": "female_body"}):
+            response = self.client.post("/api/jobs", json={"kind": "enhance", **extra},
+                                        headers={"Idempotency-Key": "invalid-mode-request"})
+            self.assertEqual(response.status_code, 400, response.text)
+        self.assertEqual(self.app.state.jobs.list(), [])
+
     def test_enhance_avatar_console_image_also_enters_gallery(self):
         avatar_id = self.ready()
         chat = self.client.post("/api/chats", json={"avatar_id": avatar_id}).json()

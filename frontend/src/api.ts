@@ -130,6 +130,7 @@ export type Config = {
   encoder: string;
   active_model: string | null;
   reconstruction_prompt: string;
+  enhancement_profiles: { id: string; name: string; prompt: string }[];
   gallery_api: unknown;
 };
 export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {

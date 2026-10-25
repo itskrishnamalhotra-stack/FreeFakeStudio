@@ -17,12 +17,22 @@ async (page) => {
   const dialog = page.getByRole('dialog', {name:'Enhance image',exact:true});
   if (!await dialog.getByRole('checkbox', {name:'Automatic image-aware prompt',exact:true}).isChecked()) throw new Error('Automatic planning should default on');
   if (!await dialog.getByRole('checkbox', {name:'Preserve source lighting and colors',exact:true}).isChecked()) throw new Error('Source lighting preservation should default on');
-  if (+await dialog.getByRole('slider', {name:'Reconstruction strength',exact:true}).inputValue() !== .65) throw new Error('Unexpected default reconstruction strength');
+  const sampling = dialog.getByRole('combobox', {name:'Sampling',exact:true});
+  if (await sampling.inputValue() !== 'reference') throw new Error('Native reference sampling should default on');
+  if (await dialog.getByRole('slider', {name:'Reconstruction strength',exact:true}).count()) throw new Error('Reference mode must not expose an ignored denoise control');
+  if (await dialog.getByRole('textbox', {name:'Additional instructions (optional)',exact:true}).inputValue()) throw new Error('Old generic prompt displayed as automatic instructions');
+  await dialog.getByText('Automatic profile: pending source analysis', {exact:true}).waitFor();
+  await sampling.selectOption('img2img');
+  if (+await dialog.getByRole('slider', {name:'Reconstruction strength',exact:true}).inputValue() !== .65) throw new Error('Experimental denoise control missing');
+  await sampling.selectOption('reference');
+  await dialog.getByRole('textbox', {name:'Additional instructions (optional)',exact:true}).fill('Keep the cafe background soft.');
   const request = page.waitForResponse(r => new URL(r.url()).pathname === '/api/jobs' && r.request().method() === 'POST');
   await dialog.getByRole('button', {name:'Enhance image',exact:true}).click();
   const job = await (await request).json();
   if (!job.payload.adaptive_prompt) throw new Error('Automatic flag missing from request');
   if (!job.payload.preserve_tone) throw new Error('Lighting preservation flag missing');
+  if (job.payload.sampling_mode !== 'reference') throw new Error('Wrong sampling mode submitted');
+  if (job.payload.additional_instructions !== 'Keep the cafe background soft.') throw new Error('Extra instructions lost');
   if (job.payload.chat_id !== chat) throw new Error('Enhancement escaped its original conversation');
   let complete = false;
   for (let index = 0; index < 300; index++) {
@@ -38,7 +48,9 @@ async (page) => {
   if (enhanced.processing_passes !== 1 || enhanced.images.length !== 1) throw new Error('One-pass enhancement created multiple outputs');
   if (!enhanced.reconstruction_prompt.includes('Do not invent freckles')) throw new Error('Preservation guard not applied');
   if (!enhanced.diagnostics.enhancement_plan.analysis.mock_not_quality_evidence) throw new Error('Mock analysis not labeled');
-  if (enhanced.diagnostics.enhancement_plan.version !== 'scene-profiles-v1') throw new Error('Old skin-first planner is still active');
+  if (enhanced.diagnostics.enhancement_plan.version !== 'scene-profiles-v2') throw new Error('Old scene classifier cache is still active');
+  if (enhanced.diagnostics.sampling.scheduler !== 'Flux2Scheduler') throw new Error('Native FLUX.2 schedule not recorded');
+  if (!enhanced.reconstruction_prompt.includes('Keep the cafe background soft.')) throw new Error('Extra instructions absent from applied prompt');
   if (enhanced.diagnostics.enhancement_plan.prompt_version !== 'user-refinement-v1') throw new Error('User-supplied prompt revision not applied');
   if (!enhanced.reconstruction_prompt.includes('Apply restrained texture reconstruction only where it improves the original image')) throw new Error('Supplied standalone fallback prompt is missing');
   if (enhanced.diagnostics.enhancement_plan.profile_id !== 'general') throw new Error('Mock preview must use a labeled fallback, not fabricated recognition');

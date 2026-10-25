@@ -1,5 +1,5 @@
 """Editable, versioned prompt library. Routing uses IDs, never inferred prose."""
-VERSION = "scene-profiles-v1"
+VERSION = "scene-profiles-v2"
 PROMPT_VERSION = "user-refinement-v1"
 
 PRESERVATION = (

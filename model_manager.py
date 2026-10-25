@@ -483,6 +483,10 @@ class MockEngine:
             w, h = 512, 512
         return self._make_placeholder(w, h)
 
+    def reconstruct_reference(self, input_images, prompt, seed, steps=4):
+        primary = input_images[0]
+        return self._make_placeholder(*primary.size)
+
     def inpaint(self, original, mask_combined, prompt, negative, seed, cfg, denoise, steps=4):
         if original:
             w, h = original.size

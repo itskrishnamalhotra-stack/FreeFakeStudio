@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from "react";
+import React, { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { BrowserRouter, useLocation, useNavigate } from "react-router-dom";
 import {
@@ -344,7 +344,10 @@ function App() {
     [comparing, setComparing] = useState(false),
     [comparisonRegion, setComparisonRegion] = useState("full"),
     [enhanceMethod, setEnhanceMethod] = useState("photo"),
-    [enhancementPrompt, setEnhancementPrompt] = useState<string | null>(null),
+    [enhanceSampling, setEnhanceSampling] = useState("reference"),
+    [enhanceProfile, setEnhanceProfile] = useState("auto"),
+    [enhancementPrompt, setEnhancementPrompt] = useState(""),
+    [enhanceInstructions, setEnhanceInstructions] = useState(""),
     [adaptivePrompt, setAdaptivePrompt] = useState(true),
     [preserveTone, setPreserveTone] = useState(true),
     [scale, setScale] = useState(1),
@@ -400,7 +403,18 @@ function App() {
     resourceKind,
   };
   const reconstructionPrompt =
-    enhancementPrompt ?? config?.reconstruction_prompt ?? "";
+    enhancementPrompt;
+  const selectedEnhancementProfile = config?.enhancement_profiles?.find((profile) => profile.id === enhanceProfile);
+  useLayoutEffect(() => {
+    if (!enhance) return;
+    setEnhancementPrompt("");
+    setEnhanceInstructions("");
+    setEnhanceProfile("auto");
+    setAdaptivePrompt(true);
+    setEnhanceSampling("reference");
+    setEnhanceMethod("photo");
+    setScale(1);
+  }, [enhance?.image.path]);
   const viewerSource = viewer?.item?.source || viewer?.source;
   const viewerDiagnostics =
     viewer?.item?.diagnostics ||
@@ -425,6 +439,8 @@ function App() {
         automatic: boolean;
         prompt: string;
         focus_rules?: string[];
+        profile_name?: string;
+        selection?: string;
         analysis: Record<string, unknown>;
       }
     | undefined;
@@ -3209,9 +3225,9 @@ function App() {
                 <details className="image-details enhancement-analysis">
                   <summary>Enhancement analysis</summary>
                   <p>
-                    {viewerPlan.analysis.mock_not_quality_evidence
+                    {!viewerPlan.automatic ? "Custom enhancement prompt" : viewerPlan.analysis.mock_not_quality_evidence
                       ? "Local preview simulation"
-                      : `Source analysis: ${viewerPlan.analysis.status}${viewerPlan.analysis.cache_hit ? " (reused)" : ""}`}
+                      : `Source analysis: ${viewerPlan.analysis.status}${viewerPlan.analysis.cache_hit ? " (reused)" : ""} (unverified estimate)`}
                   </p>
                   {viewerPlan.automatic && (
                     <dl>
@@ -3224,7 +3240,9 @@ function App() {
                             {key === "profile_name" ? "Prompt profile" : key.replaceAll("_", " ")}
                           </dt>
                           <dd>
-                            {(Array.isArray(viewerPlan.analysis[key])
+                            {(key === "profile_name" && viewerPlan.profile_name
+                              ? viewerPlan.profile_name
+                              : Array.isArray(viewerPlan.analysis[key])
                               ? (viewerPlan.analysis[key] as string[]).join(
                                   ", ",
                                 ) || "uncertain"
@@ -3240,6 +3258,10 @@ function App() {
                       Focus rules: {viewerPlan.focus_rules.map((rule) => rule.replaceAll("_", " ")).join(", ")}
                     </p>
                   )}
+                  {viewerPlan.selection === "manual_override" && <p>Profile selection: manual override</p>}
+                  {Array.isArray(viewerPlan.analysis.routing_notes) && viewerPlan.analysis.routing_notes.map((note) => (
+                    <p key={String(note)}>{String(note)}</p>
+                  ))}
                   {textureReview && (
                     <p>
                       {viewerDiagnostics?.content_review ? "Content review: " : "Texture review: "}
@@ -3274,6 +3296,10 @@ function App() {
                     <summary>Applied reconstruction prompt</summary>
                     <p>{viewerPlan.prompt}</p>
                   </details>
+                  {Boolean(viewerDiagnostics?.sampling) && <details>
+                    <summary>Sampling details</summary>
+                    <pre>{JSON.stringify(viewerDiagnostics?.sampling, null, 2)}</pre>
+                  </details>}
                 </details>
               )}
               {viewer.item && (
@@ -3328,6 +3354,12 @@ function App() {
                 alt="Source photograph"
               />
               <div className="enhancement-controls">
+                <Field label="Sampling">
+                  <select value={enhanceSampling} onChange={(e) => setEnhanceSampling(e.target.value)}>
+                    <option value="reference">FLUX.2 reference reconstruction</option>
+                    <option value="img2img">Low-noise img2img (experimental)</option>
+                  </select>
+                </Field>
                 <Field label="Processing">
                   <select
                     value={enhanceMethod}
@@ -3346,14 +3378,20 @@ function App() {
                     <option value={2}>2x dimensions</option>
                   </select>
                 </Field>
-                <Range
+                {enhanceSampling === "img2img" && <Range
                   label="Reconstruction strength"
                   value={strength}
                   min={0.35}
                   max={1}
                   step={0.05}
                   onChange={setStrength}
-                />
+                />}
+                {adaptivePrompt && <Field label="Prompt profile">
+                  <select value={enhanceProfile} onChange={(e) => setEnhanceProfile(e.target.value)}>
+                    <option value="auto">Automatic</option>
+                    {config.enhancement_profiles?.map((profile) => <option key={profile.id} value={profile.id}>{profile.name}</option>)}
+                  </select>
+                </Field>}
               </div>
               <div className="enhancement-prompt">
                 <label className="check-field">
@@ -3372,26 +3410,34 @@ function App() {
                   />
                   Preserve source lighting and colors
                 </label>
-                <Field label="Reconstruction prompt">
+                {adaptivePrompt && enhanceProfile === "auto" && <p role="status">Automatic profile: pending source analysis</p>}
+                {adaptivePrompt && selectedEnhancementProfile && <details>
+                  <summary>Selected profile prompt</summary>
+                  <p>{selectedEnhancementProfile.prompt}</p>
+                  <button onClick={() => { setEnhancementPrompt(selectedEnhancementProfile.prompt); setAdaptivePrompt(false); }}>
+                    <Copy size={16} /> Use as custom prompt
+                  </button>
+                </details>}
+                <Field label={adaptivePrompt ? "Additional instructions (optional)" : "Custom enhancement prompt"}>
                   <textarea
                     rows={8}
                     maxLength={16000}
-                    value={reconstructionPrompt}
-                    onChange={(e) => setEnhancementPrompt(e.target.value)}
+                    value={adaptivePrompt ? enhanceInstructions : reconstructionPrompt}
+                    onChange={(e) => adaptivePrompt ? setEnhanceInstructions(e.target.value) : setEnhancementPrompt(e.target.value)}
                   />
                 </Field>
               </div>
               <div className="enhancement-actions">
                 <button
-                  onClick={() => setEnhancementPrompt(null)}
-                  disabled={enhancementPrompt === null}
+                  onClick={() => adaptivePrompt ? setEnhanceInstructions("") : setEnhancementPrompt("")}
+                  disabled={!(adaptivePrompt ? enhanceInstructions : enhancementPrompt)}
                 >
                   <Undo2 size={16} />
-                  Reset to default
+                  Clear text
                 </button>
                 <button
                   className="primary"
-                  disabled={busy || !reconstructionPrompt.trim()}
+                  disabled={busy || (!adaptivePrompt && !reconstructionPrompt.trim())}
                   onClick={() =>
                     action(
                       {
@@ -3401,9 +3447,12 @@ function App() {
                         item_id: enhance.item_id,
                         image: enhance.image.path,
                         method: enhanceMethod,
+                        sampling_mode: enhanceSampling,
+                        enhancement_profile: adaptivePrompt ? enhanceProfile : "auto",
                         scale,
                         strength,
-                        reconstruction_prompt: reconstructionPrompt,
+                        reconstruction_prompt: adaptivePrompt ? config.reconstruction_prompt : reconstructionPrompt,
+                        additional_instructions: adaptivePrompt ? enhanceInstructions : "",
                         adaptive_prompt: adaptivePrompt,
                         preserve_tone: preserveTone,
                         steps: 4,

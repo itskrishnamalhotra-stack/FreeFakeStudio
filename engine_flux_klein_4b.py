@@ -148,13 +148,10 @@ def warmup(size=256):
             "neutral studio calibration image", "", size, size,
             seed=0, cfg=1.0, denoise=1.0, steps=1,
         )
-        edit_result = img2img(
+        edit_result = reconstruct_reference(
             [dummy],
             "neutral studio calibration image",
-            "",
             seed=0,
-            cfg=1.0,
-            denoise=1.0,
             steps=1,
         )
         return {"size": size, "steps": 1, "pipeline": "text-to-image + reference-edit"}
@@ -255,6 +252,30 @@ def generate_with_references(input_images, prompt, negative, width, height,
     return Image.fromarray(np.array(decoded * 255, dtype=np.uint8)[0])
 
 # ── Img2Img ────────────────────────────────────────────────
+@torch.inference_mode()
+def reconstruct_reference(input_images, prompt, seed, steps=4):
+    """Dedicated enhancement path: native FLUX.2 latent and full shifted schedule."""
+    from comfy_extras.nodes_flux import EmptyFlux2LatentImage, Flux2Scheduler
+    from comfy_extras.nodes_custom_sampler import SamplerCustom
+    import comfy.samplers
+
+    references = _normalize_references(input_images)
+    primary = _resize_to_multiple(references[0])
+    n = _get_nodes()
+    positive = n["CLIPTextEncode"].encode(_clip, prompt)[0]
+    negative = n["CLIPTextEncode"].encode(_clip, "")[0]
+    positive = _add_reference_conditioning(n, positive, references)
+    latent = EmptyFlux2LatentImage.execute(primary.width, primary.height, 1)[0]
+    sigmas = Flux2Scheduler.execute(int(steps), primary.width, primary.height)[0]
+    sampler = comfy.samplers.sampler_object("euler")
+    print(f"[flux-reconstruct] reference / Flux2Scheduler / steps={int(steps)} / "
+          f"output={primary.width}x{primary.height} / full noise-to-image schedule", flush=True)
+    samples = SamplerCustom.execute(_unet, True, int(seed), 1.0, positive, negative,
+                                   sampler, sigmas, latent)[0]
+    decoded = n["VAEDecode"].decode(_vae, samples)[0].detach()
+    return Image.fromarray((decoded.float().cpu().numpy().clip(0, 1) * 255).astype(np.uint8)[0])
+
+
 @torch.inference_mode()
 def img2img(input_image, prompt, negative, seed, cfg, denoise, steps=4, mask=None):
     """Native FLUX.2 reference editing with optional mask support.

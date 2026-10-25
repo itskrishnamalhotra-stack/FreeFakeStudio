@@ -1017,7 +1017,7 @@ class FluxEncoderTests(unittest.TestCase):
         with mock.patch.object(
             engine_flux_klein_4b, "generate", return_value=fake_result
         ) as text_generate, mock.patch.object(
-            engine_flux_klein_4b, "img2img", return_value=fake_result
+            engine_flux_klein_4b, "reconstruct_reference", return_value=fake_result
         ) as edit_generate, mock.patch.object(
             engine_flux_klein_4b.torch.cuda, "is_available", return_value=False
         ):

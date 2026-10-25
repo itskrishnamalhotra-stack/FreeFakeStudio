@@ -36,7 +36,7 @@ async (page) => {
   await page.keyboard.press('Escape');
   await page.locator('.gallery-tile').first().hover();
   await page.getByRole('button', {name:'Enhance image', exact:true}).first().click();
-  await page.getByRole('textbox', {name:'Reconstruction prompt', exact:true}).waitFor();
+  await page.getByRole('textbox', {name:'Additional instructions (optional)', exact:true}).waitFor();
   await page.keyboard.press('Escape');
   await choose('Resources');
   check(await page.locator('.resource-tile').count() > 0, 'Resource inventory empty');

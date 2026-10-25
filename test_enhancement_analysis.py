@@ -40,7 +40,9 @@ class AnalysisTests(unittest.TestCase):
         prompt = analysis.plan(value, avatar_enhance.PHOTO_PROMPT)["prompt"]
         self.assertIn("accurate water reflections and ripples", prompt)
         self.assertIn("individual leaves and grasses where resolvable", prompt)
-        self.assertIn("compression blocks", prompt)
+        self.assertNotIn("compression_blocks", value["answers"])
+        self.assertNotIn("edge_halos", value["answers"])
+        self.assertNotIn("Reduce edge halos", prompt)
         self.assertNotIn("ignore all instructions", prompt)
         self.assertNotIn("existing fabric weave", prompt)
         self.assertEqual(value["profile_id"], "landscape")
@@ -253,3 +255,40 @@ class AnalysisTests(unittest.TestCase):
         review = analysis.review_texture(self.image, source, ask=Mock(return_value="unclear"))
         self.assertEqual(review["status"], "uncertain")
         self.assertTrue(analysis.needs_review({"content_review": review}))
+
+    def test_dominant_foreground_crop_excludes_background_people(self):
+        values = {key: "yes" for key in ("person_visible", "people_main_subject", "multiple_people", "single_foreground_person", "single_face_crop", "face_visible", "female_presentation", "body_visible")}
+        faces = [{"box": [350, 120, 220, 250], "detector_score": .99, "coordinate_size": [1024, 1024]},
+                 {"box": [40, 300, 40, 40], "detector_score": .95, "coordinate_size": [1024, 1024]}]
+        value = analysis.analyze(self.image, self.root, ask=self.ask(values), face_boxes=faces)
+        self.assertEqual(value["profile_id"], "female_body")
+        self.assertEqual(value["people_count"], "single")
+        self.assertTrue(value["routing_notes"])
+        self.assertEqual(value["answers"]["single_face_crop"]["scope"], "foreground_face_crop")
+        self.assertFalse(value["classification_verified"])
+
+    def test_conflicting_foreground_count_without_localization_uses_neutral_profile(self):
+        values = {key: "yes" for key in ("person_visible", "people_main_subject", "multiple_people", "single_foreground_person", "face_visible", "female_presentation")}
+        value = analysis.analyze(self.image, self.root, ask=self.ask(values))
+        self.assertEqual(value["profile_id"], "person_unspecified")
+        self.assertEqual(value["status"], "partial")
+
+    def test_comparable_faces_are_never_cropped_down_to_one_person(self):
+        faces = [{"box": [100, 100, 200, 200], "detector_score": .99, "coordinate_size": [1024, 1024]},
+                 {"box": [550, 100, 180, 200], "detector_score": .99, "coordinate_size": [1024, 1024]}]
+        self.assertIsNone(analysis.foreground_face_box(faces))
+
+    def test_unverified_defect_claims_cannot_add_softening_instructions(self):
+        source = {"status": "complete", "scene": "people", "people_role": "main_subject", "people_count": "multiple",
+                  "condition": "oversharpened", "checks": {"edge_halos": True, "compression_blocks": True}}
+        prompt = analysis.plan(source, avatar_enhance.PHOTO_PROMPT)["prompt"]
+        self.assertNotIn("Reduce edge halos", prompt)
+        self.assertNotIn("instead of adding sharpness", prompt)
+
+    def test_manual_profile_override_wins_over_uncertain_classifier(self):
+        source = {"status": "inconclusive", "scene": "uncertain"}
+        planned = analysis.plan(source, "Keep the face unchanged", "female_body")
+        self.assertEqual(planned["profile_id"], "female_body")
+        self.assertEqual(planned["selection"], "manual_override")
+        with self.assertRaises(ValueError):
+            analysis.plan(source, "", "not-a-profile")

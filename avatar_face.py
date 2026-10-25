@@ -87,6 +87,23 @@ def features(image):
         return result
 
 
+def detect_faces(image):
+    """Bounding boxes only, using the already installed CPU detector, no embeddings."""
+    import model_manager
+    if model_manager.DEV_MODE:
+        raise RuntimeError("Face inference is disabled in local mock mode.")
+    with _lock:
+        detector, _ = _load()
+        image = image.convert("RGB").copy()
+        image.thumbnail((1024, 1024), Image.Resampling.LANCZOS)
+        frame = np.asarray(image)[:, :, ::-1].copy()
+        detector.setInputSize(image.size)
+        _, faces = detector.detect(frame)
+        return [{"box": [float(v) for v in face[:4]], "detector_score": float(face[-1]),
+                 "coordinate_size": list(image.size)}
+                for face in faces if min(face[2], face[3]) >= 24] if faces is not None else []
+
+
 def calibrate(anchors, positives, negatives, extractor=features):
     reference = []
     for path in anchors:

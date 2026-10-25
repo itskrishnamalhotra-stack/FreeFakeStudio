@@ -355,11 +355,14 @@ class StudioService:
                     app_settings.prepare_vision(self.root)
                 analysis = enhancement_analysis.analyze(source, self.root, mock=model_manager.DEV_MODE,
                     check=context.check, emit=context.emit)
-                plan = enhancement_analysis.plan(analysis, args["reconstruction_prompt"])
+                instructions = args.get("additional_instructions", "").strip() or args["reconstruction_prompt"]
+                plan = enhancement_analysis.plan(analysis, instructions, args.get("enhancement_profile", "auto"))
             else:
-                plan = {"automatic": False, "analysis": {"status": "legacy_unrecorded" if context.saved.get("image") else "disabled"}, "prompt": args["reconstruction_prompt"]}
-            plan.update(source_sha256=source_hash, requested_prompt=args["reconstruction_prompt"])
+                plan = {"automatic": False, "selection": "custom", "analysis": {"status": "legacy_unrecorded" if context.saved.get("image") else "disabled"}, "prompt": args["reconstruction_prompt"]}
+            plan.update(source_sha256=source_hash, requested_prompt=plan.get("user_instructions", args["reconstruction_prompt"]),
+                        additional_instructions=args.get("additional_instructions", ""))
             context.checkpoint(enhancement_plan=plan)
+        sampling_mode = args.get("sampling_mode", "img2img")
         args = {**args, "reconstruction_prompt": plan["prompt"]}
 
         def review_output():
@@ -411,7 +414,9 @@ class StudioService:
             check_output()
             save_turn(context.saved["image"])
             return {"avatar_id": avatar_id, "item_id": item_id, "image": context.saved["image"]}
-        seed = context.saved.get("seed") or secrets.randbelow(2**63)
+        seed = context.saved.get("seed")
+        if seed is None:
+            seed = secrets.randbelow(2**63)
         context.checkpoint(seed=seed)
         if avatar_id:
             studio.record_gallery_item(str(self.root), avatar_id, {"id": item_id, "origin": "enhancement", "source_id": source_id,
@@ -421,6 +426,9 @@ class StudioService:
             context.check()
             self.prepare_generation()
             engine = model_manager.ensure_model(model_manager.FLUX_MODEL_NAME, status_callback=context.emit)
+            if sampling_mode == "reference":
+                context.emit("FLUX reference reconstruction / native Flux2Scheduler / four full-schedule steps")
+                return engine.reconstruct_reference([tile] if whole is None else [tile, whole], prompt, seed, args["steps"])
             return engine.img2img([tile] if whole is None else [tile, whole], prompt, "", seed, 1.0, strength, args["steps"])
         try:
             for row in avatar_enhance.reconstruct(source, edit, args["scale"], args["strength"], seed,
@@ -428,6 +436,15 @@ class StudioService:
                 if row["image"] is None:
                     context.emit(f"FLUX pass {row['tile']}/{row['total']} / one output image", pass_index=row["tile"], total=row["total"])
                 else:
+                    row["diagnostics"]["sampling"] = {
+                        "mode": sampling_mode,
+                        "scheduler": "Flux2Scheduler" if sampling_mode == "reference" else "simple",
+                        "steps": args["steps"],
+                        "denoise": 1.0 if sampling_mode == "reference" else args["strength"],
+                        "latent": "EmptyFlux2LatentImage" if sampling_mode == "reference" else "VAEEncode",
+                        "output_size_mode": "one sampled image then resize" if args["method"] == "photo" else "full image and sampled HD tiles",
+                        "tile_prompt_prefix": avatar_enhance.TILE_PROMPT if args["method"] == "hd_tiles" else None,
+                    }
                     if avatar_id:
                         path = studio.save_gallery_image(str(self.root), avatar_id, item_id, row["image"])
                         if not model_manager.DEV_MODE:

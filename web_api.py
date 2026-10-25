@@ -21,6 +21,7 @@ from pydantic import BaseModel, ConfigDict, Field, StrictBool
 from PIL import Image, ImageOps, UnidentifiedImageError
 
 import avatar_enhance
+import enhancement_profiles
 import app_settings
 import avatar_resources
 import avatar_gallery
@@ -127,6 +128,9 @@ class JobRequest(StrictModel):
     require_face: bool = False
     reason: str = Field(default="", max_length=4000)
     method: Literal["photo", "hd_tiles"] = "photo"
+    sampling_mode: Literal["reference", "img2img"] = "reference"
+    enhancement_profile: str = Field(default="auto", max_length=40)
+    additional_instructions: str = Field(default="", max_length=16000)
     scale: Literal[1, 2] = 1
     strength: float = Field(default=avatar_enhance.DEFAULT_STRENGTH, ge=.35, le=1)
     adaptive_prompt: StrictBool = True
@@ -387,6 +391,7 @@ def create_app(root=None, persist=None, token=None):
                 "aspects": generation.ASPECTS, "modes": generation.MODES, "mask_modes": generation.MASK_MODES,
                 "presets": list(avatar_guide.PRESETS), "encoder_choices": model_manager.get_flux_encoder_choices(),
                 "encoder": model_manager.get_flux_encoder_config()["mode"].title(), "reconstruction_prompt": avatar_enhance.PHOTO_PROMPT,
+                "enhancement_profiles": [{"id": key, "name": value["name"], "prompt": value["prompt"]} for key, value in enhancement_profiles.PROFILES.items()],
                 "mock": model_manager.DEV_MODE, "provider": provider(), "gallery_api": avatar_gallery.configuration_status() if not model_manager.DEV_MODE else {"ready": True},
                 "active_model": model_manager.get_current_model(), "max_references": 4, "max_avatar_extras": 2,
                 "app_settings": app_settings.load(root)}
@@ -756,6 +761,12 @@ def create_app(root=None, persist=None, token=None):
         if body.kind in {"confirm", "mask_preview"} and not body.image:
             raise ValueError("Choose an input image first")
         if body.kind == "enhance":
+            if not body.adaptive_prompt and (body.enhancement_profile != "auto" or body.additional_instructions.strip()):
+                raise ValueError("Custom prompt mode uses only the supplied reconstruction prompt; clear automatic profile instructions")
+            if body.enhancement_profile != "auto" and body.enhancement_profile not in enhancement_profiles.PROFILES:
+                raise ValueError("Choose an available enhancement prompt profile")
+            if body.sampling_mode == "reference" and body.steps != 4:
+                raise ValueError("FLUX Klein reference reconstruction uses four distilled steps")
             if not body.reconstruction_prompt.strip():
                 raise ValueError("Write a reconstruction prompt first")
             if body.chat_id or not body.avatar_id:
